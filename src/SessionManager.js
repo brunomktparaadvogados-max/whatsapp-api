@@ -277,6 +277,69 @@ class SessionManager {
     return true;
   }
 
+  async restoreSessionsFromDatabase(userId) {
+    try {
+      console.log('🔄 Restaurando sessões do banco de dados...');
+      const dbSessions = await this.db.getSessionsByUserId(userId);
+
+      for (const dbSession of dbSessions) {
+        const sessionPath = path.join(this.sessionDir, `session-${dbSession.id}`);
+
+        if (fs.existsSync(sessionPath) && !this.sessions.has(dbSession.id)) {
+          console.log(`📱 Restaurando sessão: ${dbSession.id}`);
+
+          try {
+            const sessionData = {
+              id: dbSession.id,
+              userId: dbSession.user_id,
+              qrCode: null,
+              status: 'initializing',
+              client: null,
+              info: null
+            };
+
+            const client = new Client({
+              authStrategy: new LocalAuth({
+                clientId: dbSession.id,
+                dataPath: this.sessionDir
+              }),
+              puppeteer: {
+                headless: true,
+                args: [
+                  '--no-sandbox',
+                  '--disable-setuid-sandbox',
+                  '--disable-dev-shm-usage',
+                  '--disable-accelerated-2d-canvas',
+                  '--no-first-run',
+                  '--no-zygote',
+                  '--disable-gpu'
+                ]
+              }
+            });
+
+            this.setupClientEvents(client, sessionData);
+            sessionData.client = client;
+            this.sessions.set(dbSession.id, sessionData);
+
+            client.initialize().catch(err => {
+              console.error(`❌ Erro ao restaurar sessão ${dbSession.id}:`, err.message);
+              this.sessions.delete(dbSession.id);
+            });
+          } catch (error) {
+            console.error(`❌ Erro ao restaurar sessão ${dbSession.id}:`, error.message);
+          }
+        } else if (!fs.existsSync(sessionPath)) {
+          console.log(`🗑️ Removendo sessão órfã do banco: ${dbSession.id}`);
+          await this.db.deleteSession(dbSession.id);
+        }
+      }
+
+      console.log(`✅ Restauração concluída. ${this.sessions.size} sessões ativas.`);
+    } catch (error) {
+      console.error('❌ Erro ao restaurar sessões:', error);
+    }
+  }
+
   async sendMessage(sessionId, to, message) {
     const session = this.getSession(sessionId);
     if (!session || !session.client) {

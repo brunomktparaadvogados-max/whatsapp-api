@@ -261,6 +261,31 @@ app.post('/api/sessions/:sessionId/messages', authMiddleware, async (req, res) =
     const result = await sessionManager.sendMessage(sessionId, to, message);
     res.json(result);
   } catch (error) {
+    console.error(`Erro ao enviar mensagem para ${req.body.to} na sessão ${req.params.sessionId}:`, error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { to, message } = req.body;
+
+    const dbSession = await db.getSession(sessionId);
+    if (!dbSession || dbSession.user_id !== req.userId) {
+      return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+
+    if (!to || !message) {
+      return res.status(400).json({
+        error: 'Campos "to" e "message" são obrigatórios'
+      });
+    }
+
+    const result = await sessionManager.sendMessage(sessionId, to, message);
+    res.json(result);
+  } catch (error) {
+    console.error(`Erro ao enviar mensagem para ${req.body.to} na sessão ${req.params.sessionId}:`, error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -610,6 +635,9 @@ async function initializeDefaultSession() {
       return;
     }
 
+    console.log('🔄 Restaurando sessões existentes...');
+    await sessionManager.restoreSessionsFromDatabase(adminUser.id);
+
     const existingSession = await db.getSession(defaultSessionId);
 
     if (!existingSession) {
@@ -618,10 +646,10 @@ async function initializeDefaultSession() {
       console.log('✅ Sessão padrão "WhatsApp" criada com sucesso!');
       console.log(`🔗 Acesse http://${HOST}:${PORT} para escanear o QR Code`);
     } else {
-      console.log('✅ Sessão padrão "WhatsApp" já existe');
+      console.log('✅ Sessão padrão "WhatsApp" já existe no banco');
     }
   } catch (error) {
-    console.error('❌ Erro ao criar sessão padrão:', error.message);
+    console.error('❌ Erro ao inicializar sessões:', error.message);
   }
 }
 
