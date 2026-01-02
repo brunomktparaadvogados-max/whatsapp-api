@@ -1,0 +1,184 @@
+{
+  "name": "whatsapp-api-postman",
+  "description": "Coleção Postman para WhatsApp API Gratuita",
+  "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+  "item": [
+    {
+      "name": "Sessões",
+      "item": [
+        {
+          "name": "Criar Sessão",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sessionId\": \"minha-sessao-1\",\n  \"webhookUrl\": \"https://seu-servidor.com/webhook\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/sessions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "sessions"]
+            }
+          }
+        },
+        {
+          "name": "Listar Sessões",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/sessions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "sessions"]
+            }
+          }
+        },
+        {
+          "name": "Obter Sessão",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/sessions/{{session_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "sessions", "{{session_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Obter QR Code",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/sessions/{{session_id}}/qr",
+              "host": ["{{base_url}}"],
+              "path": ["api", "sessions", "{{session_id}}", "qr"]
+            }
+          }
+        },
+        {
+          "name": "Deletar Sessão",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{base_url}}/api/sessions/{{session_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "sessions", "{{session_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Atualizar Webhook",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"webhookUrl\": \"https://novo-webhook.com/endpoint\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/sessions/{{session_id}}/webhook",
+              "host": ["{{base_url}}"],
+              "path": ["api", "sessions", "{{session_id}}", "webhook"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Mensagens",
+      "item": [
+        {
+          "name": "Enviar Mensagem de Texto",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"to\": \"5511999999999\",\n  \"message\": \"Olá! Esta é uma mensagem de teste.\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/sessions/{{session_id}}/messages",
+              "host": ["{{base_url}}"],
+              "path": ["api", "sessions", "{{session_id}}", "messages"]
+            }
+          }
+        },
+        {
+          "name": "Enviar Mídia",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"to\": \"5511999999999\",\n  \"mediaUrl\": \"https://exemplo.com/imagem.jpg\",\n  \"caption\": \"Legenda da imagem\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/sessions/{{session_id}}/messages/media",
+              "host": ["{{base_url}}"],
+              "path": ["api", "sessions", "{{session_id}}", "messages", "media"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Contatos e Conversas",
+      "item": [
+        {
+          "name": "Listar Conversas",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/sessions/{{session_id}}/chats",
+              "host": ["{{base_url}}"],
+              "path": ["api", "sessions", "{{session_id}}", "chats"]
+            }
+          }
+        },
+        {
+          "name": "Listar Contatos",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/sessions/{{session_id}}/contacts",
+              "host": ["{{base_url}}"],
+              "path": ["api", "sessions", "{{session_id}}", "contacts"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "session_id",
+      "value": "minha-sessao-1",
+      "type": "string"
+    }
+  ]
+}

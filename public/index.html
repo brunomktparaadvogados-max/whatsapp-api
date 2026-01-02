@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp API - Gratuita</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .card h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            font-size: 1.8em;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 600;
+        }
+
+        input, textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+        }
+
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 8px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: transform 0.2s;
+            font-weight: 600;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+
+        .sessions-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .session-card {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            border-left: 4px solid #667eea;
+        }
+
+        .session-card h3 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .status {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status.qr_code {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .qr-container {
+            text-align: center;
+            margin-top: 20px;
+        }
+
+        .qr-container img {
+            max-width: 300px;
+            border: 3px solid #667eea;
+            border-radius: 10px;
+            padding: 10px;
+            background: white;
+        }
+
+        .info-box {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 5px;
+        }
+
+        .info-box h3 {
+            color: #2196F3;
+            margin-bottom: 10px;
+        }
+
+        .info-box code {
+            background: #fff;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .session-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .session-actions button {
+            flex: 1;
+            padding: 8px;
+            font-size: 0.9em;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #667eea;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+        }
+
+        .modal-content {
+            background-color: white;
+            margin: 10% auto;
+            padding: 30px;
+            border-radius: 15px;
+            width: 90%;
+            max-width: 400px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+
+        .modal-content h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+        }
+
+        .auth-info {
+            background: #e7f3ff;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div id="loginModal" class="modal">
+        <div class="modal-content">
+            <h2>🔐 Login</h2>
+            <div class="auth-info">
+                <p><strong>Credenciais padrão:</strong></p>
+                <p>Email: admin@flow.com</p>
+                <p>Senha: admin123</p>
+            </div>
+            <div class="form-group">
+                <label for="loginEmail">Email:</label>
+                <input type="email" id="loginEmail" value="admin@flow.com">
+            </div>
+            <div class="form-group">
+                <label for="loginPassword">Senha:</label>
+                <input type="password" id="loginPassword" value="admin123">
+            </div>
+            <button onclick="login()">Entrar</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="header">
+            <h1>📱 WhatsApp API Gratuita</h1>
+            <p>Conecte seu WhatsApp sem custos - Open Source</p>
+        </div>
+
+        <div class="card">
+            <h2>🆕 Criar Nova Sessão</h2>
+            <div class="info-box">
+                <h3>Como usar:</h3>
+                <p>1. Crie uma sessão com um ID único</p>
+                <p>2. Configure um webhook (opcional) para receber eventos</p>
+                <p>3. Escaneie o QR Code com seu WhatsApp</p>
+                <p>4. Pronto! Use a API para enviar mensagens</p>
+            </div>
+            
+            <div class="form-group">
+                <label for="sessionId">ID da Sessão:</label>
+                <input type="text" id="sessionId" placeholder="Ex: minha-sessao-1">
+            </div>
+            
+            <div class="form-group">
+                <label for="webhookUrl">Webhook URL (opcional):</label>
+                <input type="url" id="webhookUrl" placeholder="https://seu-servidor.com/webhook">
+            </div>
+            
+            <button onclick="createSession()">Criar Sessão</button>
+        </div>
+
+        <div class="card">
+            <h2>📋 Sessões Ativas</h2>
+            <button onclick="loadSessions()" style="margin-bottom: 20px;">🔄 Atualizar</button>
+            <div id="sessions" class="sessions-grid">
+                <div class="loading">Carregando sessões...</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>📤 Enviar Mensagem</h2>
+            <div class="form-group">
+                <label for="sendSessionId">ID da Sessão:</label>
+                <input type="text" id="sendSessionId" placeholder="minha-sessao-1">
+            </div>
+            
+            <div class="form-group">
+                <label for="sendTo">Número (com DDI):</label>
+                <input type="text" id="sendTo" placeholder="5511999999999">
+            </div>
+            
+            <div class="form-group">
+                <label for="sendMessage">Mensagem:</label>
+                <textarea id="sendMessage" rows="4" placeholder="Digite sua mensagem..."></textarea>
+            </div>
+            
+            <button onclick="sendMessage()">Enviar Mensagem</button>
+        </div>
+
+        <div class="card">
+            <h2>🌐 Enviar via Meta API Oficial</h2>
+            <div class="info-box">
+                <h3>ℹ️ Sobre a Meta API:</h3>
+                <p>Use a API oficial do WhatsApp Business para envio em larga escala.</p>
+                <p>Requer configuração prévia no Meta Business Manager.</p>
+                <p><a href="https://developers.facebook.com/docs/whatsapp" target="_blank" style="color: #667eea;">📖 Documentação Meta</a></p>
+            </div>
+
+            <div id="metaConfigSection">
+                <h3 style="color: #667eea; margin-top: 20px;">⚙️ Configuração Meta API</h3>
+                <div class="form-group">
+                    <label for="metaAccessToken">Access Token:</label>
+                    <input type="password" id="metaAccessToken" placeholder="EAAxxxxxxxxxx...">
+                </div>
+
+                <div class="form-group">
+                    <label for="metaPhoneNumberId">Phone Number ID:</label>
+                    <input type="text" id="metaPhoneNumberId" placeholder="123456789012345">
+                </div>
+
+                <div class="form-group">
+                    <label for="metaBusinessAccountId">Business Account ID (opcional):</label>
+                    <input type="text" id="metaBusinessAccountId" placeholder="123456789012345">
+                </div>
+
+                <button onclick="saveMetaConfig()">💾 Salvar Configuração</button>
+                <button onclick="loadMetaConfig()" style="background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);">🔄 Carregar Config</button>
+            </div>
+
+            <hr style="margin: 30px 0; border: none; border-top: 2px solid #e0e0e0;">
+
+            <h3 style="color: #667eea; margin-bottom: 20px;">📤 Envio Individual</h3>
+            <div class="form-group">
+                <label for="metaSendTo">Número (com DDI):</label>
+                <input type="text" id="metaSendTo" placeholder="5511999999999">
+            </div>
+
+            <div class="form-group">
+                <label for="metaSendMessage">Mensagem:</label>
+                <textarea id="metaSendMessage" rows="4" placeholder="Digite sua mensagem..."></textarea>
+            </div>
+
+            <button onclick="sendMetaMessage()">📨 Enviar via Meta API</button>
+
+            <hr style="margin: 30px 0; border: none; border-top: 2px solid #e0e0e0;">
+
+            <h3 style="color: #667eea; margin-bottom: 20px;">📤 Envio em Massa</h3>
+            <div class="form-group">
+                <label for="metaBulkContacts">Números (um por linha, com DDI):</label>
+                <textarea id="metaBulkContacts" rows="6" placeholder="5511999999999&#10;5511888888888&#10;5511777777777"></textarea>
+            </div>
+
+            <div class="form-group">
+                <label for="metaBulkMessage">Mensagem:</label>
+                <textarea id="metaBulkMessage" rows="4" placeholder="Digite sua mensagem..."></textarea>
+            </div>
+
+            <div class="form-group">
+                <label for="metaBulkDelay">Delay entre mensagens (ms):</label>
+                <input type="number" id="metaBulkDelay" value="1000" min="100" step="100">
+                <small style="color: #666; display: block; margin-top: 5px;">Recomendado: 1000ms (1 segundo) para evitar bloqueios</small>
+            </div>
+
+            <button onclick="sendMetaBulk()">📨 Enviar em Massa via Meta API</button>
+
+            <div id="metaBulkResults" style="margin-top: 20px; display: none;">
+                <h3 style="color: #667eea;">📊 Resultados do Envio:</h3>
+                <div id="metaBulkResultsContent" style="background: #f8f9fa; padding: 15px; border-radius: 8px; max-height: 400px; overflow-y: auto;"></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>📚 Documentação da API</h2>
+            <div class="info-box">
+                <h3>Endpoints Disponíveis:</h3>
+                <p><strong>POST</strong> <code>/api/sessions</code> - Criar sessão</p>
+                <p><strong>GET</strong> <code>/api/sessions</code> - Listar sessões</p>
+                <p><strong>GET</strong> <code>/api/sessions/:id/qr</code> - Obter QR Code</p>
+                <p><strong>POST</strong> <code>/api/sessions/:id/messages</code> - Enviar mensagem</p>
+                <p><strong>POST</strong> <code>/api/sessions/:id/messages/media</code> - Enviar mídia</p>
+                <p><strong>GET</strong> <code>/api/sessions/:id/chats</code> - Listar conversas</p>
+                <p><strong>GET</strong> <code>/api/sessions/:id/contacts</code> - Listar contatos</p>
+                <p><strong>PUT</strong> <code>/api/sessions/:id/webhook</code> - Atualizar webhook</p>
+                <p><strong>DELETE</strong> <code>/api/sessions/:id</code> - Deletar sessão</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = window.location.origin;
+
+        window.onload = function() {
+            checkAuth();
+        };
+
+        function checkAuth() {
+            const token = localStorage.getItem('token');
+            if (!token) {
+                document.getElementById('loginModal').style.display = 'block';
+            } else {
+                const user = JSON.parse(localStorage.getItem('user') || '{}');
+                document.getElementById('userInfo').textContent = `👤 ${user.name || user.email || 'Usuário'}`;
+                loadSessions();
+            }
+        }
+
+        async function login() {
+            const email = document.getElementById('loginEmail').value;
+            const password = document.getElementById('loginPassword').value;
+
+            if (!email || !password) {
+                alert('Por favor, preencha email e senha');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    localStorage.setItem('token', data.token);
+                    localStorage.setItem('user', JSON.stringify(data.user));
+                    document.getElementById('loginModal').style.display = 'none';
+                    document.getElementById('userInfo').textContent = `👤 ${data.user.name || data.user.email}`;
+                    alert('✅ Login realizado com sucesso!');
+                    loadSessions();
+                } else {
+                    alert('❌ Erro: ' + (data.error || 'Credenciais inválidas'));
+                }
+            } catch (error) {
+                alert('❌ Erro ao fazer login: ' + error.message);
+            }
+        }
+
+        async function createSession() {
+            const sessionId = document.getElementById('sessionId').value;
+            const webhookUrl = document.getElementById('webhookUrl').value;
+
+            if (!sessionId) {
+                alert('Por favor, informe o ID da sessão');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/sessions`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    },
+                    body: JSON.stringify({ sessionId, webhookUrl: webhookUrl || null })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('Sessão criada! Aguarde o QR Code...');
+                    document.getElementById('sessionId').value = '';
+                    document.getElementById('webhookUrl').value = '';
+                    setTimeout(loadSessions, 2000);
+                } else {
+                    alert('Erro: ' + data.error);
+                }
+            } catch (error) {
+                alert('Erro ao criar sessão: ' + error.message);
+            }
+        }
+
+        async function loadSessions() {
+            try {
+                const response = await fetch(`${API_URL}/api/sessions`, {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    }
+                });
+                const data = await response.json();
+
+                const container = document.getElementById('sessions');
+
+                if (data.sessions.length === 0) {
+                    container.innerHTML = '<div class="loading">Nenhuma sessão ativa</div>';
+                    return;
+                }
+
+                container.innerHTML = '';
+
+                for (const session of data.sessions) {
+                    const card = document.createElement('div');
+                    card.className = 'session-card';
+
+                    let statusClass = 'disconnected';
+                    if (session.status === 'connected') statusClass = 'connected';
+                    else if (session.status === 'qr_code') statusClass = 'qr_code';
+
+                    let qrHtml = '';
+                    if (session.status === 'qr_code') {
+                        try {
+                            const qrResponse = await fetch(`${API_URL}/api/sessions/${session.id}/qr`, {
+                                headers: {
+                                    'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                                }
+                            });
+                            const qrData = await qrResponse.json();
+                            if (qrData.success) {
+                                qrHtml = `
+                                    <div class="qr-container">
+                                        <p><strong>Escaneie o QR Code:</strong></p>
+                                        <img src="${qrData.qrCode}" alt="QR Code">
+                                    </div>
+                                `;
+                            }
+                        } catch (e) {
+                            console.error('Erro ao carregar QR:', e);
+                        }
+                    }
+
+                    card.innerHTML = `
+                        <h3>📱 ${session.id}</h3>
+                        <span class="status ${statusClass}">${session.status}</span>
+                        ${session.info ? `<p><strong>Número:</strong> ${session.info.wid}</p>` : ''}
+                        ${session.info ? `<p><strong>Nome:</strong> ${session.info.pushname}</p>` : ''}
+                        ${session.hasWebhook ? '<p>✅ Webhook configurado</p>' : ''}
+                        ${qrHtml}
+                        <div class="session-actions">
+                            <button onclick="deleteSession('${session.id}')" class="btn-danger">🗑️ Deletar</button>
+                        </div>
+                    `;
+
+                    container.appendChild(card);
+                }
+            } catch (error) {
+                console.error('Erro ao carregar sessões:', error);
+            }
+        }
+
+        async function deleteSession(sessionId) {
+            if (!confirm(`Deseja realmente deletar a sessão ${sessionId}?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/sessions/${sessionId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    }
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('Sessão deletada com sucesso!');
+                    loadSessions();
+                } else {
+                    alert('Erro: ' + data.error);
+                }
+            } catch (error) {
+                alert('Erro ao deletar sessão: ' + error.message);
+            }
+        }
+
+        async function sendMessage() {
+            const sessionId = document.getElementById('sendSessionId').value;
+            const to = document.getElementById('sendTo').value;
+            const message = document.getElementById('sendMessage').value;
+
+            if (!sessionId || !to || !message) {
+                alert('Por favor, preencha todos os campos');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/sessions/${sessionId}/messages`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    },
+                    body: JSON.stringify({ to, message })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('Mensagem enviada com sucesso!');
+                    document.getElementById('sendMessage').value = '';
+                } else {
+                    alert('Erro: ' + data.error);
+                }
+            } catch (error) {
+                alert('Erro ao enviar mensagem: ' + error.message);
+            }
+        }
+
+        // Meta API Functions
+        async function saveMetaConfig() {
+            const accessToken = document.getElementById('metaAccessToken').value;
+            const phoneNumberId = document.getElementById('metaPhoneNumberId').value;
+            const businessAccountId = document.getElementById('metaBusinessAccountId').value;
+
+            if (!accessToken || !phoneNumberId) {
+                alert('Por favor, preencha Access Token e Phone Number ID');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/meta/config`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    },
+                    body: JSON.stringify({
+                        accessToken,
+                        phoneNumberId,
+                        businessAccountId: businessAccountId || null
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('✅ Configuração Meta salva com sucesso!');
+                    localStorage.setItem('metaConfigured', 'true');
+                } else {
+                    alert('❌ Erro: ' + (data.error || 'Erro desconhecido'));
+                }
+            } catch (error) {
+                alert('❌ Erro ao salvar configuração: ' + error.message);
+            }
+        }
+
+        async function loadMetaConfig() {
+            try {
+                const response = await fetch(`${API_URL}/api/meta/config`, {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    }
+                });
+
+                const data = await response.json();
+
+                if (data.success && data.configured) {
+                    document.getElementById('metaPhoneNumberId').value = data.config.phoneNumberId || '';
+                    document.getElementById('metaBusinessAccountId').value = data.config.businessAccountId || '';
+                    if (data.config.hasAccessToken) {
+                        document.getElementById('metaAccessToken').placeholder = '••••••••••••••••';
+                    }
+                    alert('✅ Configuração carregada!');
+                } else {
+                    alert('ℹ️ Nenhuma configuração encontrada');
+                }
+            } catch (error) {
+                alert('❌ Erro ao carregar configuração: ' + error.message);
+            }
+        }
+
+        async function sendMetaMessage() {
+            const to = document.getElementById('metaSendTo').value;
+            const message = document.getElementById('metaSendMessage').value;
+
+            if (!to || !message) {
+                alert('Por favor, preencha número e mensagem');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/meta/send`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    },
+                    body: JSON.stringify({ to, message })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('✅ Mensagem enviada com sucesso via Meta API!');
+                    document.getElementById('metaSendMessage').value = '';
+                } else {
+                    alert('❌ Erro: ' + (data.error?.message || data.error || 'Erro desconhecido'));
+                }
+            } catch (error) {
+                alert('❌ Erro ao enviar mensagem: ' + error.message);
+            }
+        }
+
+        async function sendMetaBulk() {
+            const contacts = document.getElementById('metaBulkContacts').value.split('\n').filter(c => c.trim());
+            const message = document.getElementById('metaBulkMessage').value;
+            const delayMs = parseInt(document.getElementById('metaBulkDelay').value) || 1000;
+
+            if (contacts.length === 0 || !message) {
+                alert('Por favor, preencha contatos e mensagem');
+                return;
+            }
+
+            if (!confirm(`Deseja enviar para ${contacts.length} contatos?`)) {
+                return;
+            }
+
+            const resultsDiv = document.getElementById('metaBulkResults');
+            const resultsContent = document.getElementById('metaBulkResultsContent');
+            resultsDiv.style.display = 'block';
+            resultsContent.innerHTML = '<p style="color: #667eea;"><strong>📤 Enviando mensagens...</strong></p>';
+
+            try {
+                const response = await fetch(`${API_URL}/api/meta/send-bulk`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    },
+                    body: JSON.stringify({ contacts, message, delayMs })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    const results = data.results;
+                    const successCount = results.filter(r => r.success).length;
+                    const errorCount = results.filter(r => !r.success).length;
+
+                    resultsContent.innerHTML = `
+                        <h4 style="color: #667eea; margin-bottom: 10px;">📊 Resumo do Envio:</h4>
+                        <p><strong>✅ Sucesso:</strong> ${successCount}</p>
+                        <p><strong>❌ Erros:</strong> ${errorCount}</p>
+                        <p><strong>📊 Total:</strong> ${results.length}</p>
+                        <hr style="margin: 15px 0;">
+                        ${results.map(r => {
+                            const icon = r.success ? '✅' : '❌';
+                            const status = r.success ? 'Enviado' : (r.error?.message || r.error || 'Erro');
+                            return `<p>${icon} ${r.contact} - ${status}</p>`;
+                        }).join('')}
+                    `;
+                } else {
+                    resultsContent.innerHTML = `<p style="color: #f5576c;"><strong>❌ Erro:</strong> ${data.error}</p>`;
+                }
+            } catch (error) {
+                resultsContent.innerHTML = `<p style="color: #f5576c;"><strong>❌ Erro:</strong> ${error.message}</p>`;
+            }
+        }
+    </script>
+</body>
+</html>
