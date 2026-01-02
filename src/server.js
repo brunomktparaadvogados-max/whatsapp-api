@@ -600,10 +600,37 @@ cron.schedule('* * * * *', async () => {
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 
-server.listen(PORT, HOST, () => {
+async function initializeDefaultSession() {
+  try {
+    const defaultSessionId = 'WhatsApp';
+    const adminUser = await db.getUserByEmail('admin@flow.com');
+
+    if (!adminUser) {
+      console.log('⚠️ Usuário admin não encontrado. Sessão padrão não criada.');
+      return;
+    }
+
+    const existingSession = await db.getSession(defaultSessionId);
+
+    if (!existingSession) {
+      console.log('📱 Criando sessão padrão "WhatsApp"...');
+      await sessionManager.createSession(defaultSessionId, adminUser.id);
+      console.log('✅ Sessão padrão "WhatsApp" criada com sucesso!');
+      console.log(`🔗 Acesse http://${HOST}:${PORT} para escanear o QR Code`);
+    } else {
+      console.log('✅ Sessão padrão "WhatsApp" já existe');
+    }
+  } catch (error) {
+    console.error('❌ Erro ao criar sessão padrão:', error.message);
+  }
+}
+
+server.listen(PORT, HOST, async () => {
   console.log(`🚀 WhatsApp API + CRM rodando em http://${HOST}:${PORT}`);
   console.log(`📱 Interface web: http://${HOST}:${PORT}`);
   console.log(`🔌 WebSocket ativo para chat em tempo real`);
   console.log(`💚 Sistema completo com autenticação, CRM e automações`);
   console.log(`\n👤 Login padrão: admin@flow.com / admin123`);
+
+  await initializeDefaultSession();
 });

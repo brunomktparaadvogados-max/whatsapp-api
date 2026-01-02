@@ -261,11 +261,8 @@ class SessionManager {
 
   async deleteSession(sessionId) {
     const session = this.sessions.get(sessionId);
-    if (!session) {
-      throw new Error('Sessão não encontrada');
-    }
 
-    if (session.client) {
+    if (session && session.client) {
       await session.client.destroy();
     }
 
