@@ -63,7 +63,7 @@ class SessionManager {
 
   setupClientEvents(client, sessionData) {
     client.on('qr', async (qr) => {
-      console.log(`QR Code gerado para sessão: ${sessionData.id}`);
+      console.log(`📱 QR Code gerado para sessão: ${sessionData.id}`);
       sessionData.qrCode = await QRCode.toDataURL(qr);
       sessionData.status = 'qr_code';
 
@@ -73,8 +73,20 @@ class SessionManager {
       });
     });
 
+    client.on('authenticated', async () => {
+      console.log(`✅ Autenticado: ${sessionData.id}`);
+      sessionData.status = 'authenticated';
+
+      await this.db.updateSessionStatus(sessionData.id, 'authenticated');
+
+      this.io.to(`user_${sessionData.userId}`).emit('session_authenticated', {
+        sessionId: sessionData.id,
+        info: sessionData.info
+      });
+    });
+
     client.on('ready', async () => {
-      console.log(`Cliente conectado: ${sessionData.id}`);
+      console.log(`🟢 Cliente PRONTO e CONECTADO: ${sessionData.id}`);
       sessionData.status = 'connected';
       sessionData.info = {
         wid: client.info.wid._serialized,
@@ -90,26 +102,18 @@ class SessionManager {
         client.info.pushname
       );
 
+      console.log(`💾 Sessão ${sessionData.id} salva no banco com status: connected`);
+      console.log(`📞 Número conectado: ${client.info.wid._serialized}`);
+      console.log(`👤 Nome: ${client.info.pushname}`);
+
       this.io.to(`user_${sessionData.userId}`).emit('session_connected', {
         sessionId: sessionData.id,
         info: sessionData.info
       });
     });
 
-    client.on('authenticated', async () => {
-      console.log(`Autenticado: ${sessionData.id}`);
-      sessionData.status = 'authenticated';
-
-      await this.db.updateSessionStatus(sessionData.id, 'authenticated');
-
-      this.io.to(`user_${sessionData.userId}`).emit('session_authenticated', {
-        sessionId: sessionData.id,
-        info: sessionData.info
-      });
-    });
-
     client.on('auth_failure', async (msg) => {
-      console.error(`Falha na autenticação: ${sessionData.id}`, msg);
+      console.error(`❌ Falha na autenticação: ${sessionData.id}`, msg);
       sessionData.status = 'auth_failure';
 
       await this.db.updateSessionStatus(sessionData.id, 'auth_failure');
@@ -121,7 +125,7 @@ class SessionManager {
     });
 
     client.on('disconnected', async (reason) => {
-      console.log(`Desconectado: ${sessionData.id}`, reason);
+      console.log(`🔴 Desconectado: ${sessionData.id}`, reason);
       sessionData.status = 'disconnected';
 
       await this.db.updateSessionStatus(sessionData.id, 'disconnected');
@@ -343,15 +347,25 @@ class SessionManager {
   async sendMessage(sessionId, to, message) {
     const session = this.getSession(sessionId);
     if (!session || !session.client) {
+      console.error(`❌ Erro ao enviar mensagem: Sessão ${sessionId} não encontrada na memória`);
       throw new Error('Sessão não encontrada ou não conectada');
     }
 
-    if (session.status !== 'connected') {
-      throw new Error('Cliente não está conectado');
+    console.log(`📤 Tentando enviar mensagem na sessão ${sessionId}`);
+    console.log(`   Status atual: ${session.status}`);
+    console.log(`   Cliente existe: ${!!session.client}`);
+
+    if (session.status !== 'connected' && session.status !== 'authenticated') {
+      console.error(`❌ Erro: Status inválido para envio. Status atual: ${session.status}`);
+      throw new Error(`Cliente não está conectado. Status atual: ${session.status}`);
     }
 
     const chatId = to.includes('@c.us') ? to : `${to}@c.us`;
+    console.log(`📞 Enviando para: ${chatId}`);
+
     const result = await session.client.sendMessage(chatId, message);
+
+    console.log(`✅ Mensagem enviada com sucesso! ID: ${result.id._serialized}`);
 
     return {
       success: true,
@@ -366,8 +380,8 @@ class SessionManager {
       throw new Error('Sessão não encontrada ou não conectada');
     }
 
-    if (session.status !== 'connected') {
-      throw new Error('Cliente não está conectado');
+    if (session.status !== 'connected' && session.status !== 'authenticated') {
+      throw new Error(`Cliente não está conectado. Status atual: ${session.status}`);
     }
 
     const { MessageMedia } = require('whatsapp-web.js');
