@@ -17,10 +17,20 @@ class SessionManager {
   }
 
   async createSession(sessionId, userId) {
+    console.log(`🆕 Tentando criar sessão: ${sessionId}`);
+
     if (this.sessions.has(sessionId)) {
-      throw new Error('Sessão já existe');
+      console.log(`⚠️ Sessão ${sessionId} já existe na memória`);
+      throw new Error('Sessão já existe na memória');
     }
 
+    const existingSession = await this.db.getSession(sessionId);
+    if (existingSession) {
+      console.log(`⚠️ Sessão ${sessionId} já existe no banco`);
+      throw new Error('Sessão já existe no banco de dados');
+    }
+
+    console.log(`💾 Criando sessão ${sessionId} no banco de dados...`);
     await this.db.createSession(sessionId, userId);
 
     const sessionData = {
@@ -32,6 +42,7 @@ class SessionManager {
       info: null
     };
 
+    console.log(`🤖 Inicializando cliente WhatsApp para sessão ${sessionId}...`);
     const client = new Client({
       authStrategy: new LocalAuth({
         clientId: sessionId,
@@ -56,7 +67,31 @@ class SessionManager {
     sessionData.client = client;
     this.sessions.set(sessionId, sessionData);
 
-    await client.initialize();
+    console.log(`⏳ Aguardando inicialização do cliente ${sessionId}...`);
+
+    const initPromise = client.initialize();
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Timeout na inicialização')), 60000)
+    );
+
+    try {
+      await Promise.race([initPromise, timeoutPromise]);
+      console.log(`✅ Cliente ${sessionId} inicializado com sucesso`);
+    } catch (error) {
+      console.error(`❌ Erro ao inicializar cliente ${sessionId}:`, error.message);
+
+      if (sessionData.client) {
+        try {
+          await sessionData.client.destroy();
+        } catch (e) {
+          console.error(`⚠️ Erro ao destruir cliente ${sessionId}:`, e.message);
+        }
+      }
+
+      this.sessions.delete(sessionId);
+      await this.db.deleteSession(sessionId);
+      throw error;
+    }
 
     return sessionData;
   }
@@ -286,10 +321,18 @@ class SessionManager {
       console.log('🔄 Restaurando sessões do banco de dados...');
       const dbSessions = await this.db.getSessionsByUserId(userId);
 
+      let restoredCount = 0;
+      let removedCount = 0;
+
       for (const dbSession of dbSessions) {
         const sessionPath = path.join(this.sessionDir, `session-${dbSession.id}`);
 
-        if (fs.existsSync(sessionPath) && !this.sessions.has(dbSession.id)) {
+        if (this.sessions.has(dbSession.id)) {
+          console.log(`⏭️ Sessão ${dbSession.id} já está na memória, pulando...`);
+          continue;
+        }
+
+        if (fs.existsSync(sessionPath)) {
           console.log(`📱 Restaurando sessão: ${dbSession.id}`);
 
           try {
@@ -299,7 +342,11 @@ class SessionManager {
               qrCode: null,
               status: 'initializing',
               client: null,
-              info: null
+              info: dbSession.phone_number ? {
+                wid: dbSession.phone_number,
+                pushname: dbSession.phone_name || 'Desconhecido',
+                platform: 'unknown'
+              } : null
             };
 
             const client = new Client({
@@ -325,20 +372,31 @@ class SessionManager {
             sessionData.client = client;
             this.sessions.set(dbSession.id, sessionData);
 
-            client.initialize().catch(err => {
-              console.error(`❌ Erro ao restaurar sessão ${dbSession.id}:`, err.message);
-              this.sessions.delete(dbSession.id);
-            });
+            const initPromise = client.initialize();
+            const timeoutPromise = new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('Timeout na restauração')), 45000)
+            );
+
+            await Promise.race([initPromise, timeoutPromise]);
+            restoredCount++;
+            console.log(`✅ Sessão ${dbSession.id} restaurada com sucesso`);
           } catch (error) {
             console.error(`❌ Erro ao restaurar sessão ${dbSession.id}:`, error.message);
+            this.sessions.delete(dbSession.id);
+
+            if (error.message.includes('Timeout')) {
+              console.log(`⏱️ Timeout ao restaurar ${dbSession.id}, mas sessão pode conectar depois`);
+            }
           }
-        } else if (!fs.existsSync(sessionPath)) {
+        } else {
           console.log(`🗑️ Removendo sessão órfã do banco: ${dbSession.id}`);
           await this.db.deleteSession(dbSession.id);
+          removedCount++;
         }
       }
 
-      console.log(`✅ Restauração concluída. ${this.sessions.size} sessões ativas.`);
+      console.log(`✅ Restauração concluída. ${restoredCount} sessões restauradas, ${removedCount} órfãs removidas.`);
+      console.log(`📊 Total de sessões ativas: ${this.sessions.size}`);
     } catch (error) {
       console.error('❌ Erro ao restaurar sessões:', error);
     }

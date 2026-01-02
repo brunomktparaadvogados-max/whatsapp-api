@@ -635,21 +635,33 @@ async function initializeDefaultSession() {
       return;
     }
 
-    console.log('🔄 Restaurando sessões existentes...');
+    console.log('🔄 Restaurando sessões existentes do banco...');
     await sessionManager.restoreSessionsFromDatabase(adminUser.id);
 
-    const existingSession = await db.getSession(defaultSessionId);
+    const existingSession = sessionManager.getSession(defaultSessionId);
+    const dbSession = await db.getSession(defaultSessionId);
 
-    if (!existingSession) {
+    if (existingSession) {
+      console.log('✅ Sessão padrão "WhatsApp" já está ativa na memória');
+      console.log(`   Status: ${existingSession.status}`);
+      return;
+    }
+
+    if (!dbSession) {
       console.log('📱 Criando sessão padrão "WhatsApp"...');
-      await sessionManager.createSession(defaultSessionId, adminUser.id);
-      console.log('✅ Sessão padrão "WhatsApp" criada com sucesso!');
-      console.log(`🔗 Acesse http://${HOST}:${PORT} para escanear o QR Code`);
+      try {
+        await sessionManager.createSession(defaultSessionId, adminUser.id);
+        console.log('✅ Sessão padrão "WhatsApp" criada com sucesso!');
+        console.log(`🔗 Acesse http://${HOST}:${PORT} para escanear o QR Code`);
+      } catch (error) {
+        console.error('❌ Erro ao criar sessão padrão:', error.message);
+      }
     } else {
-      console.log('✅ Sessão padrão "WhatsApp" já existe no banco');
+      console.log('⚠️ Sessão "WhatsApp" existe no banco mas não foi restaurada');
+      console.log('   Isso pode indicar que os arquivos de autenticação foram perdidos');
     }
   } catch (error) {
-    console.error('❌ Erro ao inicializar sessões:', error.message);
+    console.error('❌ Erro ao inicializar sessão padrão:', error);
   }
 }
 
