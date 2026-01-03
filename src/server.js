@@ -71,10 +71,24 @@ app.post('/api/auth/register', async (req, res) => {
     const userId = await db.createUser(email, password, name, company);
     const token = generateToken(userId);
 
+    const sessionId = `user_${userId}`;
+
+    setImmediate(async () => {
+      try {
+        console.log(`🔄 Criando sessão automática para usuário ${userId}...`);
+        await sessionManager.createSession(sessionId, userId);
+        console.log(`✅ Sessão ${sessionId} criada com sucesso`);
+      } catch (error) {
+        console.error(`❌ Erro ao criar sessão automática para usuário ${userId}:`, error.message);
+      }
+    });
+
     res.json({
       success: true,
       token,
-      user: { id: userId, email, name, company }
+      user: { id: userId, email, name, company },
+      sessionId: sessionId,
+      message: 'Usuário criado! Sua sessão WhatsApp está sendo inicializada em background.'
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -100,6 +114,25 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const token = generateToken(user.id);
+    const sessionId = `user_${user.id}`;
+
+    const existingSession = sessionManager.getSession(sessionId);
+    let sessionStatus = 'not_found';
+
+    if (existingSession) {
+      sessionStatus = existingSession.status;
+    } else {
+      setImmediate(async () => {
+        try {
+          console.log(`🔄 Criando sessão automática para usuário ${user.id} no login...`);
+          await sessionManager.createSession(sessionId, user.id);
+          console.log(`✅ Sessão ${sessionId} criada com sucesso`);
+        } catch (error) {
+          console.error(`❌ Erro ao criar sessão automática:`, error.message);
+        }
+      });
+      sessionStatus = 'initializing';
+    }
 
     res.json({
       success: true,
@@ -109,7 +142,9 @@ app.post('/api/auth/login', async (req, res) => {
         email: user.email,
         name: user.name,
         company: user.company
-      }
+      },
+      sessionId: sessionId,
+      sessionStatus: sessionStatus
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -123,7 +158,29 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Usuário não encontrado' });
     }
 
-    res.json({ success: true, user });
+    const sessionId = `user_${req.userId}`;
+    const session = sessionManager.getSession(sessionId);
+
+    let sessionInfo = {
+      sessionId: sessionId,
+      status: 'not_created',
+      qrCode: null
+    };
+
+    if (session) {
+      sessionInfo = {
+        sessionId: session.id,
+        status: session.status,
+        qrCode: session.qrCode,
+        info: session.info
+      };
+    }
+
+    res.json({
+      success: true,
+      user,
+      session: sessionInfo
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -165,21 +222,93 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-app.post('/api/sessions', authMiddleware, async (req, res) => {
+app.get('/api/my-session', authMiddleware, async (req, res) => {
   try {
-    const { sessionId } = req.body;
-
-    if (!sessionId) {
-      return res.status(400).json({ error: 'sessionId é obrigatório' });
+    const sessionId = `user_${req.userId}`;
+    const session = sessionManager.getSession(sessionId);
+    
+    if (!session) {
+      return res.status(404).json({ 
+        error: 'Sessão não encontrada',
+        message: 'Sua sessão ainda não foi criada. Faça login novamente ou aguarde a inicialização.'
+      });
     }
-
-    const session = await sessionManager.createSession(sessionId, req.userId);
 
     res.json({
       success: true,
       sessionId: session.id,
       status: session.status,
-      message: 'Sessão criada com sucesso. Aguarde o QR Code.'
+      qrCode: session.qrCode,
+      info: session.info
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/my-qr', authMiddleware, async (req, res) => {
+  try {
+    const sessionId = `user_${req.userId}`;
+    const session = sessionManager.getSession(sessionId);
+    
+    if (!session) {
+      return res.status(404).json({ 
+        error: 'Sessão não encontrada',
+        message: 'Sua sessão ainda não foi criada. Aguarde alguns minutos após o login.'
+      });
+    }
+
+    if (!session.qrCode) {
+      return res.json({
+        success: true,
+        qrCode: null,
+        status: session.status,
+        message: session.status === 'connected' 
+          ? 'WhatsApp já está conectado!' 
+          : 'QR Code ainda não disponível. Aguarde...'
+      });
+    }
+
+    res.json({
+      success: true,
+      qrCode: session.qrCode,
+      status: session.status
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+app.post('/api/sessions', authMiddleware, async (req, res) => {
+  try {
+    const sessionId = `user_${req.userId}`;
+
+    const existingSession = sessionManager.getSession(sessionId);
+    if (existingSession) {
+      return res.json({
+        success: true,
+        sessionId: existingSession.id,
+        status: existingSession.status,
+        message: 'Você já possui uma sessão ativa.'
+      });
+    }
+
+    setImmediate(async () => {
+      try {
+        console.log(`🔄 Criando sessão para usuário ${req.userId}...`);
+        await sessionManager.createSession(sessionId, req.userId);
+        console.log(`✅ Sessão ${sessionId} criada`);
+      } catch (error) {
+        console.error(`❌ Erro ao criar sessão:`, error.message);
+      }
+    });
+
+    res.json({
+      success: true,
+      sessionId: sessionId,
+      status: 'initializing',
+      message: 'Sessão sendo criada em background. Aguarde alguns minutos e verifique o QR Code.'
     });
   } catch (error) {
     res.status(400).json({ error: error.message });

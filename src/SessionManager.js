@@ -136,7 +136,7 @@ class SessionManager {
           '--no-pings'
         ],
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_BIN || undefined,
-        timeout: 60000
+        timeout: 180000
       }
     };
 
@@ -192,7 +192,7 @@ class SessionManager {
 
     const initPromise = client.initialize();
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Timeout na inicialização')), 120000)
+      setTimeout(() => reject(new Error('Timeout na inicialização')), 300000)
     );
 
     try {
