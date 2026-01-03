@@ -102,6 +102,17 @@ class SessionManager {
   }
 
   async createWhatsAppClient(sessionId) {
+    console.log(`🔧 Criando cliente WhatsApp para sessão ${sessionId}...`);
+
+    const execPath = process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_BIN || '/usr/bin/chromium-browser';
+    console.log(`🔍 Puppeteer executable path: ${execPath}`);
+
+    if (!fs.existsSync(execPath)) {
+      console.error(`❌ Chromium não encontrado em: ${execPath}`);
+      throw new Error(`Chromium não encontrado em: ${execPath}`);
+    }
+    console.log(`✅ Chromium encontrado em: ${execPath}`);
+
     const clientConfig = {
       puppeteer: {
         headless: true,
@@ -135,12 +146,17 @@ class SessionManager {
           '--no-default-browser-check',
           '--no-pings'
         ],
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_BIN || '/usr/bin/chromium-browser',
+        executablePath: execPath,
         timeout: 60000
       }
     };
 
-    console.log(`🔍 Puppeteer executable path: ${clientConfig.puppeteer.executablePath || 'default'}`);
+    console.log(`📋 Configuração do Puppeteer:`, JSON.stringify({
+      headless: clientConfig.puppeteer.headless,
+      executablePath: clientConfig.puppeteer.executablePath,
+      timeout: clientConfig.puppeteer.timeout,
+      argsCount: clientConfig.puppeteer.args.length
+    }, null, 2));
 
     if (this.isMongoConnected && this.mongoStore) {
       clientConfig.authStrategy = new RemoteAuth({
@@ -153,6 +169,7 @@ class SessionManager {
       console.warn(`⚠️ MongoDB não disponível. Sessão ${sessionId} não persistirá após restart`);
     }
 
+    console.log(`✅ Cliente WhatsApp criado com sucesso para sessão ${sessionId}`);
     return new Client(clientConfig);
   }
 
@@ -233,6 +250,17 @@ class SessionManager {
   }
 
   setupClientEvents(client, sessionData) {
+    client.on('loading_screen', (percent, message) => {
+      console.log(`⏳ [${sessionData.id}] Loading: ${percent}% - ${message}`);
+      sessionData.lastSeen = Date.now();
+
+      this.io.to(`user_${sessionData.userId}`).emit('loading_screen', {
+        sessionId: sessionData.id,
+        percent,
+        message
+      });
+    });
+
     client.on('qr', async (qr) => {
       console.log(`📱 QR Code gerado para sessão: ${sessionData.id}`);
       sessionData.qrCode = await QRCode.toDataURL(qr);
