@@ -1,62 +1,53 @@
-# Script para aguardar o deploy do Render
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  AGUARDANDO DEPLOY NO RENDER" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
 
 $API_URL = "https://web-service-gxip.onrender.com"
-
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  AGUARDANDO DEPLOY DO RENDER" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
-
-Write-Host "Verificando se o servidor esta respondendo..." -ForegroundColor Yellow
-Write-Host "Pressione Ctrl+C para parar" -ForegroundColor Gray
-Write-Host ""
-
+$maxAttempts = 30
 $attempt = 0
-$maxAttempts = 60
-$lastStatus = ""
+
+Write-Host "Verificando se o deploy foi concluido..." -ForegroundColor Yellow
+Write-Host "Isso pode levar de 3-5 minutos..." -ForegroundColor Yellow
+Write-Host ""
 
 while ($attempt -lt $maxAttempts) {
     $attempt++
-    $timestamp = Get-Date -Format "HH:mm:ss"
+    Write-Host "[$attempt/$maxAttempts] Testando API..." -NoNewline
     
     try {
-        $response = Invoke-RestMethod -Uri "$API_URL/api/health" -Method Get -TimeoutSec 10 -ErrorAction Stop
+        $response = Invoke-RestMethod -Uri "$API_URL/api/health" -Method Get -TimeoutSec 5 -ErrorAction Stop
+        Write-Host " OK!" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host "  DEPLOY CONCLUIDO!" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "Testando endpoint de debug do Chromium..." -ForegroundColor Yellow
         
-        if ($response.status -eq "ok") {
-            Write-Host "[$timestamp] Servidor ONLINE!" -ForegroundColor Green
+        try {
+            $debugResponse = Invoke-RestMethod -Uri "$API_URL/api/debug/chromium" -Method Get -ErrorAction Stop
             Write-Host ""
-            Write-Host "========================================" -ForegroundColor Green
-            Write-Host "  DEPLOY CONCLUIDO!" -ForegroundColor Green
-            Write-Host "========================================" -ForegroundColor Green
+            Write-Host "Chromium Path: $($debugResponse.chromiumPath)" -ForegroundColor Cyan
+            Write-Host "Chromium Exists: $($debugResponse.chromiumExists)" -ForegroundColor Cyan
+            Write-Host "Chromium Version: $($debugResponse.chromiumVersion)" -ForegroundColor Cyan
             Write-Host ""
-            Write-Host "MongoDB: $($response.mongodb)" -ForegroundColor Cyan
-            Write-Host "Sessoes ativas: $($response.sessions)" -ForegroundColor Cyan
-            Write-Host ""
-            Write-Host "Agora voce pode criar uma sessao!" -ForegroundColor Yellow
-            Write-Host "Execute: .\verificar-logs.ps1" -ForegroundColor White
-            break
+        } catch {
+            Write-Host "Erro ao testar debug: $($_.Exception.Message)" -ForegroundColor Red
         }
-    } catch {
-        $currentStatus = "OFFLINE"
         
-        if ($currentStatus -ne $lastStatus) {
-            Write-Host "[$timestamp] Servidor offline (aguardando deploy...)" -ForegroundColor Yellow
-            $lastStatus = $currentStatus
-        } else {
-            Write-Host "[$timestamp] ..." -ForegroundColor Gray
-        }
+        Write-Host "Agora execute: .\forcar-nova-sessao.ps1" -ForegroundColor Yellow
+        exit 0
     }
-    
-    if ($attempt -lt $maxAttempts) {
+    catch {
+        Write-Host " Aguardando..." -ForegroundColor Yellow
         Start-Sleep -Seconds 10
     }
 }
 
-if ($attempt -eq $maxAttempts) {
-    Write-Host ""
-    Write-Host "Timeout atingido apos $($maxAttempts * 10) segundos" -ForegroundColor Red
-    Write-Host "O deploy pode estar demorando mais que o esperado." -ForegroundColor Yellow
-    Write-Host "Verifique manualmente em: https://dashboard.render.com" -ForegroundColor White
-}
-
 Write-Host ""
+Write-Host "========================================" -ForegroundColor Red
+Write-Host "  TIMEOUT - Deploy demorou muito" -ForegroundColor Red
+Write-Host "========================================" -ForegroundColor Red
+Write-Host ""
+Write-Host "Verifique o status no Render Dashboard" -ForegroundColor Yellow

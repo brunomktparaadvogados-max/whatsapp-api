@@ -136,7 +136,7 @@ class SessionManager {
           '--no-pings'
         ],
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_BIN || undefined,
-        timeout: 0
+        timeout: 60000
       }
     };
 
@@ -201,17 +201,27 @@ class SessionManager {
   async initializeClientInBackground(client, sessionData) {
     try {
       console.log(`🚀 Inicializando cliente ${sessionData.id} em background...`);
-      await client.initialize();
+      console.log(`⏱️ Timeout configurado: 90 segundos`);
+
+      const initPromise = client.initialize();
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Timeout: Chromium não inicializou em 90 segundos')), 90000)
+      );
+
+      await Promise.race([initPromise, timeoutPromise]);
+
       console.log(`✅ Cliente ${sessionData.id} inicializado com sucesso`);
       this.reconnectAttempts.delete(sessionData.id);
     } catch (error) {
       console.error(`❌ Erro ao inicializar cliente ${sessionData.id}:`, error.message);
+      console.error(`📋 Stack trace:`, error.stack);
 
       if (sessionData.client) {
         try {
           await sessionData.client.destroy();
         } catch (e) {
           console.error(`⚠️ Erro ao destruir cliente ${sessionData.id}:`, e.message);
+          console.error(`📋 Stack trace ao destruir:`, e.stack);
         }
       }
 
