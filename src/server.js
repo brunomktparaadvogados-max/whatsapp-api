@@ -844,6 +844,32 @@ cron.schedule('0 * * * *', async () => {
   }
 });
 
+app.get('/api/debug/chromium', async (req, res) => {
+  const { execSync } = require('child_process');
+  try {
+    const chromiumPath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
+    const checks = {
+      chromiumPath: chromiumPath,
+      chromiumExists: require('fs').existsSync(chromiumPath),
+      chromiumVersion: null,
+      puppeteerConfig: {
+        executablePath: chromiumPath,
+        env: process.env.NODE_ENV
+      }
+    };
+
+    try {
+      checks.chromiumVersion = execSync(`${chromiumPath} --version`).toString().trim();
+    } catch (e) {
+      checks.chromiumVersion = `Error: ${e.message}`;
+    }
+
+    res.json(checks);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 if (process.env.RENDER_EXTERNAL_URL) {
   const keepAliveUrl = `${process.env.RENDER_EXTERNAL_URL}/health`;
   console.log(`🔄 Configurando keep-alive para: ${keepAliveUrl}`);
