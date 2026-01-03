@@ -374,28 +374,6 @@ class SessionManager {
         status
       });
     });
-
-    try {
-      await Promise.race([initPromise, timeoutPromise]);
-      console.log(`✅ Cliente ${sessionId} inicializado com sucesso`);
-      this.reconnectAttempts.delete(sessionId);
-    } catch (error) {
-      console.error(`❌ Erro ao inicializar cliente ${sessionId}:`, error.message);
-
-      if (sessionData.client) {
-        try {
-          await sessionData.client.destroy();
-        } catch (e) {
-          console.error(`⚠️ Erro ao destruir cliente ${sessionId}:`, e.message);
-        }
-      }
-
-      this.sessions.delete(sessionId);
-      await this.db.deleteSession(sessionId);
-      throw error;
-    }
-
-    return sessionData;
   }
 
   setupClientEvents(client, sessionData) {
