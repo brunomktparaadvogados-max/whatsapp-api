@@ -7,6 +7,9 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
+const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
+
 const DatabaseManager = require('./database');
 const SessionManager = require('./SessionManager');
 const MetaWhatsAppAPI = require('./MetaAPI');
@@ -123,6 +126,42 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
     res.json({ success: true, user });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/health', async (req, res) => {
+  try {
+    const health = await sessionManager.healthCheck();
+    res.json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      ...health
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      message: error.message
+    });
+  }
+});
+
+app.get('/api/health', async (req, res) => {
+  try {
+    const health = await sessionManager.healthCheck();
+    res.json({
+      success: true,
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      ...health
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      status: 'unhealthy',
+      error: error.message
+    });
   }
 });
 
@@ -622,18 +661,24 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
-const HOST = process.env.HOST || '0.0.0.0';
-
 async function initializeDefaultSession() {
   try {
-    const defaultSessionId = 'WhatsApp';
+    const AUTO_CREATE_SESSION = process.env.AUTO_CREATE_SESSION === 'true';
+
+    if (!AUTO_CREATE_SESSION) {
+      console.log('⚠️ Criação automática de sessão DESATIVADA');
+      console.log('💡 Use POST /api/sessions para criar sessões sob demanda');
+      return;
+    }
+
     const adminUser = await db.getUserByEmail('admin@flow.com');
 
     if (!adminUser) {
-      console.log('⚠️ Usuário admin não encontrado. Sessão padrão não criada.');
+      console.error('❌ Usuário admin não encontrado');
       return;
     }
+
+    const defaultSessionId = 'WhatsApp';
 
     console.log('🔄 Restaurando sessões existentes do banco...');
     await sessionManager.restoreSessionsFromDatabase(adminUser.id);
@@ -642,35 +687,87 @@ async function initializeDefaultSession() {
     const dbSession = await db.getSession(defaultSessionId);
 
     if (existingSession) {
-      console.log('✅ Sessão padrão "WhatsApp" já está ativa na memória');
-      console.log(`   Status: ${existingSession.status}`);
+      console.log(`✅ Sessão padrão "${defaultSessionId}" já está ativa`);
       return;
     }
 
-    if (!dbSession) {
-      console.log('📱 Criando sessão padrão "WhatsApp"...');
-      try {
-        await sessionManager.createSession(defaultSessionId, adminUser.id);
-        console.log('✅ Sessão padrão "WhatsApp" criada com sucesso!');
-        console.log(`🔗 Acesse http://${HOST}:${PORT} para escanear o QR Code`);
-      } catch (error) {
-        console.error('❌ Erro ao criar sessão padrão:', error.message);
-      }
-    } else {
-      console.log('⚠️ Sessão "WhatsApp" existe no banco mas não foi restaurada');
-      console.log('   Isso pode indicar que os arquivos de autenticação foram perdidos');
+    if (dbSession) {
+      console.log(`📱 Sessão padrão "${defaultSessionId}" encontrada no banco, mas não está ativa`);
+      console.log('💡 Use o endpoint /api/sessions/:id/qr para reconectar');
+      return;
     }
+
+    console.log(`🆕 Criando sessão padrão: ${defaultSessionId}`);
+    await sessionManager.createSession(defaultSessionId, adminUser.id);
+    console.log(`✅ Sessão padrão "${defaultSessionId}" criada com sucesso`);
   } catch (error) {
-    console.error('❌ Erro ao inicializar sessão padrão:', error);
+    console.error('❌ Erro ao inicializar sessão padrão:', error.message);
   }
 }
 
+cron.schedule('0 * * * *', async () => {
+  console.log('🧹 Executando limpeza de sessões inativas...');
+  try {
+    const cleaned = await sessionManager.cleanupInactiveSessions();
+    console.log(`✅ ${cleaned} sessões inativas foram limpas`);
+  } catch (error) {
+    console.error('❌ Erro na limpeza de sessões:', error);
+  }
+});
+
+if (process.env.RENDER_EXTERNAL_URL) {
+  const keepAliveUrl = `${process.env.RENDER_EXTERNAL_URL}/health`;
+  console.log(`🔄 Configurando keep-alive para: ${keepAliveUrl}`);
+
+  cron.schedule('*/10 * * * *', async () => {
+    try {
+      const axios = require('axios');
+      await axios.get(keepAliveUrl, { timeout: 5000 });
+      console.log('💓 Keep-alive ping enviado');
+    } catch (error) {
+      console.error('❌ Erro no keep-alive:', error.message);
+    }
+  });
+}
+
 server.listen(PORT, HOST, async () => {
-  console.log(`🚀 WhatsApp API + CRM rodando em http://${HOST}:${PORT}`);
-  console.log(`📱 Interface web: http://${HOST}:${PORT}`);
-  console.log(`🔌 WebSocket ativo para chat em tempo real`);
-  console.log(`💚 Sistema completo com autenticação, CRM e automações`);
-  console.log(`\n👤 Login padrão: admin@flow.com / admin123`);
+  console.log(`\n🚀 ========================================`);
+  console.log(`   WhatsApp API Server v2.0`);
+  console.log(`========================================`);
+  console.log(`📡 Servidor rodando em: http://${HOST}:${PORT}`);
+  console.log(`🌍 Ambiente: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`💾 MongoDB: ${process.env.MONGODB_URI ? '✅ Configurado' : '⚠️ Não configurado'}`);
+  console.log(`========================================\n`);
 
   await initializeDefaultSession();
+
+  console.log(`\n✅ API pronta para receber requisições!`);
+  console.log(`📖 Documentação: http://${HOST}:${PORT}\n`);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('⚠️ SIGTERM recebido. Encerrando gracefully...');
+
+  const sessions = sessionManager.getAllSessions();
+  for (const session of sessions) {
+    try {
+      console.log(`🔌 Desconectando sessão: ${session.id}`);
+      await sessionManager.deleteSession(session.id);
+    } catch (error) {
+      console.error(`❌ Erro ao desconectar ${session.id}:`, error.message);
+    }
+  }
+
+  server.close(() => {
+    console.log('✅ Servidor encerrado');
+    process.exit(0);
+  });
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });

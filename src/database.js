@@ -185,6 +185,10 @@ class DatabaseManager {
     return await this.all('SELECT * FROM sessions WHERE user_id = ?', [userId]);
   }
 
+  async getAllSessionsFromDB() {
+    return await this.all('SELECT * FROM sessions');
+  }
+
   async getSession(sessionId) {
     return await this.get('SELECT * FROM sessions WHERE id = ?', [sessionId]);
   }

@@ -6,20 +6,22 @@ RUN apk add --no-cache \
     freetype \
     harfbuzz \
     ca-certificates \
-    ttf-freefont
+    ttf-freefont \
+    font-noto-emoji
 
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser \
+    NODE_ENV=production
 
 WORKDIR /app
 
 COPY package*.json ./
 
-RUN npm install --production
+RUN npm ci --only=production && npm cache clean --force
 
 COPY . .
 
-RUN mkdir -p sessions
+RUN mkdir -p data && chmod 777 data
 
 EXPOSE 3000
 
