@@ -136,9 +136,11 @@ class SessionManager {
           '--no-pings'
         ],
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_BIN || undefined,
-        timeout: 180000
+        timeout: 0
       }
     };
+
+    console.log(`🔍 Puppeteer executable path: ${clientConfig.puppeteer.executablePath || 'default'}`);
 
     if (this.isMongoConnected && this.mongoStore) {
       clientConfig.authStrategy = new RemoteAuth({
@@ -188,34 +190,36 @@ class SessionManager {
     sessionData.client = client;
     this.sessions.set(sessionId, sessionData);
 
-    console.log(`⏳ Aguardando inicialização do cliente ${sessionId}...`);
+    console.log(`⏳ Iniciando cliente ${sessionId} em background...`);
 
-    const initPromise = client.initialize();
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Timeout na inicialização')), 300000)
-    );
+    // Inicializa em background sem bloquear
+    this.initializeClientInBackground(client, sessionData);
 
+    return sessionData;
+  }
+
+  async initializeClientInBackground(client, sessionData) {
     try {
-      await Promise.race([initPromise, timeoutPromise]);
-      console.log(`✅ Cliente ${sessionId} inicializado com sucesso`);
-      this.reconnectAttempts.delete(sessionId);
+      console.log(`🚀 Inicializando cliente ${sessionData.id} em background...`);
+      await client.initialize();
+      console.log(`✅ Cliente ${sessionData.id} inicializado com sucesso`);
+      this.reconnectAttempts.delete(sessionData.id);
     } catch (error) {
-      console.error(`❌ Erro ao inicializar cliente ${sessionId}:`, error.message);
+      console.error(`❌ Erro ao inicializar cliente ${sessionData.id}:`, error.message);
 
       if (sessionData.client) {
         try {
           await sessionData.client.destroy();
         } catch (e) {
-          console.error(`⚠️ Erro ao destruir cliente ${sessionId}:`, e.message);
+          console.error(`⚠️ Erro ao destruir cliente ${sessionData.id}:`, e.message);
         }
       }
 
-      this.sessions.delete(sessionId);
-      await this.db.deleteSession(sessionId);
-      throw error;
-    }
+      this.sessions.delete(sessionData.id);
+      await this.db.updateSessionStatus(sessionData.id, 'failed');
 
-    return sessionData;
+      console.log(`💾 Sessão ${sessionData.id} marcada como 'failed' no banco`);
+    }
   }
 
   setupClientEvents(client, sessionData) {
