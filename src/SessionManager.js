@@ -135,7 +135,7 @@ class SessionManager {
           '--no-default-browser-check',
           '--no-pings'
         ],
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_BIN || undefined,
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_BIN || '/usr/bin/chromium-browser',
         timeout: 60000
       }
     };
