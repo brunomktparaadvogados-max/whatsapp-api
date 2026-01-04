@@ -225,6 +225,49 @@ app.delete('/api/users/:userId', authMiddleware, async (req, res) => {
   }
 });
 
+app.post('/api/admin/cleanup-sessions', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = await db.getUserById(req.userId);
+    if (currentUser.email !== 'admin@flow.com') {
+      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
+    }
+
+    const allSessions = await db.getAllSessionsFromDB();
+    let cleaned = 0;
+
+    for (const session of allSessions) {
+      const sessionId = session.id;
+
+      if (!sessionId || sessionId === 'T' || sessionId === 'test' || sessionId === 'default') {
+        await db.deleteSession(sessionId);
+        cleaned++;
+        continue;
+      }
+
+      if (!sessionId.startsWith('user_')) {
+        await db.deleteSession(sessionId);
+        cleaned++;
+        continue;
+      }
+
+      const userId = parseInt(sessionId.replace('user_', ''));
+      const user = await db.getUserById(userId);
+      if (!user) {
+        await db.deleteSession(sessionId);
+        cleaned++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `${cleaned} sessões inválidas removidas`,
+      cleaned
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/health', async (req, res) => {
   try {
     const health = await sessionManager.healthCheck();

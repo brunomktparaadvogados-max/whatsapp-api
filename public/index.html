@@ -400,6 +400,16 @@
             <div id="usersList" class="user-list">
                 <div class="loading">Carregando usuários...</div>
             </div>
+
+            <h3 style="color: #667eea; margin-top: 30px;">🧹 Manutenção</h3>
+            <div class="admin-section">
+                <p><strong>⚠️ Limpeza de Sessões</strong></p>
+                <p>Remove sessões inválidas ou órfãs do banco de dados (ex: sessão "T", sessões sem usuário, etc.)</p>
+            </div>
+            <button onclick="cleanupSessions()" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                🧹 Limpar Sessões Inválidas
+            </button>
+            <div id="cleanupResult" style="margin-top: 15px; display: none;"></div>
         </div>
 
         <div class="card">
@@ -1186,6 +1196,50 @@
                 }
             } catch (error) {
                 alert('❌ Erro ao deletar usuário: ' + error.message);
+            }
+        }
+
+        async function cleanupSessions() {
+            if (!confirm('Deseja realmente limpar as sessões inválidas?\n\nEsta ação não pode ser desfeita.')) {
+                return;
+            }
+
+            const resultDiv = document.getElementById('cleanupResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = '<p style="color: #667eea;"><strong>🔄 Limpando sessões...</strong></p>';
+
+            try {
+                const response = await fetch(`${API_URL}/api/admin/cleanup-sessions`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    }
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    resultDiv.innerHTML = `
+                        <div class="success-box">
+                            <h3>✅ Limpeza Concluída!</h3>
+                            <p><strong>Sessões removidas:</strong> ${data.cleaned}</p>
+                            <p>${data.message}</p>
+                        </div>
+                    `;
+                    loadAllSessions();
+                } else {
+                    resultDiv.innerHTML = `
+                        <div style="background: #f8d7da; border-left: 4px solid #721c24; padding: 15px; border-radius: 5px;">
+                            <p style="color: #721c24;"><strong>❌ Erro:</strong> ${data.error || 'Erro ao limpar sessões'}</p>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <div style="background: #f8d7da; border-left: 4px solid #721c24; padding: 15px; border-radius: 5px;">
+                        <p style="color: #721c24;"><strong>❌ Erro:</strong> ${error.message}</p>
+                    </div>
+                `;
             }
         }
     </script>

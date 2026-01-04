@@ -50,9 +50,25 @@ class SessionManager {
       console.log('🔄 Restaurando sessões do banco de dados...');
       const dbSessions = await this.db.getAllSessionsFromDB();
 
+      console.log(`📊 Total de sessões no banco: ${dbSessions.length}`);
+
       for (const session of dbSessions) {
+        const sessionId = session.id;
+
+        if (!sessionId || sessionId === 'T' || sessionId === 'test' || sessionId === 'default') {
+          console.log(`🗑️ Removendo sessão inválida: ${sessionId}`);
+          await this.db.deleteSession(sessionId);
+          continue;
+        }
+
+        if (!sessionId.startsWith('user_')) {
+          console.log(`⚠️ Sessão ${sessionId} não segue padrão user_X, removendo...`);
+          await this.db.deleteSession(sessionId);
+          continue;
+        }
+
         if (session.status === 'connected' || session.status === 'authenticated') {
-          console.log(`🔄 Tentando restaurar sessão: ${session.id}`);
+          console.log(`🔄 Tentando restaurar sessão: ${sessionId}`);
           try {
             await this.restoreSession(session.id, session.user_id);
           } catch (error) {
