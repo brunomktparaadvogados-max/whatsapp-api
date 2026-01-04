@@ -364,23 +364,45 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
 
 app.post('/api/sessions', authMiddleware, async (req, res) => {
   try {
-    const sessionId = `user_${req.userId}`;
+    const currentUser = await db.getUserById(req.userId);
+    const isAdmin = currentUser.email === 'admin@flow.com';
 
-    const existingSession = sessionManager.getSession(sessionId);
+    // Se admin enviar sessionId no body, usar esse. Senão, usar o próprio userId
+    let targetSessionId;
+    let targetUserId;
+
+    if (isAdmin && req.body.sessionId) {
+      // Admin criando sessão para outro usuário
+      targetSessionId = req.body.sessionId;
+      // Extrair userId do sessionId (formato: user_X)
+      targetUserId = parseInt(targetSessionId.replace('user_', ''));
+
+      // Verificar se o usuário existe
+      const targetUser = await db.getUserById(targetUserId);
+      if (!targetUser) {
+        return res.status(404).json({ error: 'Usuário não encontrado' });
+      }
+    } else {
+      // Usuário criando sua própria sessão
+      targetSessionId = `user_${req.userId}`;
+      targetUserId = req.userId;
+    }
+
+    const existingSession = sessionManager.getSession(targetSessionId);
     if (existingSession) {
       return res.json({
         success: true,
         sessionId: existingSession.id,
         status: existingSession.status,
-        message: 'Você já possui uma sessão ativa.'
+        message: 'Sessão já existe.'
       });
     }
 
     setImmediate(async () => {
       try {
-        console.log(`🔄 Criando sessão para usuário ${req.userId}...`);
-        await sessionManager.createSession(sessionId, req.userId);
-        console.log(`✅ Sessão ${sessionId} criada`);
+        console.log(`🔄 Criando sessão ${targetSessionId} para usuário ${targetUserId}...`);
+        await sessionManager.createSession(targetSessionId, targetUserId);
+        console.log(`✅ Sessão ${targetSessionId} criada`);
       } catch (error) {
         console.error(`❌ Erro ao criar sessão:`, error.message);
       }
@@ -388,7 +410,7 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
 
     res.json({
       success: true,
-      sessionId: sessionId,
+      sessionId: targetSessionId,
       status: 'initializing',
       message: 'Sessão sendo criada em background. Aguarde alguns minutos e verifique o QR Code.'
     });
@@ -421,8 +443,15 @@ app.get('/api/sessions/:sessionId', authMiddleware, async (req, res) => {
     const { sessionId } = req.params;
     const dbSession = await db.getSession(sessionId);
 
-    if (!dbSession || dbSession.user_id !== req.userId) {
+    if (!dbSession) {
       return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+
+    const currentUser = await db.getUserById(req.userId);
+    const isAdmin = currentUser.email === 'admin@flow.com';
+
+    if (!isAdmin && dbSession.user_id !== req.userId) {
+      return res.status(403).json({ error: 'Acesso negado' });
     }
 
     const liveSession = sessionManager.getSession(sessionId);
@@ -432,6 +461,7 @@ app.get('/api/sessions/:sessionId', authMiddleware, async (req, res) => {
       session: {
         ...dbSession,
         status: liveSession ? liveSession.status : dbSession.status,
+        qrCode: liveSession ? liveSession.qrCode : null,
         info: liveSession ? liveSession.info : null
       }
     });
@@ -445,8 +475,15 @@ app.get('/api/sessions/:sessionId/qr', authMiddleware, async (req, res) => {
     const { sessionId } = req.params;
     const dbSession = await db.getSession(sessionId);
 
-    if (!dbSession || dbSession.user_id !== req.userId) {
+    if (!dbSession) {
       return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+
+    const currentUser = await db.getUserById(req.userId);
+    const isAdmin = currentUser.email === 'admin@flow.com';
+
+    if (!isAdmin && dbSession.user_id !== req.userId) {
+      return res.status(403).json({ error: 'Acesso negado' });
     }
 
     const session = sessionManager.getSession(sessionId);
@@ -477,8 +514,15 @@ app.delete('/api/sessions/:sessionId', authMiddleware, async (req, res) => {
     const { sessionId } = req.params;
     const dbSession = await db.getSession(sessionId);
 
-    if (!dbSession || dbSession.user_id !== req.userId) {
+    if (!dbSession) {
       return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+
+    const currentUser = await db.getUserById(req.userId);
+    const isAdmin = currentUser.email === 'admin@flow.com';
+
+    if (!isAdmin && dbSession.user_id !== req.userId) {
+      return res.status(403).json({ error: 'Acesso negado' });
     }
 
     await sessionManager.deleteSession(sessionId);

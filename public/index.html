@@ -274,6 +274,61 @@
             font-size: 0.9em;
         }
 
+        .user-session-details {
+            margin-top: 15px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            border: 2px solid #667eea;
+            display: none;
+        }
+
+        .user-session-details.active {
+            display: block;
+        }
+
+        .session-qr {
+            text-align: center;
+            margin: 15px 0;
+        }
+
+        .session-qr img {
+            max-width: 250px;
+            border: 2px solid #667eea;
+            border-radius: 10px;
+            padding: 10px;
+            background: white;
+        }
+
+        .session-status-badge {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 15px;
+            font-size: 0.85em;
+            font-weight: 600;
+            margin: 5px 0;
+        }
+
+        .status-connected {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-qr {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .status-disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status-not-created {
+            background: #e2e3e5;
+            color: #383d41;
+        }
+
         .modal {
             display: none;
             position: fixed;
@@ -1107,25 +1162,241 @@
                     return;
                 }
 
-                document.getElementById('usersList').innerHTML = users.map(user => `
-                    <div class="user-item">
-                        <div class="user-details">
-                            <strong>${user.name}</strong><br>
-                            <small>📧 ${user.email}</small><br>
-                            ${user.company ? `<small>🏢 ${user.company}</small><br>` : ''}
-                            <small>📅 Criado em: ${new Date(user.created_at).toLocaleDateString('pt-BR')}</small>
-                        </div>
-                        <div class="user-actions">
-                            ${user.email !== 'admin@flow.com' ? `
-                                <button onclick="deleteUserAndSession(${user.id}, '${user.name}')" class="btn-danger">
-                                    🗑️ Deletar
+                const usersHtml = await Promise.all(users.map(async user => {
+                    const sessionId = `user_${user.id}`;
+                    let sessionInfo = null;
+
+                    try {
+                        const sessionResponse = await fetch(`${API_URL}/api/sessions/${sessionId}`, {
+                            headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` }
+                        });
+                        if (sessionResponse.ok) {
+                            const sessionData = await sessionResponse.json();
+                            sessionInfo = sessionData.session;
+                        }
+                    } catch (e) {
+                        console.log('Sessão não encontrada para', user.email);
+                    }
+
+                    const status = sessionInfo?.status || 'not_created';
+                    const statusText = getStatusText(status);
+                    const statusClass = getStatusClass(status);
+
+                    return `
+                        <div class="user-item">
+                            <div class="user-details">
+                                <strong>${user.name}</strong><br>
+                                <small>📧 ${user.email}</small><br>
+                                ${user.company ? `<small>🏢 ${user.company}</small><br>` : ''}
+                                <small>📅 Criado em: ${new Date(user.created_at).toLocaleDateString('pt-BR')}</small><br>
+                                <span class="session-status-badge ${statusClass}">
+                                    ${statusText}
+                                </span>
+                            </div>
+                            <div class="user-actions">
+                                <button onclick="toggleUserSession(${user.id})" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                                    📱 Sessão
                                 </button>
-                            ` : '<span style="color: #667eea; font-weight: 600;">👑 Admin</span>'}
+                                ${user.email !== 'admin@flow.com' ? `
+                                    <button onclick="adminCreateUserSession(${user.id}, '${user.name}')" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+                                        ➕ Criar Sessão
+                                    </button>
+                                    <button onclick="deleteUserAndSession(${user.id}, '${user.name}')" class="btn-danger">
+                                        🗑️ Deletar
+                                    </button>
+                                ` : '<span style="color: #667eea; font-weight: 600;">👑 Admin</span>'}
+                            </div>
+                            <div class="user-session-details" id="session-${user.id}">
+                                <h4 style="color: #667eea; margin-bottom: 15px;">📱 Sessão WhatsApp - ${user.name}</h4>
+                                <div id="session-content-${user.id}">
+                                    <div class="loading">Carregando...</div>
+                                </div>
+                            </div>
                         </div>
-                    </div>
-                `).join('');
+                    `;
+                }));
+
+                document.getElementById('usersList').innerHTML = usersHtml.join('');
             } catch (error) {
                 document.getElementById('usersList').innerHTML = `<p>❌ Erro: ${error.message}</p>`;
+            }
+        }
+
+        function getStatusClass(status) {
+            switch(status) {
+                case 'connected':
+                case 'authenticated':
+                    return 'status-connected';
+                case 'qr_code':
+                case 'initializing':
+                    return 'status-qr';
+                case 'disconnected':
+                    return 'status-disconnected';
+                default:
+                    return 'status-not-created';
+            }
+        }
+
+        async function toggleUserSession(userId) {
+            const sessionDiv = document.getElementById(`session-${userId}`);
+            const contentDiv = document.getElementById(`session-content-${userId}`);
+
+            if (sessionDiv.classList.contains('active')) {
+                sessionDiv.classList.remove('active');
+                return;
+            }
+
+            sessionDiv.classList.add('active');
+            contentDiv.innerHTML = '<div class="loading">Carregando sessão...</div>';
+
+            try {
+                const sessionId = `user_${userId}`;
+                const response = await fetch(`${API_URL}/api/sessions/${sessionId}`, {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` }
+                });
+
+                if (response.status === 404) {
+                    contentDiv.innerHTML = `
+                        <p>Esta sessão ainda não foi criada.</p>
+                        <button onclick="createUserSession(${userId})" style="margin-top: 10px;">
+                            📱 Criar Sessão WhatsApp
+                        </button>
+                    `;
+                    return;
+                }
+
+                const data = await response.json();
+                const session = data.session;
+
+                if (session.status === 'qr_code' || session.status === 'initializing') {
+                    contentDiv.innerHTML = `
+                        <p><strong>Status:</strong> ${getStatusText(session.status)}</p>
+                        <p>Escaneie o QR Code abaixo com o WhatsApp do usuário:</p>
+                        <div class="session-qr">
+                            ${session.qrCode ? `<img src="${session.qrCode}" alt="QR Code">` : '<div class="loading">Gerando QR Code...</div>'}
+                        </div>
+                        <button onclick="refreshUserSession(${userId})">🔄 Atualizar</button>
+                        <button onclick="disconnectUserSession('${sessionId}')" class="btn-danger" style="margin-left: 10px;">
+                            🔌 Desconectar
+                        </button>
+                    `;
+
+                    if (!session.qrCode) {
+                        setTimeout(() => refreshUserSession(userId), 2000);
+                    }
+                } else if (session.status === 'connected' || session.status === 'authenticated') {
+                    contentDiv.innerHTML = `
+                        <div class="success-box">
+                            <h4>✅ WhatsApp Conectado!</h4>
+                            ${session.info ? `
+                                <p><strong>Telefone:</strong> ${session.info.wid?.user || 'N/A'}</p>
+                                <p><strong>Nome:</strong> ${session.info.pushname || 'N/A'}</p>
+                            ` : ''}
+                        </div>
+                        <button onclick="disconnectUserSession('${sessionId}')" class="btn-danger" style="margin-top: 10px;">
+                            🔌 Desconectar WhatsApp
+                        </button>
+                    `;
+                } else {
+                    contentDiv.innerHTML = `
+                        <p><strong>Status:</strong> ${getStatusText(session.status)}</p>
+                        <button onclick="createUserSession(${userId})" style="margin-top: 10px;">
+                            📱 Criar Nova Sessão
+                        </button>
+                    `;
+                }
+            } catch (error) {
+                contentDiv.innerHTML = `<p>❌ Erro: ${error.message}</p>`;
+            }
+        }
+
+        async function createUserSession(userId) {
+            const contentDiv = document.getElementById(`session-content-${userId}`);
+            contentDiv.innerHTML = '<div class="loading">Criando sessão...</div>';
+
+            try {
+                const sessionId = `user_${userId}`;
+                const response = await fetch(`${API_URL}/api/sessions`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    },
+                    body: JSON.stringify({ sessionId })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('✅ Sessão criada! Aguarde o QR Code...');
+                    setTimeout(() => refreshUserSession(userId), 2000);
+                } else {
+                    alert('❌ Erro: ' + (data.error || 'Erro ao criar sessão'));
+                    contentDiv.innerHTML = `<p>❌ ${data.error}</p>`;
+                }
+            } catch (error) {
+                alert('❌ Erro: ' + error.message);
+                contentDiv.innerHTML = `<p>❌ ${error.message}</p>`;
+            }
+        }
+
+        async function adminCreateUserSession(userId, userName) {
+            if (!confirm(`Criar sessão WhatsApp para ${userName}?`)) {
+                return;
+            }
+
+            try {
+                const sessionId = `user_${userId}`;
+                const response = await fetch(`${API_URL}/api/sessions`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    },
+                    body: JSON.stringify({ sessionId })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    alert(`✅ Sessão criada para ${userName}!\n\nAguarde alguns segundos e clique em "📱 Sessão" para ver o QR Code.`);
+                    await loadAllUsers();
+                } else {
+                    alert('❌ Erro: ' + (data.error || 'Erro ao criar sessão'));
+                }
+            } catch (error) {
+                alert('❌ Erro: ' + error.message);
+            }
+        }
+
+        async function refreshUserSession(userId) {
+            await toggleUserSession(userId);
+            const sessionDiv = document.getElementById(`session-${userId}`);
+            sessionDiv.classList.add('active');
+            await toggleUserSession(userId);
+        }
+
+        async function disconnectUserSession(sessionId) {
+            if (!confirm('Deseja realmente desconectar esta sessão WhatsApp?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/sessions/${sessionId}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` }
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('✅ Sessão desconectada com sucesso!');
+                    loadAllUsers();
+                } else {
+                    alert('❌ Erro: ' + (data.error || 'Erro ao desconectar'));
+                }
+            } catch (error) {
+                alert('❌ Erro: ' + error.message);
             }
         }
 
