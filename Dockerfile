@@ -1,18 +1,34 @@
-FROM node:18-alpine
+FROM node:18-bullseye-slim
 
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y \
     chromium \
-    nss \
-    freetype \
-    harfbuzz \
+    chromium-sandbox \
+    fonts-liberation \
+    libappindicator3-1 \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libgdk-pixbuf2.0-0 \
+    libnspr4 \
+    libnss3 \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    xdg-utils \
+    libgbm1 \
+    libxshmfence1 \
     ca-certificates \
-    ttf-freefont \
-    font-noto-emoji
+    fonts-noto-color-emoji \
+    --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
     NODE_ENV=production \
-    NODE_OPTIONS="--max-old-space-size=460"
+    NODE_OPTIONS="--max-old-space-size=2048"
 
 WORKDIR /app
 
