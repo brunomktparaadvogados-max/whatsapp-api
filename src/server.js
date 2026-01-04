@@ -587,21 +587,39 @@ app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) =>
     let { sessionId } = req.params;
     const { to, message } = req.body;
 
+    console.log(`📤 [SEND MESSAGE] Requisição recebida:`);
+    console.log(`   - User ID: ${req.userId}`);
+    console.log(`   - Session ID param: ${sessionId}`);
+    console.log(`   - To: ${to}`);
+
     // Auto-detectar sessão se não for informada ou for 'auto'
     if (!sessionId || sessionId === 'auto') {
+      console.log(`🔍 [SEND MESSAGE] Auto-detectando sessão para user ${req.userId}...`);
       const userSessions = await db.getSessionsByUserId(req.userId);
-      const activeSessions = userSessions.filter(s => {
-        const session = sessionManager.getSession(s.id);
-        return session && session.status === 'connected';
+      console.log(`   - Sessões encontradas: ${userSessions.length}`);
+      userSessions.forEach(s => {
+        console.log(`     * ${s.id} - Status DB: ${s.status}`);
       });
 
+      const activeSessions = userSessions.filter(s => {
+        const session = sessionManager.getSession(s.id);
+        const isActive = session && session.status === 'connected';
+        console.log(`     * ${s.id} - Em memória: ${!!session} - Status: ${session?.status || 'N/A'} - Ativa: ${isActive}`);
+        return isActive;
+      });
+
+      console.log(`   - Sessões ativas: ${activeSessions.length}`);
+
       if (activeSessions.length === 0) {
+        console.log(`❌ [SEND MESSAGE] Nenhuma sessão conectada encontrada`);
         return res.status(404).json({ error: 'Nenhuma sessão conectada encontrada' });
       }
 
       if (activeSessions.length === 1) {
         sessionId = activeSessions[0].id;
+        console.log(`✅ [SEND MESSAGE] Sessão auto-detectada: ${sessionId}`);
       } else {
+        console.log(`⚠️ [SEND MESSAGE] Múltiplas sessões conectadas`);
         return res.status(400).json({
           error: 'Múltiplas sessões conectadas. Especifique qual usar.',
           sessions: activeSessions.map(s => s.id)
@@ -609,9 +627,29 @@ app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) =>
       }
     }
 
+    console.log(`🔍 [SEND MESSAGE] Verificando sessão ${sessionId} no banco...`);
     const dbSession = await db.getSession(sessionId);
-    if (!dbSession || dbSession.user_id !== req.userId) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
+
+    if (!dbSession) {
+      console.log(`❌ [SEND MESSAGE] Sessão ${sessionId} não encontrada no banco`);
+      return res.status(404).json({ error: 'Sessão não encontrada no banco de dados' });
+    }
+
+    console.log(`   - Sessão encontrada no banco:`);
+    console.log(`     * ID: ${dbSession.id}`);
+    console.log(`     * User ID: ${dbSession.user_id}`);
+    console.log(`     * Status: ${dbSession.status}`);
+    console.log(`     * Req User ID: ${req.userId}`);
+
+    if (dbSession.user_id !== req.userId) {
+      console.log(`❌ [SEND MESSAGE] Sessão pertence ao usuário ${dbSession.user_id}, mas requisição é do usuário ${req.userId}`);
+      return res.status(403).json({
+        error: 'Você não tem permissão para usar esta sessão',
+        details: {
+          sessionUserId: dbSession.user_id,
+          requestUserId: req.userId
+        }
+      });
     }
 
     if (!to || !message) {
@@ -620,10 +658,12 @@ app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) =>
       });
     }
 
+    console.log(`✅ [SEND MESSAGE] Enviando mensagem via SessionManager...`);
     const result = await sessionManager.sendMessage(sessionId, to, message);
+    console.log(`✅ [SEND MESSAGE] Mensagem enviada com sucesso!`);
     res.json(result);
   } catch (error) {
-    console.error(`Erro ao enviar mensagem:`, error);
+    console.error(`❌ [SEND MESSAGE] Erro ao enviar mensagem:`, error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -1036,6 +1076,45 @@ app.get('/api/debug/chromium', async (req, res) => {
 
     res.json(checks);
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint de debug para verificar sessões (apenas admin)
+app.get('/api/debug/sessions', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = await db.getUserById(req.userId);
+    if (currentUser.email !== 'admin@flow.com') {
+      return res.status(403).json({ error: 'Acesso negado' });
+    }
+
+    const allSessionsDB = await db.all('SELECT * FROM sessions');
+    const allSessionsMemory = sessionManager.getAllSessions();
+
+    const debug = {
+      database: allSessionsDB.map(s => ({
+        id: s.id,
+        user_id: s.user_id,
+        status: s.status,
+        phone_number: s.phone_number,
+        phone_name: s.phone_name,
+        created_at: s.created_at,
+        updated_at: s.updated_at
+      })),
+      memory: allSessionsMemory.map(s => ({
+        id: s.id,
+        userId: s.userId,
+        status: s.status,
+        hasClient: !!s.client,
+        phoneNumber: s.info?.wid?.user || null,
+        phoneName: s.info?.pushname || null
+      })),
+      users: await db.all('SELECT id, name, email FROM users')
+    };
+
+    res.json(debug);
+  } catch (error) {
+    console.error('Erro no debug:', error);
     res.status(500).json({ error: error.message });
   }
 });
