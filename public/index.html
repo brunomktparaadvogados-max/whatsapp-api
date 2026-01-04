@@ -292,20 +292,21 @@
         <div class="card">
             <h2>📤 Enviar Mensagem</h2>
             <div class="form-group">
-                <label for="sendSessionId">ID da Sessão:</label>
-                <input type="text" id="sendSessionId" placeholder="minha-sessao-1">
+                <label for="sendSessionId">ID da Sessão (opcional):</label>
+                <input type="text" id="sendSessionId" placeholder="Deixe vazio para auto-detectar">
+                <small style="color: #666; display: block; margin-top: 5px;">💡 Se você tiver apenas 1 sessão conectada, não precisa preencher</small>
             </div>
-            
+
             <div class="form-group">
                 <label for="sendTo">Número (com DDI):</label>
                 <input type="text" id="sendTo" placeholder="5511999999999">
             </div>
-            
+
             <div class="form-group">
                 <label for="sendMessage">Mensagem:</label>
                 <textarea id="sendMessage" rows="4" placeholder="Digite sua mensagem..."></textarea>
             </div>
-            
+
             <button onclick="sendMessage()">Enviar Mensagem</button>
         </div>
 
@@ -388,6 +389,7 @@
                 <p><strong>POST</strong> <code>/api/sessions</code> - Criar sessão</p>
                 <p><strong>GET</strong> <code>/api/sessions</code> - Listar sessões</p>
                 <p><strong>GET</strong> <code>/api/sessions/:id/qr</code> - Obter QR Code</p>
+                <p><strong>POST</strong> <code>/api/messages/send</code> - 🆕 Enviar mensagem (auto-detecta sessão)</p>
                 <p><strong>POST</strong> <code>/api/sessions/:id/messages</code> - Enviar mensagem</p>
                 <p><strong>POST</strong> <code>/api/sessions/:id/messages/media</code> - Enviar mídia</p>
                 <p><strong>GET</strong> <code>/api/sessions/:id/chats</code> - Listar conversas</p>
@@ -581,31 +583,36 @@
             const to = document.getElementById('sendTo').value;
             const message = document.getElementById('sendMessage').value;
 
-            if (!sessionId || !to || !message) {
-                alert('Por favor, preencha todos os campos');
+            if (!to || !message) {
+                alert('Por favor, preencha o número e a mensagem');
                 return;
             }
 
             try {
-                const response = await fetch(`${API_URL}/api/sessions/${sessionId}/messages`, {
+                // Usar o novo endpoint simplificado
+                const response = await fetch(`${API_URL}/api/messages/send`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                     },
-                    body: JSON.stringify({ to, message })
+                    body: JSON.stringify({
+                        to,
+                        message,
+                        ...(sessionId && { sessionId }) // Incluir sessionId apenas se preenchido
+                    })
                 });
 
                 const data = await response.json();
 
                 if (data.success) {
-                    alert('Mensagem enviada com sucesso!');
+                    alert('✅ Mensagem enviada com sucesso!' + (data.sessionId ? `\nSessão usada: ${data.sessionId}` : ''));
                     document.getElementById('sendMessage').value = '';
                 } else {
-                    alert('Erro: ' + data.error);
+                    alert('❌ Erro: ' + data.error);
                 }
             } catch (error) {
-                alert('Erro ao enviar mensagem: ' + error.message);
+                alert('❌ Erro ao enviar mensagem: ' + error.message);
             }
         }
 
