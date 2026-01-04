@@ -303,6 +303,15 @@ class DatabaseManager {
     return await this.get('SELECT * FROM meta_configs WHERE user_id = ? AND is_active = 1', [userId]);
   }
 
+  async getAllUsers() {
+    return await this.all('SELECT id, email, name, company, created_at FROM users ORDER BY created_at DESC');
+  }
+
+  async deleteUser(userId) {
+    await this.run('DELETE FROM sessions WHERE user_id = ?', [userId]);
+    return await this.run('DELETE FROM users WHERE id = ?', [userId]);
+  }
+
   close() {
     this.db.close();
   }

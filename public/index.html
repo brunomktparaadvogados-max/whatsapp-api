@@ -196,6 +196,84 @@
             color: #667eea;
         }
 
+        .success-box {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 5px;
+        }
+
+        .user-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: white;
+            padding: 15px 30px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .user-header .user-info {
+            font-size: 1.1em;
+            color: #333;
+            font-weight: 600;
+        }
+
+        .user-header .logout-btn {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: transform 0.2s;
+        }
+
+        .user-header .logout-btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .admin-section {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 5px;
+        }
+
+        .user-list {
+            display: grid;
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .user-item {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-left: 3px solid #667eea;
+        }
+
+        .user-item .user-details {
+            flex: 1;
+        }
+
+        .user-item .user-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .user-item button {
+            padding: 8px 15px;
+            font-size: 0.9em;
+        }
+
         .modal {
             display: none;
             position: fixed;
@@ -235,20 +313,48 @@
     <div id="loginModal" class="modal">
         <div class="modal-content">
             <h2>🔐 Login</h2>
-            <div class="auth-info">
-                <p><strong>Credenciais padrão:</strong></p>
-                <p>Email: admin@flow.com</p>
-                <p>Senha: admin123</p>
-            </div>
             <div class="form-group">
                 <label for="loginEmail">Email:</label>
-                <input type="email" id="loginEmail" value="admin@flow.com">
+                <input type="email" id="loginEmail" placeholder="seu@email.com">
             </div>
             <div class="form-group">
                 <label for="loginPassword">Senha:</label>
-                <input type="password" id="loginPassword" value="admin123">
+                <input type="password" id="loginPassword" placeholder="Sua senha">
             </div>
             <button onclick="login()">Entrar</button>
+            <div style="text-align: center; margin-top: 15px;">
+                <a href="#" onclick="showRegister(); return false;" style="color: #667eea; text-decoration: none;">
+                    Não tem conta? <strong>Criar conta</strong>
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <div id="registerModal" class="modal">
+        <div class="modal-content">
+            <h2>📝 Criar Conta</h2>
+            <div class="form-group">
+                <label for="registerName">Nome Completo:</label>
+                <input type="text" id="registerName" placeholder="Seu nome">
+            </div>
+            <div class="form-group">
+                <label for="registerEmail">Email:</label>
+                <input type="email" id="registerEmail" placeholder="seu@email.com">
+            </div>
+            <div class="form-group">
+                <label for="registerPassword">Senha:</label>
+                <input type="password" id="registerPassword" placeholder="Mínimo 6 caracteres">
+            </div>
+            <div class="form-group">
+                <label for="registerCompany">Empresa (opcional):</label>
+                <input type="text" id="registerCompany" placeholder="Nome da empresa">
+            </div>
+            <button onclick="register()">Criar Conta</button>
+            <div style="text-align: center; margin-top: 15px;">
+                <a href="#" onclick="showLogin(); return false;" style="color: #667eea; text-decoration: none;">
+                    Já tem conta? <strong>Fazer login</strong>
+                </a>
+            </div>
         </div>
     </div>
 
@@ -258,33 +364,77 @@
             <p>Conecte seu WhatsApp sem custos - Open Source</p>
         </div>
 
-        <div class="card">
-            <h2>🆕 Criar Nova Sessão</h2>
-            <div class="info-box">
-                <h3>Como usar:</h3>
-                <p>1. Crie uma sessão com um ID único</p>
-                <p>2. Configure um webhook (opcional) para receber eventos</p>
-                <p>3. Escaneie o QR Code com seu WhatsApp</p>
-                <p>4. Pronto! Use a API para enviar mensagens</p>
+        <div class="user-header" id="userHeader" style="display: none;">
+            <div class="user-info" id="userInfo">👤 Usuário</div>
+            <button class="logout-btn" onclick="logout()">🚪 Sair</button>
+        </div>
+
+        <div class="card" id="adminUserManagement" style="display: none;">
+            <h2>👥 Gerenciar Usuários (Admin)</h2>
+            <div class="admin-section">
+                <p><strong>⚠️ Área Administrativa</strong></p>
+                <p>Crie, visualize e gerencie todos os usuários do sistema.</p>
             </div>
-            
+
+            <h3 style="color: #667eea; margin-top: 20px;">➕ Criar Novo Usuário</h3>
             <div class="form-group">
-                <label for="sessionId">ID da Sessão:</label>
-                <input type="text" id="sessionId" placeholder="Ex: minha-sessao-1">
+                <label for="adminCreateName">Nome Completo:</label>
+                <input type="text" id="adminCreateName" placeholder="Nome do usuário">
             </div>
-            
             <div class="form-group">
-                <label for="webhookUrl">Webhook URL (opcional):</label>
-                <input type="url" id="webhookUrl" placeholder="https://seu-servidor.com/webhook">
+                <label for="adminCreateEmail">Email:</label>
+                <input type="email" id="adminCreateEmail" placeholder="email@exemplo.com">
             </div>
-            
-            <button onclick="createSession()">Criar Sessão</button>
+            <div class="form-group">
+                <label for="adminCreatePassword">Senha:</label>
+                <input type="password" id="adminCreatePassword" placeholder="Mínimo 6 caracteres">
+            </div>
+            <div class="form-group">
+                <label for="adminCreateCompany">Empresa (opcional):</label>
+                <input type="text" id="adminCreateCompany" placeholder="Nome da empresa">
+            </div>
+            <button onclick="adminCreateUser()">➕ Criar Usuário</button>
+
+            <h3 style="color: #667eea; margin-top: 30px;">📋 Todos os Usuários</h3>
+            <button onclick="loadAllUsers()" style="margin-bottom: 20px;">🔄 Atualizar Lista</button>
+            <div id="usersList" class="user-list">
+                <div class="loading">Carregando usuários...</div>
+            </div>
         </div>
 
         <div class="card">
-            <h2>📋 Sessões Ativas</h2>
-            <button onclick="loadSessions()" style="margin-bottom: 20px;">🔄 Atualizar</button>
-            <div id="sessions" class="sessions-grid">
+            <h2>🆕 Minha Sessão WhatsApp</h2>
+            <div id="sessionStatus" class="info-box">
+                <p>Carregando status da sessão...</p>
+            </div>
+
+            <div id="createSessionSection" style="display: none;">
+                <p style="margin-bottom: 15px;">Você ainda não tem uma sessão WhatsApp. Crie uma agora:</p>
+                <button onclick="createMySession()">📱 Criar Minha Sessão WhatsApp</button>
+            </div>
+
+            <div id="qrCodeSection" style="display: none; text-align: center;">
+                <h3>📱 Escaneie o QR Code</h3>
+                <p>Abra o WhatsApp no seu celular e escaneie o código abaixo:</p>
+                <div id="qrCodeContainer" style="margin: 20px 0;">
+                    <div class="loading">Gerando QR Code...</div>
+                </div>
+                <button onclick="checkSessionStatus()">🔄 Atualizar Status</button>
+            </div>
+
+            <div id="connectedSection" style="display: none;">
+                <div class="success-box">
+                    <h3>✅ WhatsApp Conectado!</h3>
+                    <p id="phoneInfo">Carregando informações...</p>
+                </div>
+                <button onclick="disconnectSession()" class="btn-danger">🔌 Desconectar WhatsApp</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>📋 Todas as Sessões (Admin)</h2>
+            <button onclick="loadAllSessions()" style="margin-bottom: 20px;">🔄 Atualizar</button>
+            <div id="allSessions" class="sessions-grid">
                 <div class="loading">Carregando sessões...</div>
             </div>
         </div>
@@ -414,7 +564,72 @@
             } else {
                 const user = JSON.parse(localStorage.getItem('user') || '{}');
                 document.getElementById('userInfo').textContent = `👤 ${user.name || user.email || 'Usuário'}`;
-                loadSessions();
+                document.getElementById('userHeader').style.display = 'flex';
+
+                if (user.email === 'admin@flow.com') {
+                    document.getElementById('adminUserManagement').style.display = 'block';
+                    loadAllUsers();
+                }
+
+                checkSessionStatus();
+            }
+        }
+
+        function logout() {
+            if (confirm('Deseja realmente sair?')) {
+                localStorage.removeItem('token');
+                localStorage.removeItem('user');
+                location.reload();
+            }
+        }
+
+        function showRegister() {
+            document.getElementById('loginModal').style.display = 'none';
+            document.getElementById('registerModal').style.display = 'block';
+        }
+
+        function showLogin() {
+            document.getElementById('registerModal').style.display = 'none';
+            document.getElementById('loginModal').style.display = 'block';
+        }
+
+        async function register() {
+            const name = document.getElementById('registerName').value;
+            const email = document.getElementById('registerEmail').value;
+            const password = document.getElementById('registerPassword').value;
+            const company = document.getElementById('registerCompany').value;
+
+            if (!name || !email || !password) {
+                alert('Por favor, preencha nome, email e senha');
+                return;
+            }
+
+            if (password.length < 6) {
+                alert('A senha deve ter no mínimo 6 caracteres');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/auth/register`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, email, password, company: company || null })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    localStorage.setItem('token', data.token);
+                    localStorage.setItem('user', JSON.stringify(data.user));
+                    document.getElementById('registerModal').style.display = 'none';
+                    document.getElementById('userInfo').textContent = `👤 ${data.user.name}`;
+                    alert('✅ Conta criada com sucesso! Sua sessão WhatsApp está sendo inicializada...');
+                    checkSessionStatus();
+                } else {
+                    alert('❌ Erro: ' + (data.error || 'Erro ao criar conta'));
+                }
+            } catch (error) {
+                alert('❌ Erro ao criar conta: ' + error.message);
             }
         }
 
@@ -442,7 +657,7 @@
                     document.getElementById('loginModal').style.display = 'none';
                     document.getElementById('userInfo').textContent = `👤 ${data.user.name || data.user.email}`;
                     alert('✅ Login realizado com sucesso!');
-                    loadSessions();
+                    checkSessionStatus();
                 } else {
                     alert('❌ Erro: ' + (data.error || 'Credenciais inválidas'));
                 }
@@ -451,113 +666,112 @@
             }
         }
 
-        async function createSession() {
-            const sessionId = document.getElementById('sessionId').value;
-            const webhookUrl = document.getElementById('webhookUrl').value;
+        async function checkSessionStatus() {
+            try {
+                const response = await fetch(`${API_URL}/api/auth/me`, {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    }
+                });
+                const data = await response.json();
 
-            if (!sessionId) {
-                alert('Por favor, informe o ID da sessão');
-                return;
+                if (!data.success) {
+                    document.getElementById('sessionStatus').innerHTML = '<p>❌ Erro ao carregar status</p>';
+                    return;
+                }
+
+                const session = data.session;
+                const user = data.user;
+
+                document.getElementById('sessionStatus').innerHTML = `
+                    <p><strong>Usuário:</strong> ${user.name} (${user.email})</p>
+                    <p><strong>Status:</strong> ${getStatusText(session.status)}</p>
+                `;
+
+                if (session.status === 'not_created' || session.status === 'not_found') {
+                    document.getElementById('createSessionSection').style.display = 'block';
+                    document.getElementById('qrCodeSection').style.display = 'none';
+                    document.getElementById('connectedSection').style.display = 'none';
+                } else if (session.status === 'qr_code' || session.status === 'initializing') {
+                    document.getElementById('createSessionSection').style.display = 'none';
+                    document.getElementById('qrCodeSection').style.display = 'block';
+                    document.getElementById('connectedSection').style.display = 'none';
+
+                    if (session.qrCode) {
+                        document.getElementById('qrCodeContainer').innerHTML = `
+                            <img src="${session.qrCode}" alt="QR Code" style="max-width: 300px; border: 2px solid #667eea; border-radius: 10px;">
+                        `;
+                    } else {
+                        setTimeout(checkSessionStatus, 2000);
+                    }
+                } else if (session.status === 'connected' || session.status === 'authenticated') {
+                    document.getElementById('createSessionSection').style.display = 'none';
+                    document.getElementById('qrCodeSection').style.display = 'none';
+                    document.getElementById('connectedSection').style.display = 'block';
+
+                    if (session.info) {
+                        document.getElementById('phoneInfo').innerHTML = `
+                            <strong>Telefone:</strong> ${session.info.wid?.user || 'N/A'}<br>
+                            <strong>Nome:</strong> ${session.info.pushname || 'N/A'}
+                        `;
+                    }
+                }
+
+                if (session.status === 'qr_code' || session.status === 'initializing') {
+                    setTimeout(checkSessionStatus, 3000);
+                }
+
+            } catch (error) {
+                console.error('Erro ao verificar status:', error);
+                document.getElementById('sessionStatus').innerHTML = '<p>❌ Erro ao carregar status</p>';
             }
+        }
 
+        function getStatusText(status) {
+            const statusMap = {
+                'not_created': '❌ Não criada',
+                'not_found': '❌ Não encontrada',
+                'initializing': '🔄 Inicializando...',
+                'qr_code': '📱 Aguardando QR Code',
+                'authenticated': '✅ Autenticado',
+                'connected': '✅ Conectado',
+                'failed': '❌ Falhou'
+            };
+            return statusMap[status] || status;
+        }
+
+        async function createMySession() {
             try {
                 const response = await fetch(`${API_URL}/api/sessions`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
-                    },
-                    body: JSON.stringify({ sessionId, webhookUrl: webhookUrl || null })
+                    }
                 });
 
                 const data = await response.json();
 
                 if (data.success) {
-                    alert('Sessão criada! Aguarde o QR Code...');
-                    document.getElementById('sessionId').value = '';
-                    document.getElementById('webhookUrl').value = '';
-                    setTimeout(loadSessions, 2000);
+                    alert('✅ Sessão criada! Aguarde o QR Code...');
+                    setTimeout(checkSessionStatus, 2000);
                 } else {
-                    alert('Erro: ' + data.error);
+                    alert('❌ Erro: ' + data.error);
                 }
             } catch (error) {
-                alert('Erro ao criar sessão: ' + error.message);
+                alert('❌ Erro ao criar sessão: ' + error.message);
             }
         }
 
-        async function loadSessions() {
-            try {
-                const response = await fetch(`${API_URL}/api/sessions`, {
-                    headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
-                    }
-                });
-                const data = await response.json();
-
-                const container = document.getElementById('sessions');
-
-                if (data.sessions.length === 0) {
-                    container.innerHTML = '<div class="loading">Nenhuma sessão ativa</div>';
-                    return;
-                }
-
-                container.innerHTML = '';
-
-                for (const session of data.sessions) {
-                    const card = document.createElement('div');
-                    card.className = 'session-card';
-
-                    let statusClass = 'disconnected';
-                    if (session.status === 'connected') statusClass = 'connected';
-                    else if (session.status === 'qr_code') statusClass = 'qr_code';
-
-                    let qrHtml = '';
-                    if (session.status === 'qr_code') {
-                        try {
-                            const qrResponse = await fetch(`${API_URL}/api/sessions/${session.id}/qr`, {
-                                headers: {
-                                    'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
-                                }
-                            });
-                            const qrData = await qrResponse.json();
-                            if (qrData.success) {
-                                qrHtml = `
-                                    <div class="qr-container">
-                                        <p><strong>Escaneie o QR Code:</strong></p>
-                                        <img src="${qrData.qrCode}" alt="QR Code">
-                                    </div>
-                                `;
-                            }
-                        } catch (e) {
-                            console.error('Erro ao carregar QR:', e);
-                        }
-                    }
-
-                    card.innerHTML = `
-                        <h3>📱 ${session.id}</h3>
-                        <span class="status ${statusClass}">${session.status}</span>
-                        ${session.info ? `<p><strong>Número:</strong> ${session.info.wid}</p>` : ''}
-                        ${session.info ? `<p><strong>Nome:</strong> ${session.info.pushname}</p>` : ''}
-                        ${session.hasWebhook ? '<p>✅ Webhook configurado</p>' : ''}
-                        ${qrHtml}
-                        <div class="session-actions">
-                            <button onclick="deleteSession('${session.id}')" class="btn-danger">🗑️ Deletar</button>
-                        </div>
-                    `;
-
-                    container.appendChild(card);
-                }
-            } catch (error) {
-                console.error('Erro ao carregar sessões:', error);
-            }
-        }
-
-        async function deleteSession(sessionId) {
-            if (!confirm(`Deseja realmente deletar a sessão ${sessionId}?`)) {
+        async function disconnectSession() {
+            if (!confirm('Tem certeza que deseja desconectar o WhatsApp?')) {
                 return;
             }
 
             try {
+                const user = JSON.parse(localStorage.getItem('user') || '{}');
+                const sessionId = `user_${user.id}`;
+
                 const response = await fetch(`${API_URL}/api/sessions/${sessionId}`, {
                     method: 'DELETE',
                     headers: {
@@ -568,13 +782,13 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    alert('Sessão deletada com sucesso!');
-                    loadSessions();
+                    alert('✅ Sessão desconectada com sucesso!');
+                    checkSessionStatus();
                 } else {
-                    alert('Erro: ' + data.error);
+                    alert('❌ Erro: ' + data.error);
                 }
             } catch (error) {
-                alert('Erro ao deletar sessão: ' + error.message);
+                alert('❌ Erro ao desconectar: ' + error.message);
             }
         }
 
@@ -613,6 +827,102 @@
                 }
             } catch (error) {
                 alert('❌ Erro ao enviar mensagem: ' + error.message);
+            }
+        }
+
+        async function loadAllSessions() {
+            try {
+                const response = await fetch(`${API_URL}/api/sessions`, {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    }
+                });
+                const data = await response.json();
+
+                const container = document.getElementById('allSessions');
+
+                if (data.sessions.length === 0) {
+                    container.innerHTML = '<div class="loading">Nenhuma sessão ativa</div>';
+                    return;
+                }
+
+                let html = '';
+                data.sessions.forEach(session => {
+                    const statusClass = session.status === 'connected' ? 'status-connected' :
+                                      session.status === 'qr_code' ? 'status-qr' : 'status-disconnected';
+
+                    html += `
+                        <div class="session-card ${statusClass}">
+                            <h3>${session.id}</h3>
+                            <p><strong>Status:</strong> ${getStatusText(session.status)}</p>
+                            ${session.phoneNumber ? `<p><strong>Telefone:</strong> ${session.phoneNumber}</p>` : ''}
+                            ${session.phoneName ? `<p><strong>Nome:</strong> ${session.phoneName}</p>` : ''}
+                            <div class="session-actions">
+                                ${session.status === 'qr_code' ? `<button onclick="showQRCode('${session.id}')">Ver QR Code</button>` : ''}
+                                <button onclick="deleteSession('${session.id}')" class="btn-danger">Deletar</button>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                container.innerHTML = html;
+            } catch (error) {
+                document.getElementById('allSessions').innerHTML = '<div class="loading">Erro ao carregar sessões</div>';
+            }
+        }
+
+        async function showQRCode(sessionId) {
+            try {
+                const response = await fetch(`${API_URL}/api/sessions/${sessionId}/qr`, {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    }
+                });
+                const data = await response.json();
+
+                if (data.qrCode) {
+                    const modal = document.createElement('div');
+                    modal.className = 'modal';
+                    modal.style.display = 'block';
+                    modal.innerHTML = `
+                        <div class="modal-content">
+                            <h2>QR Code - ${sessionId}</h2>
+                            <img src="${data.qrCode}" alt="QR Code" style="max-width: 100%; border-radius: 10px;">
+                            <button onclick="this.closest('.modal').remove()">Fechar</button>
+                        </div>
+                    `;
+                    document.body.appendChild(modal);
+                } else {
+                    alert('QR Code não disponível');
+                }
+            } catch (error) {
+                alert('Erro ao carregar QR Code: ' + error.message);
+            }
+        }
+
+        async function deleteSession(sessionId) {
+            if (!confirm(`Tem certeza que deseja deletar a sessão ${sessionId}?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/sessions/${sessionId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    }
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('Sessão deletada com sucesso!');
+                    loadAllSessions();
+                } else {
+                    alert('Erro: ' + data.error);
+                }
+            } catch (error) {
+                alert('Erro ao deletar sessão: ' + error.message);
             }
         }
 
@@ -764,6 +1074,118 @@
                 }
             } catch (error) {
                 resultsContent.innerHTML = `<p style="color: #f5576c;"><strong>❌ Erro:</strong> ${error.message}</p>`;
+            }
+        }
+
+        async function loadAllUsers() {
+            try {
+                const response = await fetch(`${API_URL}/api/users`, {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    }
+                });
+                const data = await response.json();
+
+                if (!data.success) {
+                    document.getElementById('usersList').innerHTML = '<p>❌ Erro ao carregar usuários</p>';
+                    return;
+                }
+
+                const users = data.users;
+                if (users.length === 0) {
+                    document.getElementById('usersList').innerHTML = '<p>Nenhum usuário encontrado</p>';
+                    return;
+                }
+
+                document.getElementById('usersList').innerHTML = users.map(user => `
+                    <div class="user-item">
+                        <div class="user-details">
+                            <strong>${user.name}</strong><br>
+                            <small>📧 ${user.email}</small><br>
+                            ${user.company ? `<small>🏢 ${user.company}</small><br>` : ''}
+                            <small>📅 Criado em: ${new Date(user.created_at).toLocaleDateString('pt-BR')}</small>
+                        </div>
+                        <div class="user-actions">
+                            ${user.email !== 'admin@flow.com' ? `
+                                <button onclick="deleteUserAndSession(${user.id}, '${user.name}')" class="btn-danger">
+                                    🗑️ Deletar
+                                </button>
+                            ` : '<span style="color: #667eea; font-weight: 600;">👑 Admin</span>'}
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                document.getElementById('usersList').innerHTML = `<p>❌ Erro: ${error.message}</p>`;
+            }
+        }
+
+        async function adminCreateUser() {
+            const name = document.getElementById('adminCreateName').value;
+            const email = document.getElementById('adminCreateEmail').value;
+            const password = document.getElementById('adminCreatePassword').value;
+            const company = document.getElementById('adminCreateCompany').value;
+
+            if (!name || !email || !password) {
+                alert('Por favor, preencha nome, email e senha');
+                return;
+            }
+
+            if (password.length < 6) {
+                alert('A senha deve ter no mínimo 6 caracteres');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/auth/register`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    },
+                    body: JSON.stringify({ name, email, password, company: company || null })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('✅ Usuário criado com sucesso!');
+                    document.getElementById('adminCreateName').value = '';
+                    document.getElementById('adminCreateEmail').value = '';
+                    document.getElementById('adminCreatePassword').value = '';
+                    document.getElementById('adminCreateCompany').value = '';
+                    loadAllUsers();
+                } else {
+                    alert('❌ Erro: ' + (data.error || 'Erro ao criar usuário'));
+                }
+            } catch (error) {
+                alert('❌ Erro ao criar usuário: ' + error.message);
+            }
+        }
+
+        async function deleteUserAndSession(userId, userName) {
+            if (!confirm(`Deseja realmente deletar o usuário "${userName}"?\n\nIsso também deletará a sessão WhatsApp associada.`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/users/${userId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    }
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('✅ Usuário e sessão deletados com sucesso!');
+                    loadAllUsers();
+                    loadAllSessions();
+                } else {
+                    alert('❌ Erro: ' + (data.error || 'Erro ao deletar usuário'));
+                }
+            } catch (error) {
+                alert('❌ Erro ao deletar usuário: ' + error.message);
             }
         }
     </script>

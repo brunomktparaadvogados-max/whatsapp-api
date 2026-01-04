@@ -186,6 +186,45 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
   }
 });
 
+app.get('/api/users', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = await db.getUserById(req.userId);
+    if (currentUser.email !== 'admin@flow.com') {
+      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
+    }
+
+    const users = await db.getAllUsers();
+    res.json({ success: true, users });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/users/:userId', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = await db.getUserById(req.userId);
+    if (currentUser.email !== 'admin@flow.com') {
+      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
+    }
+
+    const userIdToDelete = parseInt(req.params.userId);
+    if (userIdToDelete === req.userId) {
+      return res.status(400).json({ error: 'Você não pode deletar sua própria conta.' });
+    }
+
+    const sessionId = `user_${userIdToDelete}`;
+    const session = sessionManager.getSession(sessionId);
+    if (session) {
+      await sessionManager.deleteSession(sessionId);
+    }
+
+    await db.deleteUser(userIdToDelete);
+    res.json({ success: true, message: 'Usuário deletado com sucesso' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/health', async (req, res) => {
   try {
     const health = await sessionManager.healthCheck();
