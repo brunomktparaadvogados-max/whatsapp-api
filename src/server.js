@@ -412,8 +412,30 @@ app.delete('/api/sessions/:sessionId', authMiddleware, async (req, res) => {
 
 app.post('/api/sessions/:sessionId/messages', authMiddleware, async (req, res) => {
   try {
-    const { sessionId } = req.params;
+    let { sessionId } = req.params;
     const { to, message } = req.body;
+
+    // Auto-detectar sessão se não for informada ou for 'auto'
+    if (!sessionId || sessionId === 'auto') {
+      const userSessions = await db.getUserSessions(req.userId);
+      const activeSessions = userSessions.filter(s => {
+        const session = sessionManager.getSession(s.session_id);
+        return session && session.status === 'connected';
+      });
+
+      if (activeSessions.length === 0) {
+        return res.status(404).json({ error: 'Nenhuma sessão conectada encontrada' });
+      }
+
+      if (activeSessions.length === 1) {
+        sessionId = activeSessions[0].session_id;
+      } else {
+        return res.status(400).json({
+          error: 'Múltiplas sessões conectadas. Especifique qual usar.',
+          sessions: activeSessions.map(s => s.session_id)
+        });
+      }
+    }
 
     const dbSession = await db.getSession(sessionId);
     if (!dbSession || dbSession.user_id !== req.userId) {
@@ -436,8 +458,30 @@ app.post('/api/sessions/:sessionId/messages', authMiddleware, async (req, res) =
 
 app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) => {
   try {
-    const { sessionId } = req.params;
+    let { sessionId } = req.params;
     const { to, message } = req.body;
+
+    // Auto-detectar sessão se não for informada ou for 'auto'
+    if (!sessionId || sessionId === 'auto') {
+      const userSessions = await db.getUserSessions(req.userId);
+      const activeSessions = userSessions.filter(s => {
+        const session = sessionManager.getSession(s.session_id);
+        return session && session.status === 'connected';
+      });
+
+      if (activeSessions.length === 0) {
+        return res.status(404).json({ error: 'Nenhuma sessão conectada encontrada' });
+      }
+
+      if (activeSessions.length === 1) {
+        sessionId = activeSessions[0].session_id;
+      } else {
+        return res.status(400).json({
+          error: 'Múltiplas sessões conectadas. Especifique qual usar.',
+          sessions: activeSessions.map(s => s.session_id)
+        });
+      }
+    }
 
     const dbSession = await db.getSession(sessionId);
     if (!dbSession || dbSession.user_id !== req.userId) {
@@ -453,7 +497,7 @@ app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) =>
     const result = await sessionManager.sendMessage(sessionId, to, message);
     res.json(result);
   } catch (error) {
-    console.error(`Erro ao enviar mensagem para ${req.body.to} na sessão ${req.params.sessionId}:`, error);
+    console.error(`Erro ao enviar mensagem:`, error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -867,6 +911,65 @@ app.get('/api/debug/chromium', async (req, res) => {
     res.json(checks);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint simplificado para envio de mensagens (auto-detecta sessão)
+app.post('/api/messages/send', authMiddleware, async (req, res) => {
+  try {
+    const { to, message, sessionId } = req.body;
+
+    if (!to || !message) {
+      return res.status(400).json({
+        error: 'Campos "to" e "message" são obrigatórios'
+      });
+    }
+
+    let targetSessionId = sessionId;
+
+    // Auto-detectar sessão se não for informada
+    if (!targetSessionId) {
+      const userSessions = await db.getUserSessions(req.userId);
+      const activeSessions = userSessions.filter(s => {
+        const session = sessionManager.getSession(s.session_id);
+        return session && session.status === 'connected';
+      });
+
+      if (activeSessions.length === 0) {
+        return res.status(404).json({
+          error: 'Nenhuma sessão conectada encontrada. Conecte seu WhatsApp primeiro.',
+          action: 'connect_whatsapp'
+        });
+      }
+
+      if (activeSessions.length === 1) {
+        targetSessionId = activeSessions[0].session_id;
+      } else {
+        return res.status(400).json({
+          error: 'Múltiplas sessões conectadas. Especifique qual usar no campo "sessionId".',
+          sessions: activeSessions.map(s => ({
+            id: s.session_id,
+            createdAt: s.created_at
+          }))
+        });
+      }
+    }
+
+    // Verificar se a sessão pertence ao usuário
+    const dbSession = await db.getSession(targetSessionId);
+    if (!dbSession || dbSession.user_id !== req.userId) {
+      return res.status(404).json({ error: 'Sessão não encontrada ou não pertence a você' });
+    }
+
+    const result = await sessionManager.sendMessage(targetSessionId, to, message);
+    res.json({
+      success: true,
+      sessionId: targetSessionId,
+      ...result
+    });
+  } catch (error) {
+    console.error(`Erro ao enviar mensagem:`, error);
+    res.status(400).json({ error: error.message });
   }
 });
 
