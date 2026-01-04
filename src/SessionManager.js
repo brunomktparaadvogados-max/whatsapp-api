@@ -144,10 +144,26 @@ class SessionManager {
           '--metrics-recording-only',
           '--mute-audio',
           '--no-default-browser-check',
-          '--no-pings'
+          '--no-pings',
+          '--disable-crash-reporter',
+          '--disable-in-process-stack-traces',
+          '--disable-logging',
+          '--disable-dev-tools',
+          '--log-level=3',
+          '--silent',
+          '--disable-prompt-on-repost',
+          '--disable-domain-reliability',
+          '--disable-component-update',
+          '--disable-background-downloads',
+          '--disable-add-to-shelf',
+          '--disable-client-side-phishing-detection',
+          '--disable-datasaver-prompt',
+          '--disable-default-apps',
+          '--disable-device-discovery-notifications',
+          '--disable-background-mode'
         ],
         executablePath: execPath,
-        timeout: 60000
+        timeout: 120000
       }
     };
 
@@ -218,11 +234,11 @@ class SessionManager {
   async initializeClientInBackground(client, sessionData) {
     try {
       console.log(`🚀 Inicializando cliente ${sessionData.id} em background...`);
-      console.log(`⏱️ Timeout configurado: 90 segundos`);
+      console.log(`⏱️ Timeout configurado: 180 segundos`);
 
       const initPromise = client.initialize();
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Timeout: Chromium não inicializou em 90 segundos')), 90000)
+        setTimeout(() => reject(new Error('Timeout: Chromium não inicializou em 180 segundos')), 180000)
       );
 
       await Promise.race([initPromise, timeoutPromise]);
