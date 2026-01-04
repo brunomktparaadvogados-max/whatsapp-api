@@ -417,9 +417,9 @@ app.post('/api/sessions/:sessionId/messages', authMiddleware, async (req, res) =
 
     // Auto-detectar sessão se não for informada ou for 'auto'
     if (!sessionId || sessionId === 'auto') {
-      const userSessions = await db.getUserSessions(req.userId);
+      const userSessions = await db.getSessionsByUserId(req.userId);
       const activeSessions = userSessions.filter(s => {
-        const session = sessionManager.getSession(s.session_id);
+        const session = sessionManager.getSession(s.id);
         return session && session.status === 'connected';
       });
 
@@ -428,11 +428,11 @@ app.post('/api/sessions/:sessionId/messages', authMiddleware, async (req, res) =
       }
 
       if (activeSessions.length === 1) {
-        sessionId = activeSessions[0].session_id;
+        sessionId = activeSessions[0].id;
       } else {
         return res.status(400).json({
           error: 'Múltiplas sessões conectadas. Especifique qual usar.',
-          sessions: activeSessions.map(s => s.session_id)
+          sessions: activeSessions.map(s => s.id)
         });
       }
     }
@@ -463,9 +463,9 @@ app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) =>
 
     // Auto-detectar sessão se não for informada ou for 'auto'
     if (!sessionId || sessionId === 'auto') {
-      const userSessions = await db.getUserSessions(req.userId);
+      const userSessions = await db.getSessionsByUserId(req.userId);
       const activeSessions = userSessions.filter(s => {
-        const session = sessionManager.getSession(s.session_id);
+        const session = sessionManager.getSession(s.id);
         return session && session.status === 'connected';
       });
 
@@ -474,11 +474,11 @@ app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) =>
       }
 
       if (activeSessions.length === 1) {
-        sessionId = activeSessions[0].session_id;
+        sessionId = activeSessions[0].id;
       } else {
         return res.status(400).json({
           error: 'Múltiplas sessões conectadas. Especifique qual usar.',
-          sessions: activeSessions.map(s => s.session_id)
+          sessions: activeSessions.map(s => s.id)
         });
       }
     }
@@ -929,9 +929,9 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
 
     // Auto-detectar sessão se não for informada
     if (!targetSessionId) {
-      const userSessions = await db.getUserSessions(req.userId);
+      const userSessions = await db.getSessionsByUserId(req.userId);
       const activeSessions = userSessions.filter(s => {
-        const session = sessionManager.getSession(s.session_id);
+        const session = sessionManager.getSession(s.id);
         return session && session.status === 'connected';
       });
 
@@ -943,12 +943,12 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
       }
 
       if (activeSessions.length === 1) {
-        targetSessionId = activeSessions[0].session_id;
+        targetSessionId = activeSessions[0].id;
       } else {
         return res.status(400).json({
           error: 'Múltiplas sessões conectadas. Especifique qual usar no campo "sessionId".',
           sessions: activeSessions.map(s => ({
-            id: s.session_id,
+            id: s.id,
             createdAt: s.created_at
           }))
         });
