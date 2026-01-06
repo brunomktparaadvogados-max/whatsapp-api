@@ -548,32 +548,17 @@ class SessionManager {
     // Remove caracteres especiais
     let normalized = phoneNumber.replace(/\D/g, '');
 
-    // Se tem código do país (55) e 11 dígitos (55 + DDD + 9 + número)
-    if (normalized.startsWith('55') && normalized.length === 13) {
+    // Adiciona código do país se não tiver
+    if (!normalized.startsWith('55')) {
+      normalized = `55${normalized}`;
+    }
+
+    // Aceita tanto 12 dígitos (55 + DDD + 8 dígitos) quanto 13 dígitos (55 + DDD + 9 + 8 dígitos)
+    if (normalized.length === 12 || normalized.length === 13) {
       return normalized;
     }
 
-    // Se tem código do país (55) e 10 dígitos (55 + DDD + número sem 9)
-    if (normalized.startsWith('55') && normalized.length === 12) {
-      // Adiciona o 9 após o DDD
-      const countryCode = normalized.substring(0, 2); // 55
-      const areaCode = normalized.substring(2, 4); // DDD
-      const number = normalized.substring(4); // número
-      return `${countryCode}${areaCode}9${number}`;
-    }
-
-    // Se não tem código do país mas tem 11 dígitos (DDD + 9 + número)
-    if (!normalized.startsWith('55') && normalized.length === 11) {
-      return `55${normalized}`;
-    }
-
-    // Se não tem código do país e tem 10 dígitos (DDD + número sem 9)
-    if (!normalized.startsWith('55') && normalized.length === 10) {
-      const areaCode = normalized.substring(0, 2);
-      const number = normalized.substring(2);
-      return `55${areaCode}9${number}`;
-    }
-
+    // Se tiver menos de 12 dígitos, retorna como está (pode ser número inválido)
     return normalized;
   }
 
@@ -629,10 +614,10 @@ class SessionManager {
     } catch (error) {
       console.error(`❌ Erro ao enviar mensagem na sessão ${sessionId}:`, error);
 
-      // Se falhar, tenta sem o 9 (para números fixos ou regiões sem 9º dígito)
-      if (normalizedPhone.length === 13 && normalizedPhone.includes('55')) {
+      // Se o número tem 13 dígitos (com 9), tenta com 12 dígitos (sem 9)
+      if (normalizedPhone.length === 13 && normalizedPhone.startsWith('55')) {
         try {
-          console.log(`🔄 Tentando enviar sem o 9º dígito...`);
+          console.log(`🔄 Tentando enviar com 12 dígitos (removendo o 9)...`);
           const phoneWithout9 = normalizedPhone.substring(0, 4) + normalizedPhone.substring(5);
           const chatIdWithout9 = `${phoneWithout9}@c.us`;
 
@@ -663,11 +648,53 @@ class SessionManager {
 
           session.lastSeen = Date.now();
 
-          console.log(`✅ Mensagem enviada com sucesso sem o 9º dígito`);
+          console.log(`✅ Mensagem enviada com 12 dígitos`);
           return messageData;
         } catch (retryError) {
-          console.error(`❌ Falha ao enviar sem o 9º dígito:`, retryError);
-          throw error; // Lança o erro original
+          console.error(`❌ Falha ao enviar com 12 dígitos:`, retryError);
+          throw error;
+        }
+      }
+
+      // Se o número tem 12 dígitos (sem 9), tenta com 13 dígitos (com 9)
+      if (normalizedPhone.length === 12 && normalizedPhone.startsWith('55')) {
+        try {
+          console.log(`🔄 Tentando enviar com 13 dígitos (adicionando o 9)...`);
+          const phoneWith9 = normalizedPhone.substring(0, 4) + '9' + normalizedPhone.substring(4);
+          const chatIdWith9 = `${phoneWith9}@c.us`;
+
+          let sentMessage;
+          if (mediaUrl) {
+            const { MessageMedia } = require('whatsapp-web.js');
+            const media = await MessageMedia.fromUrl(mediaUrl);
+            sentMessage = await client.sendMessage(chatIdWith9, media, { caption: message });
+          } else {
+            sentMessage = await client.sendMessage(chatIdWith9, message);
+          }
+
+          const messageData = {
+            id: sentMessage.id._serialized,
+            sessionId: sessionId,
+            contactPhone: phoneWith9,
+            messageType: sentMessage.type,
+            body: message,
+            mediaUrl: mediaUrl,
+            mediaMimetype: null,
+            fromMe: true,
+            timestamp: sentMessage.timestamp,
+            status: 'sent'
+          };
+
+          await this.db.saveMessage(messageData);
+          await this.db.upsertContact(sessionId, phoneWith9);
+
+          session.lastSeen = Date.now();
+
+          console.log(`✅ Mensagem enviada com 13 dígitos`);
+          return messageData;
+        } catch (retryError) {
+          console.error(`❌ Falha ao enviar com 13 dígitos:`, retryError);
+          throw error;
         }
       }
 
