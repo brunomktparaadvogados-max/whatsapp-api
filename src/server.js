@@ -691,6 +691,68 @@ app.post('/api/sessions/:sessionId/messages/media', authMiddleware, async (req, 
   }
 });
 
+app.put('/api/sessions/:sessionId/webhook', authMiddleware, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { webhookUrl } = req.body;
+
+    const dbSession = await db.getSession(sessionId);
+    if (!dbSession) {
+      return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+
+    const currentUser = await db.getUserById(req.userId);
+    const isAdmin = currentUser.email === 'admin@flow.com';
+
+    if (!isAdmin && dbSession.user_id !== req.userId) {
+      return res.status(403).json({ error: 'Acesso negado' });
+    }
+
+    if (!webhookUrl) {
+      return res.status(400).json({ error: 'webhookUrl é obrigatório' });
+    }
+
+    await db.updateSessionWebhook(sessionId, webhookUrl);
+
+    console.log(`✅ Webhook configurado para sessão ${sessionId}: ${webhookUrl}`);
+
+    res.json({
+      success: true,
+      message: 'Webhook configurado com sucesso',
+      webhookUrl
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.get('/api/sessions/:sessionId/webhook', authMiddleware, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+
+    const dbSession = await db.getSession(sessionId);
+    if (!dbSession) {
+      return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+
+    const currentUser = await db.getUserById(req.userId);
+    const isAdmin = currentUser.email === 'admin@flow.com';
+
+    if (!isAdmin && dbSession.user_id !== req.userId) {
+      return res.status(403).json({ error: 'Acesso negado' });
+    }
+
+    const webhookUrl = await db.getSessionWebhook(sessionId);
+
+    res.json({
+      success: true,
+      webhookUrl
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.get('/api/sessions/:sessionId/contacts', authMiddleware, async (req, res) => {
   try {
     const { sessionId } = req.params;

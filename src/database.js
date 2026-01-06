@@ -56,6 +56,7 @@ class DatabaseManager {
         status TEXT DEFAULT 'disconnected',
         phone_number TEXT,
         phone_name TEXT,
+        webhook_url TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -310,6 +311,18 @@ class DatabaseManager {
   async deleteUser(userId) {
     await this.run('DELETE FROM sessions WHERE user_id = ?', [userId]);
     return await this.run('DELETE FROM users WHERE id = ?', [userId]);
+  }
+
+  async updateSessionWebhook(sessionId, webhookUrl) {
+    return await this.run(
+      'UPDATE sessions SET webhook_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [webhookUrl, sessionId]
+    );
+  }
+
+  async getSessionWebhook(sessionId) {
+    const session = await this.get('SELECT webhook_url FROM sessions WHERE id = ?', [sessionId]);
+    return session?.webhook_url || null;
   }
 
   close() {

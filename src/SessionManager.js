@@ -391,6 +391,42 @@ class SessionManager {
       });
 
       if (!message.fromMe) {
+        const webhookUrl = await this.db.getSessionWebhook(sessionData.id);
+        if (webhookUrl) {
+          try {
+            const webhookPayload = {
+              event: 'message',
+              sessionId: sessionData.id,
+              userId: sessionData.userId,
+              message: {
+                id: messageData.id,
+                from: contactPhone,
+                body: messageData.body,
+                type: messageData.messageType,
+                timestamp: messageData.timestamp,
+                mediaUrl: messageData.mediaUrl,
+                mediaMimetype: messageData.mediaMimetype
+              }
+            };
+
+            console.log(`📤 Enviando webhook para ${webhookUrl}`);
+            const webhookResponse = await fetch(webhookUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(webhookPayload),
+              timeout: 5000
+            });
+
+            if (webhookResponse.ok) {
+              console.log(`✅ Webhook enviado com sucesso para ${webhookUrl}`);
+            } else {
+              console.error(`❌ Webhook falhou: ${webhookResponse.status} ${webhookResponse.statusText}`);
+            }
+          } catch (error) {
+            console.error(`❌ Erro ao enviar webhook:`, error.message);
+          }
+        }
+
         await this.processAutoReplies(sessionData.id, message);
       }
     });
