@@ -144,10 +144,6 @@ class DatabaseManager {
     `);
 
     await this.run(`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)`);
-    await this.run(`CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact_phone)`);
-    await this.run(`CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)`);
-    await this.run(`CREATE INDEX IF NOT EXISTS idx_contacts_session ON contacts(session_id)`);
-    await this.run(`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`);
 
     const adminExists = await this.get('SELECT id FROM users WHERE email = $1', ['admin@flow.com']);
     if (!adminExists) {
