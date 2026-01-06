@@ -1,6 +1,4 @@
 const { Client, RemoteAuth } = require('whatsapp-web.js');
-const { MongoStore } = require('wwebjs-mongo');
-const mongoose = require('mongoose');
 const QRCode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
@@ -11,8 +9,6 @@ class SessionManager {
     this.sessions = new Map();
     this.db = database;
     this.io = io;
-    this.mongoStore = null;
-    this.isMongoConnected = false;
     this.reconnectAttempts = new Map();
     this.maxReconnectAttempts = 5;
 
@@ -20,30 +16,10 @@ class SessionManager {
   }
 
   async initMongoDB() {
-    const mongoUrl = process.env.MONGODB_URI || process.env.MONGO_URL;
+    console.log('⚠️ MongoDB/Mongoose não é mais usado. Usando PostgreSQL (Supabase).');
+    console.log('✅ Banco de dados configurado via DATABASE_URL');
 
-    if (!mongoUrl) {
-      console.warn('⚠️ MONGODB_URI não configurado. Usando modo fallback (sessões não persistirão)');
-      return;
-    }
-
-    try {
-      console.log('🔌 Conectando ao MongoDB...');
-      await mongoose.connect(mongoUrl, {
-        serverApi: {
-          version: '1',
-          strict: true,
-          deprecationErrors: true,
-        }
-      });
-
-      this.mongoStore = new MongoStore({ mongoose: mongoose });
-      this.isMongoConnected = true;
-      console.log('✅ MongoDB conectado com sucesso!');
-
-      await this.restoreAllSessions();
-    } catch (error) {
-      console.error('❌ Erro ao conectar MongoDB:', error.message);
+    await this.restoreAllSessions();
       console.warn('⚠️ Continuando sem persistência de sessões');
     }
   }

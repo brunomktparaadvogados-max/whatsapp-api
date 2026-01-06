@@ -1,51 +1,59 @@
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 
 class DatabaseManager {
   constructor() {
-    const dbPath = path.join(__dirname, '..', 'data', 'whatsapp.db');
-    this.db = new sqlite3.Database(dbPath);
+    const databaseUrl = process.env.DATABASE_URL || process.env.SUPABASE_URL;
+
+    if (!databaseUrl) {
+      console.error('❌ DATABASE_URL não configurado!');
+      throw new Error('DATABASE_URL é obrigatório');
+    }
+
+    this.pool = new Pool({
+      connectionString: databaseUrl,
+      ssl: {
+        rejectUnauthorized: false
+      }
+    });
 
     this.initTables();
   }
 
-  run(sql, params = []) {
-    return new Promise((resolve, reject) => {
-      this.db.run(sql, params, function(err) {
-        if (err) reject(err);
-        else resolve({ lastID: this.lastID, changes: this.changes });
-      });
-    });
+  async query(sql, params = []) {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(sql, params);
+      return result;
+    } finally {
+      client.release();
+    }
   }
 
-  get(sql, params = []) {
-    return new Promise((resolve, reject) => {
-      this.db.get(sql, params, (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
+  async run(sql, params = []) {
+    const result = await this.query(sql, params);
+    return { lastID: result.rows[0]?.id, changes: result.rowCount };
   }
 
-  all(sql, params = []) {
-    return new Promise((resolve, reject) => {
-      this.db.all(sql, params, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
+  async get(sql, params = []) {
+    const result = await this.query(sql, params);
+    return result.rows[0];
+  }
+
+  async all(sql, params = []) {
+    const result = await this.query(sql, params);
+    return result.rows;
   }
 
   async initTables() {
     await this.run(`
       CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         email TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL,
         name TEXT NOT NULL,
         company TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
@@ -57,21 +65,21 @@ class DatabaseManager {
         phone_number TEXT,
         phone_name TEXT,
         webhook_url TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
 
     await this.run(`
       CREATE TABLE IF NOT EXISTS contacts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         session_id TEXT NOT NULL,
         phone_number TEXT NOT NULL,
         name TEXT,
         profile_pic TEXT,
-        last_message_at DATETIME,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        last_message_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(session_id, phone_number),
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
       )
@@ -87,50 +95,50 @@ class DatabaseManager {
         media_url TEXT,
         media_mimetype TEXT,
         from_me BOOLEAN NOT NULL,
-        timestamp INTEGER NOT NULL,
+        timestamp BIGINT NOT NULL,
         status TEXT DEFAULT 'pending',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
       )
     `);
 
     await this.run(`
       CREATE TABLE IF NOT EXISTS auto_replies (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         session_id TEXT NOT NULL,
         trigger_type TEXT NOT NULL,
         trigger_value TEXT NOT NULL,
         response_message TEXT NOT NULL,
-        is_active BOOLEAN DEFAULT 1,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
       )
     `);
 
     await this.run(`
       CREATE TABLE IF NOT EXISTS scheduled_messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         session_id TEXT NOT NULL,
         contact_phone TEXT NOT NULL,
         message TEXT NOT NULL,
         media_url TEXT,
-        scheduled_at DATETIME NOT NULL,
+        scheduled_at TIMESTAMP NOT NULL,
         status TEXT DEFAULT 'pending',
-        sent_at DATETIME,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        sent_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
       )
     `);
 
     await this.run(`
       CREATE TABLE IF NOT EXISTS meta_configs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         user_id INTEGER NOT NULL,
         access_token TEXT NOT NULL,
         phone_number_id TEXT NOT NULL,
         business_account_id TEXT,
-        is_active BOOLEAN DEFAULT 1,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
@@ -141,10 +149,10 @@ class DatabaseManager {
     await this.run(`CREATE INDEX IF NOT EXISTS idx_contacts_session ON contacts(session_id)`);
     await this.run(`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`);
 
-    const adminExists = await this.get('SELECT id FROM users WHERE email = ?', ['admin@flow.com']);
+    const adminExists = await this.get('SELECT id FROM users WHERE email = $1', ['admin@flow.com']);
     if (!adminExists) {
       const hashedPassword = bcrypt.hashSync('admin123', 10);
-      await this.run('INSERT INTO users (email, password, name, company) VALUES (?, ?, ?, ?)',
+      await this.run('INSERT INTO users (email, password, name, company) VALUES ($1, $2, $3, $4)',
         ['admin@flow.com', hashedPassword, 'Administrador', 'Flow System']
       );
     }
@@ -152,19 +160,19 @@ class DatabaseManager {
 
   async createUser(email, password, name, company = null) {
     const hashedPassword = bcrypt.hashSync(password, 10);
-    const result = await this.run(
-      'INSERT INTO users (email, password, name, company) VALUES (?, ?, ?, ?)',
+    const result = await this.query(
+      'INSERT INTO users (email, password, name, company) VALUES ($1, $2, $3, $4) RETURNING id',
       [email, hashedPassword, name, company]
     );
-    return result.lastID;
+    return result.rows[0].id;
   }
 
   async getUserByEmail(email) {
-    return await this.get('SELECT * FROM users WHERE email = ?', [email]);
+    return await this.get('SELECT * FROM users WHERE email = $1', [email]);
   }
 
   async getUserById(id) {
-    return await this.get('SELECT id, email, name, company, created_at FROM users WHERE id = ?', [id]);
+    return await this.get('SELECT id, email, name, company, created_at FROM users WHERE id = $1', [id]);
   }
 
   verifyPassword(plainPassword, hashedPassword) {
@@ -172,18 +180,18 @@ class DatabaseManager {
   }
 
   async createSession(sessionId, userId) {
-    return await this.run('INSERT INTO sessions (id, user_id) VALUES (?, ?)', [sessionId, userId]);
+    return await this.run('INSERT INTO sessions (id, user_id) VALUES ($1, $2)', [sessionId, userId]);
   }
 
   async updateSessionStatus(sessionId, status, phoneNumber = null, phoneName = null) {
     return await this.run(
-      'UPDATE sessions SET status = ?, phone_number = ?, phone_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      'UPDATE sessions SET status = $1, phone_number = $2, phone_name = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4',
       [status, phoneNumber, phoneName, sessionId]
     );
   }
 
   async getSessionsByUserId(userId) {
-    return await this.all('SELECT * FROM sessions WHERE user_id = ?', [userId]);
+    return await this.all('SELECT * FROM sessions WHERE user_id = $1', [userId]);
   }
 
   async getAllSessionsFromDB() {
@@ -191,65 +199,65 @@ class DatabaseManager {
   }
 
   async getSession(sessionId) {
-    return await this.get('SELECT * FROM sessions WHERE id = ?', [sessionId]);
+    return await this.get('SELECT * FROM sessions WHERE id = $1', [sessionId]);
   }
 
   async deleteSession(sessionId) {
-    return await this.run('DELETE FROM sessions WHERE id = ?', [sessionId]);
+    return await this.run('DELETE FROM sessions WHERE id = $1', [sessionId]);
   }
 
   async saveMessage(messageData) {
     return await this.run(`
       INSERT INTO messages (id, session_id, contact_phone, message_type, body, media_url, media_mimetype, from_me, timestamp, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     `,
       [messageData.id, messageData.sessionId, messageData.contactPhone, messageData.messageType,
         messageData.body, messageData.mediaUrl, messageData.mediaMimetype,
-        messageData.fromMe ? 1 : 0, messageData.timestamp, messageData.status]
+        messageData.fromMe, messageData.timestamp, messageData.status]
     );
   }
 
   async updateMessageStatus(messageId, status) {
-    return await this.run('UPDATE messages SET status = ? WHERE id = ?', [status, messageId]);
+    return await this.run('UPDATE messages SET status = $1 WHERE id = $2', [status, messageId]);
   }
 
   async getMessagesByContact(sessionId, contactPhone, limit = 100) {
     return await this.all(`
       SELECT * FROM messages
-      WHERE session_id = ? AND contact_phone = ?
+      WHERE session_id = $1 AND contact_phone = $2
       ORDER BY timestamp DESC
-      LIMIT ?
+      LIMIT $3
     `, [sessionId, contactPhone, limit]);
   }
 
   async getContactsBySession(sessionId) {
     return await this.all(`
       SELECT c.*,
-        (SELECT COUNT(*) FROM messages m WHERE m.session_id = c.session_id AND m.contact_phone = c.phone_number AND m.from_me = 0 AND m.status = 'received') as unread_count
+        (SELECT COUNT(*) FROM messages m WHERE m.session_id = c.session_id AND m.contact_phone = c.phone_number AND m.from_me = false AND m.status = 'received') as unread_count
       FROM contacts c
-      WHERE c.session_id = ?
+      WHERE c.session_id = $1
       ORDER BY c.last_message_at DESC
     `, [sessionId]);
   }
 
   async upsertContact(sessionId, phoneNumber, name = null, profilePic = null) {
     const existing = await this.get(
-      'SELECT id FROM contacts WHERE session_id = ? AND phone_number = ?',
+      'SELECT id FROM contacts WHERE session_id = $1 AND phone_number = $2',
       [sessionId, phoneNumber]
     );
 
     if (existing) {
       return await this.run(`
         UPDATE contacts SET
-          name = COALESCE(?, name),
-          profile_pic = COALESCE(?, profile_pic),
+          name = COALESCE($1, name),
+          profile_pic = COALESCE($2, profile_pic),
           last_message_at = CURRENT_TIMESTAMP
-        WHERE session_id = ? AND phone_number = ?
+        WHERE session_id = $3 AND phone_number = $4
       `, [name, profilePic, sessionId, phoneNumber]);
     } else {
       return await this.run(`
         INSERT INTO contacts (session_id, phone_number, name, profile_pic, last_message_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
       `, [sessionId, phoneNumber, name, profilePic]);
     }
   }
@@ -257,23 +265,23 @@ class DatabaseManager {
   async createAutoReply(sessionId, triggerType, triggerValue, responseMessage) {
     const result = await this.run(`
       INSERT INTO auto_replies (session_id, trigger_type, trigger_value, response_message)
-      VALUES (?, ?, ?, ?)
+      VALUES ($1, $2, $3, $4)
     `, [sessionId, triggerType, triggerValue, responseMessage]);
     return result;
   }
 
   async getAutoReplies(sessionId) {
-    return await this.all('SELECT * FROM auto_replies WHERE session_id = ? AND is_active = 1', [sessionId]);
+    return await this.all('SELECT * FROM auto_replies WHERE session_id = $1 AND is_active = true', [sessionId]);
   }
 
   async deleteAutoReply(id) {
-    return await this.run('DELETE FROM auto_replies WHERE id = ?', [id]);
+    return await this.run('DELETE FROM auto_replies WHERE id = $1', [id]);
   }
 
   async createScheduledMessage(sessionId, contactPhone, message, mediaUrl, scheduledAt) {
     const result = await this.run(`
       INSERT INTO scheduled_messages (session_id, contact_phone, message, media_url, scheduled_at)
-      VALUES (?, ?, ?, ?, ?)
+      VALUES ($1, $2, $3, $4, $5)
     `, [sessionId, contactPhone, message, mediaUrl, scheduledAt]);
     return result;
   }
@@ -281,13 +289,13 @@ class DatabaseManager {
   async getPendingScheduledMessages() {
     return await this.all(`
       SELECT * FROM scheduled_messages
-      WHERE status = 'pending' AND scheduled_at <= datetime('now')
+      WHERE status = 'pending' AND scheduled_at <= NOW()
     `);
   }
 
   async updateScheduledMessageStatus(id, status, sentAt = null) {
     return await this.run(
-      'UPDATE scheduled_messages SET status = ?, sent_at = ? WHERE id = ?',
+      'UPDATE scheduled_messages SET status = $1, sent_at = $2 WHERE id = $3',
       [status, sentAt, id]
     );
   }
@@ -295,13 +303,13 @@ class DatabaseManager {
   async saveMetaConfig(userId, accessToken, phoneNumberId, businessAccountId = null) {
     const result = await this.run(`
       INSERT INTO meta_configs (user_id, access_token, phone_number_id, business_account_id)
-      VALUES (?, ?, ?, ?)
+      VALUES ($1, $2, $3, $4)
     `, [userId, accessToken, phoneNumberId, businessAccountId]);
     return result;
   }
 
   async getMetaConfig(userId) {
-    return await this.get('SELECT * FROM meta_configs WHERE user_id = ? AND is_active = 1', [userId]);
+    return await this.get('SELECT * FROM meta_configs WHERE user_id = $1 AND is_active = true', [userId]);
   }
 
   async getAllUsers() {
@@ -309,24 +317,24 @@ class DatabaseManager {
   }
 
   async deleteUser(userId) {
-    await this.run('DELETE FROM sessions WHERE user_id = ?', [userId]);
-    return await this.run('DELETE FROM users WHERE id = ?', [userId]);
+    await this.run('DELETE FROM sessions WHERE user_id = $1', [userId]);
+    return await this.run('DELETE FROM users WHERE id = $1', [userId]);
   }
 
   async updateSessionWebhook(sessionId, webhookUrl) {
     return await this.run(
-      'UPDATE sessions SET webhook_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      'UPDATE sessions SET webhook_url = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
       [webhookUrl, sessionId]
     );
   }
 
   async getSessionWebhook(sessionId) {
-    const session = await this.get('SELECT webhook_url FROM sessions WHERE id = ?', [sessionId]);
+    const session = await this.get('SELECT webhook_url FROM sessions WHERE id = $1', [sessionId]);
     return session?.webhook_url || null;
   }
 
-  close() {
-    this.db.close();
+  async close() {
+    await this.pool.end();
   }
 }
 
