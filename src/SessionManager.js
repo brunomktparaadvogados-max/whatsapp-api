@@ -30,8 +30,11 @@ class SessionManager {
     try {
       console.log('🔌 Conectando ao MongoDB...');
       await mongoose.connect(mongoUrl, {
-        useNewUrlParser: true,
-        useUnifiedTopology: true,
+        serverApi: {
+          version: '1',
+          strict: true,
+          deprecationErrors: true,
+        }
       });
 
       this.mongoStore = new MongoStore({ mongoose: mongoose });
