@@ -20,8 +20,6 @@ class SessionManager {
     console.log('✅ Banco de dados configurado via DATABASE_URL');
 
     await this.restoreAllSessions();
-      console.warn('⚠️ Continuando sem persistência de sessões');
-    }
   }
 
   async restoreAllSessions() {
