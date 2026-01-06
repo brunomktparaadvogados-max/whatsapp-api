@@ -544,6 +544,39 @@ class SessionManager {
     console.log(`✅ Sessão ${sessionId} deletada completamente`);
   }
 
+  normalizePhoneNumber(phoneNumber) {
+    // Remove caracteres especiais
+    let normalized = phoneNumber.replace(/\D/g, '');
+
+    // Se tem código do país (55) e 11 dígitos (55 + DDD + 9 + número)
+    if (normalized.startsWith('55') && normalized.length === 13) {
+      return normalized;
+    }
+
+    // Se tem código do país (55) e 10 dígitos (55 + DDD + número sem 9)
+    if (normalized.startsWith('55') && normalized.length === 12) {
+      // Adiciona o 9 após o DDD
+      const countryCode = normalized.substring(0, 2); // 55
+      const areaCode = normalized.substring(2, 4); // DDD
+      const number = normalized.substring(4); // número
+      return `${countryCode}${areaCode}9${number}`;
+    }
+
+    // Se não tem código do país mas tem 11 dígitos (DDD + 9 + número)
+    if (!normalized.startsWith('55') && normalized.length === 11) {
+      return `55${normalized}`;
+    }
+
+    // Se não tem código do país e tem 10 dígitos (DDD + número sem 9)
+    if (!normalized.startsWith('55') && normalized.length === 10) {
+      const areaCode = normalized.substring(0, 2);
+      const number = normalized.substring(2);
+      return `55${areaCode}9${number}`;
+    }
+
+    return normalized;
+  }
+
   async sendMessage(sessionId, phoneNumber, message, mediaUrl = null) {
     const session = this.sessions.get(sessionId);
 
@@ -556,7 +589,12 @@ class SessionManager {
     }
 
     const client = session.client;
-    const chatId = phoneNumber.includes('@c.us') ? phoneNumber : `${phoneNumber}@c.us`;
+
+    // Normaliza o número (adiciona 9 se necessário)
+    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+    const chatId = normalizedPhone.includes('@c.us') ? normalizedPhone : `${normalizedPhone}@c.us`;
+
+    console.log(`📞 Enviando mensagem para: ${phoneNumber} → Normalizado: ${normalizedPhone}`);
 
     try {
       let sentMessage;
@@ -572,7 +610,7 @@ class SessionManager {
       const messageData = {
         id: sentMessage.id._serialized,
         sessionId: sessionId,
-        contactPhone: phoneNumber,
+        contactPhone: normalizedPhone,
         messageType: sentMessage.type,
         body: message,
         mediaUrl: mediaUrl,
@@ -583,13 +621,56 @@ class SessionManager {
       };
 
       await this.db.saveMessage(messageData);
-      await this.db.upsertContact(sessionId, phoneNumber);
+      await this.db.upsertContact(sessionId, normalizedPhone);
 
       session.lastSeen = Date.now();
 
       return messageData;
     } catch (error) {
       console.error(`❌ Erro ao enviar mensagem na sessão ${sessionId}:`, error);
+
+      // Se falhar, tenta sem o 9 (para números fixos ou regiões sem 9º dígito)
+      if (normalizedPhone.length === 13 && normalizedPhone.includes('55')) {
+        try {
+          console.log(`🔄 Tentando enviar sem o 9º dígito...`);
+          const phoneWithout9 = normalizedPhone.substring(0, 4) + normalizedPhone.substring(5);
+          const chatIdWithout9 = `${phoneWithout9}@c.us`;
+
+          let sentMessage;
+          if (mediaUrl) {
+            const { MessageMedia } = require('whatsapp-web.js');
+            const media = await MessageMedia.fromUrl(mediaUrl);
+            sentMessage = await client.sendMessage(chatIdWithout9, media, { caption: message });
+          } else {
+            sentMessage = await client.sendMessage(chatIdWithout9, message);
+          }
+
+          const messageData = {
+            id: sentMessage.id._serialized,
+            sessionId: sessionId,
+            contactPhone: phoneWithout9,
+            messageType: sentMessage.type,
+            body: message,
+            mediaUrl: mediaUrl,
+            mediaMimetype: null,
+            fromMe: true,
+            timestamp: sentMessage.timestamp,
+            status: 'sent'
+          };
+
+          await this.db.saveMessage(messageData);
+          await this.db.upsertContact(sessionId, phoneWithout9);
+
+          session.lastSeen = Date.now();
+
+          console.log(`✅ Mensagem enviada com sucesso sem o 9º dígito`);
+          return messageData;
+        } catch (retryError) {
+          console.error(`❌ Falha ao enviar sem o 9º dígito:`, retryError);
+          throw error; // Lança o erro original
+        }
+      }
+
       throw error;
     }
   }
