@@ -336,6 +336,8 @@ class SessionManager {
       const contactPhone = message.from.replace('@c.us', '');
       sessionData.lastSeen = Date.now();
 
+      console.log(`📩 Mensagem recebida - SessionId: ${sessionData.id}, From: ${contactPhone}, FromMe: ${message.fromMe}`);
+
       const messageData = {
         id: message.id._serialized,
         sessionId: sessionData.id,
@@ -368,8 +370,11 @@ class SessionManager {
       });
 
       if (!message.fromMe) {
+        console.log(`🔍 Verificando webhook para sessão ${sessionData.id}...`);
         const webhookUrl = await this.db.getSessionWebhook(sessionData.id);
+
         if (webhookUrl) {
+          console.log(`✅ Webhook encontrado: ${webhookUrl}`);
           try {
             const webhookPayload = {
               event: 'message',
@@ -386,7 +391,7 @@ class SessionManager {
               }
             };
 
-            console.log(`📤 Enviando webhook para ${webhookUrl}`);
+            console.log(`📤 Enviando webhook para ${webhookUrl}`, JSON.stringify(webhookPayload, null, 2));
             const webhookResponse = await fetch(webhookUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -395,16 +400,22 @@ class SessionManager {
             });
 
             if (webhookResponse.ok) {
-              console.log(`✅ Webhook enviado com sucesso para ${webhookUrl}`);
+              const responseText = await webhookResponse.text();
+              console.log(`✅ Webhook enviado com sucesso! Status: ${webhookResponse.status}, Response:`, responseText);
             } else {
-              console.error(`❌ Webhook falhou: ${webhookResponse.status} ${webhookResponse.statusText}`);
+              const errorText = await webhookResponse.text();
+              console.error(`❌ Webhook falhou: ${webhookResponse.status} ${webhookResponse.statusText}`, errorText);
             }
           } catch (error) {
-            console.error(`❌ Erro ao enviar webhook:`, error.message);
+            console.error(`❌ Erro ao enviar webhook:`, error.message, error.stack);
           }
+        } else {
+          console.warn(`⚠️ Nenhum webhook configurado para sessão ${sessionData.id}`);
         }
 
         await this.processAutoReplies(sessionData.id, message);
+      } else {
+        console.log(`⏭️ Mensagem enviada por mim, ignorando webhook`);
       }
     });
 
