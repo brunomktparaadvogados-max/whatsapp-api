@@ -1,0 +1,112 @@
+================================================================================
+                    GUIA RAPIDO - 3 PASSOS
+================================================================================
+
+PASSO 1: INICIAR CHROME
+------------------------
+1. Clique duas vezes em: INICIAR_CHROME.bat
+2. Aguarde a mensagem: "CHROME DEBUG ATIVO - PORTA 9222"
+3. O Chrome abrira automaticamente
+
+PASSO 2: FAZER LOGIN
+---------------------
+1. O Chrome abrira em: https://mind-7.org
+2. Faca login normalmente
+3. Resolva o Cloudflare se aparecer
+4. Deixe o Chrome aberto
+
+PASSO 3: EXECUTAR AUTOMACAO
+----------------------------
+1. Abra um novo terminal (CMD ou PowerShell)
+2. Execute: python automacao_simples.py
+3. Pressione ENTER quando solicitado
+4. Informe o caminho do PDF do edital
+5. Confirme com S para iniciar
+
+================================================================================
+                         PRONTO!
+================================================================================
+
+A automacao vai:
+  - Ler o PDF e extrair os nomes
+  - Abrir uma aba para cada nome
+  - Pesquisar automaticamente no Mind-7
+  - Manter todas as abas abertas para revisao
+
+================================================================================
+                    SE DER ERRO
+================================================================================
+
+ERRO: "cannot connect to chrome"
+SOLUCAO:
+  1. taskkill /F /IM chrome.exe
+  2. INICIAR_CHROME.bat
+  3. Aguarde 5 segundos
+  4. Tente novamente
+
+ERRO: "Arquivo nao encontrado"
+SOLUCAO:
+  - Use caminho completo: C:\Users\...\edital.pdf
+  - Ou arraste o arquivo para o terminal
+
+ERRO: "Nenhum nome extraido"
+SOLUCAO:
+  - Verifique se o PDF esta no formato correto
+  - Deve ter linhas: DATA NOME NUMERO NUMERO
+
+================================================================================
+                    ARQUIVOS IMPORTANTES
+================================================================================
+
+INICIAR_CHROME.bat      <- Inicia Chrome em modo debug
+automacao_simples.py    <- Script principal (USE ESTE!)
+README_SIMPLES.md       <- Documentacao completa
+
+================================================================================
+                    VERSAO ANTIGA vs NOVA
+================================================================================
+
+ANTIGA (automacao_completa_duas_fases.py):
+  X Muito complexa
+  X Muitas verificacoes
+  X Dificil de debugar
+  X Muitas mensagens
+
+NOVA (automacao_simples.py):
+  ✓ Simples e direta
+  ✓ Faz o que precisa
+  ✓ Facil de entender
+  ✓ FUNCIONA!
+
+================================================================================
+                    DUVIDAS FREQUENTES
+================================================================================
+
+P: Preciso instalar algo?
+R: Apenas Python e Selenium (pip install selenium PyPDF2)
+
+P: Funciona com Brave ou Edge?
+R: Sim, mas precisa ajustar o caminho no INICIAR_CHROME.bat
+
+P: Posso fechar o Chrome durante a automacao?
+R: NAO! Isso vai interromper o processo
+
+P: Posso usar Chrome normal ao mesmo tempo?
+R: NAO! Feche todos os Chrome antes de iniciar
+
+P: Quantas abas posso abrir?
+R: Depende da memoria do PC. Testado com 200+ abas
+
+P: As abas ficam abertas?
+R: SIM! Para voce revisar manualmente depois
+
+================================================================================
+                    CONTATO / SUPORTE
+================================================================================
+
+Se nada funcionar:
+  1. Execute: python diagnostico_chrome.py
+  2. Copie a saida completa
+  3. Verifique os erros mostrados
+
+================================================================================

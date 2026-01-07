@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste API Automação</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .status {
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .online {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .offline {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .btn-primary {
+            background-color: #007bff;
+            color: white;
+        }
+        .btn-danger {
+            background-color: #dc3545;
+            color: white;
+        }
+        .btn-success {
+            background-color: #28a745;
+            color: white;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            box-sizing: border-box;
+        }
+        .info {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        pre {
+            background-color: #f4f4f4;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔌 Teste de Conexão - API de Automação</h1>
+    
+    <div id="statusAPI" class="status offline">
+        <h3>Status da API: Verificando...</h3>
+        <p id="statusMensagem">Aguarde...</p>
+    </div>
+
+    <div class="info">
+        <h3>📋 Informações</h3>
+        <p><strong>URL da API:</strong> <span id="apiUrl">http://localhost:5000</span></p>
+        <p><strong>Navegador:</strong> <span id="navegador"></span></p>
+        <p><strong>Protocolo:</strong> <span id="protocolo"></span></p>
+    </div>
+
+    <hr>
+
+    <h2>🧪 Testes de Endpoints</h2>
+
+    <button class="btn-success" onclick="testarHealth()">Testar /api/health</button>
+    <button class="btn-success" onclick="testarStatus()">Testar /api/status</button>
+    
+    <pre id="resultado"></pre>
+
+    <hr>
+
+    <h2>🚀 Iniciar Automação</h2>
+    
+    <label for="caminhoPDF">Caminho do PDF:</label>
+    <input type="text" id="caminhoPDF" placeholder="C:\Users\...\edital.pdf">
+    
+    <button class="btn-primary" onclick="iniciarAutomacao()">Iniciar Automação</button>
+    <button class="btn-danger" onclick="pararAutomacao()">Parar Automação</button>
+
+    <div id="statusAutomacao" class="info" style="display: none;">
+        <h3>Status da Automação</h3>
+        <p><strong>Rodando:</strong> <span id="rodando">-</span></p>
+        <p><strong>Mensagem:</strong> <span id="mensagem">-</span></p>
+        <p><strong>Adicionados:</strong> <span id="adicionados">-</span></p>
+        <p><strong>Pulados:</strong> <span id="pulados">-</span></p>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:5000';
+        let monitorInterval = null;
+
+        // Mostrar informações do navegador
+        document.getElementById('navegador').textContent = navigator.userAgent;
+        document.getElementById('protocolo').textContent = window.location.protocol;
+
+        // Verificar status da API ao carregar
+        verificarAPI();
+
+        async function verificarAPI() {
+            try {
+                const response = await fetch(`${API_URL}/api/health`);
+                const data = await response.json();
+                
+                document.getElementById('statusAPI').className = 'status online';
+                document.getElementById('statusAPI').innerHTML = `
+                    <h3>✅ Status da API: ONLINE</h3>
+                    <p>${data.mensagem}</p>
+                `;
+            } catch (error) {
+                document.getElementById('statusAPI').className = 'status offline';
+                document.getElementById('statusAPI').innerHTML = `
+                    <h3>❌ Status da API: OFFLINE</h3>
+                    <p>Erro: ${error.message}</p>
+                    <p><strong>Solução:</strong> Execute no terminal: <code>python api_automacao.py</code></p>
+                `;
+            }
+        }
+
+        async function testarHealth() {
+            try {
+                const response = await fetch(`${API_URL}/api/health`);
+                const data = await response.json();
+                document.getElementById('resultado').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('resultado').textContent = `ERRO: ${error.message}`;
+            }
+        }
+
+        async function testarStatus() {
+            try {
+                const response = await fetch(`${API_URL}/api/status`);
+                const data = await response.json();
+                document.getElementById('resultado').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('resultado').textContent = `ERRO: ${error.message}`;
+            }
+        }
+
+        async function iniciarAutomacao() {
+            const caminhoPDF = document.getElementById('caminhoPDF').value;
+            
+            if (!caminhoPDF) {
+                alert('Por favor, informe o caminho do PDF');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/iniciar`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        caminho_pdf: caminhoPDF
+                    })
+                });
+
+                const data = await response.json();
+                
+                if (data.sucesso) {
+                    alert('Automação iniciada com sucesso!');
+                    document.getElementById('statusAutomacao').style.display = 'block';
+                    monitorarAutomacao();
+                } else {
+                    alert(`Erro: ${data.mensagem}`);
+                }
+            } catch (error) {
+                alert(`Erro ao conectar com API: ${error.message}`);
+            }
+        }
+
+        async function pararAutomacao() {
+            try {
+                const response = await fetch(`${API_URL}/api/parar`, {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+                alert(data.mensagem);
+                
+                if (monitorInterval) {
+                    clearInterval(monitorInterval);
+                    monitorInterval = null;
+                }
+            } catch (error) {
+                alert(`Erro: ${error.message}`);
+            }
+        }
+
+        function monitorarAutomacao() {
+            if (monitorInterval) {
+                clearInterval(monitorInterval);
+            }
+
+            monitorInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`${API_URL}/api/status`);
+                    const status = await response.json();
+
+                    document.getElementById('rodando').textContent = status.rodando ? '✅ Sim' : '❌ Não';
+                    document.getElementById('mensagem').textContent = status.mensagem;
+                    document.getElementById('adicionados').textContent = status.adicionados;
+                    document.getElementById('pulados').textContent = status.pulados;
+
+                    if (!status.rodando) {
+                        clearInterval(monitorInterval);
+                        monitorInterval = null;
+                    }
+                } catch (error) {
+                    console.error('Erro ao monitorar:', error);
+                }
+            }, 2000);
+        }
+
+        // Atualizar status da API a cada 5 segundos
+        setInterval(verificarAPI, 5000);
+    </script>
+</body>
+</html>

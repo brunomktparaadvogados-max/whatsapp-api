@@ -1,0 +1,9 @@
+selenium
+webdriver-manager
+flask
+flask-cors
+PyPDF2
+requests
+opencv-python
+pillow
+numpy

@@ -1,0 +1,56 @@
+# ========================================
+# COMANDOS CORRETOS PARA EXECUTAR
+# ========================================
+
+## VOCÊ ESTÁ EM: C:\Users\55119
+
+## OPÇÃO 1 - MAIS FÁCIL (ARQUIVO BAT):
+cd "C:\Users\55119\AppData\Roaming\AbacusAI\Agent Workspaces"
+INICIAR_AUTOMACAO.bat
+
+## OPÇÃO 2 - POWERSHELL:
+cd "C:\Users\55119\AppData\Roaming\AbacusAI\Agent Workspaces"
+.\INICIAR_AUTOMACAO.ps1
+
+## OPÇÃO 3 - EXECUTAR DE QUALQUER LUGAR (POWERSHELL):
+powershell -ExecutionPolicy Bypass -File "C:\Users\55119\AppData\Roaming\AbacusAI\Agent Workspaces\INICIAR_AUTOMACAO.ps1"
+
+## OPÇÃO 4 - EXECUTAR DE QUALQUER LUGAR (BAT):
+"C:\Users\55119\AppData\Roaming\AbacusAI\Agent Workspaces\INICIAR_AUTOMACAO.bat"
+
+## OPÇÃO 5 - MANUAL (PASSO A PASSO):
+
+# Passo 1: Ir para o diretório
+cd "C:\Users\55119\AppData\Roaming\AbacusAI\Agent Workspaces"
+
+# Passo 2: Iniciar Chrome em debug
+.\iniciar_chrome_debug.bat
+
+# Passo 3: Acessar Mind-7 e fazer login
+
+# Passo 4: Executar automação
+python automacao_otimizada_etapas.py
+
+========================================
+
+## RECOMENDAÇÃO:
+
+Use a OPÇÃO 1 (mais fácil):
+
+1. Copie e cole este comando no PowerShell:
+
+cd "C:\Users\55119\AppData\Roaming\AbacusAI\Agent Workspaces"
+
+2. Depois execute:
+
+INICIAR_AUTOMACAO.bat
+
+========================================
+
+## SE DER ERRO DE EXECUÇÃO NO POWERSHELL:
+
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+Depois tente novamente.
+
+========================================

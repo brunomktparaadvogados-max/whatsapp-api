@@ -1,0 +1,96 @@
+# ========================================
+# GUIA RÁPIDO - AUTOMAÇÃO OTIMIZADA
+# ========================================
+
+## PARA EXECUTAR A AUTOMAÇÃO:
+
+### Passo 1: Iniciar Chrome em Debug Mode
+powershell .\iniciar_chrome_debug.bat
+
+### Passo 2: Acessar Mind-7
+- Abra o Mind-7 no Chrome que foi aberto
+- Faça login
+- Mantenha a aba aberta
+
+### Passo 3: Executar Automação
+powershell .\EXECUTAR_AUTOMACAO_OTIMIZADA.ps1
+
+### Passo 4: Informar Caminho do PDF
+Digite o caminho completo do PDF quando solicitado
+Exemplo: C:\Users\Usuario\Downloads\edital.pdf
+
+## ARQUIVOS CRIADOS:
+
+1. automacao_otimizada_etapas.py (19 KB)
+   - Script Python completo com todas as melhorias
+
+2. EXECUTAR_AUTOMACAO_OTIMIZADA.ps1 (4 KB)
+   - Script PowerShell para execução fácil
+
+3. README_AUTOMACAO_OTIMIZADA.md (8 KB)
+   - Documentação completa
+
+## MELHORIAS IMPLEMENTADAS:
+
+✓ Sistema de etapas sequenciais (5 etapas)
+✓ Checkpoint automático após cada etapa
+✓ Logs detalhados com timestamp
+✓ Controle de abas simultâneas (máx 10)
+✓ Rate limiting entre pesquisas (2s)
+✓ Filtro automático: mantém apenas resultados únicos
+✓ Fecha automaticamente abas com múltiplos/nenhum resultado
+✓ Clique automático nos CPFs encontrados
+✓ Tratamento robusto de erros
+✓ Retry automático (3-5 tentativas)
+✓ Detecção de sessão perdida
+✓ Relatório final completo
+
+## ETAPAS DA AUTOMAÇÃO:
+
+ETAPA 1: Processar PDF
+- Extrai: Nome, RENACH, Processo, Data
+
+ETAPA 2: Conectar Navegador
+- Conecta ao Chrome em debug mode
+- Verifica Mind-7 aberto
+
+ETAPA 3: Pesquisar Nomes
+- Abre cada nome em aba separada
+- Controla limite de abas
+- Fecha abas desnecessárias
+
+ETAPA 4: Clicar CPFs
+- Clica automaticamente nos CPFs únicos
+
+ETAPA 5: Gerar Relatório
+- Cria relatório completo
+
+## ARQUIVOS GERADOS:
+
+- checkpoint_automacao.json (checkpoint para recuperação)
+- log_automacao_YYYYMMDD_HHMMSS.txt (log detalhado)
+- relatorio_automacao_YYYYMMDD_HHMMSS.txt (relatório final)
+
+## SOLUÇÃO DE PROBLEMAS:
+
+### Erro: "Navegador não conectado"
+Solução: Execute .\iniciar_chrome_debug.bat
+
+### Erro: "Aba do Mind-7 não encontrada"
+Solução: Abra o Mind-7 e faça login
+
+### Automação travou
+Solução: Pressione Ctrl+C e execute novamente
+         Escolha "s" para continuar do checkpoint
+
+## CONFIGURAÇÕES AVANÇADAS:
+
+Para ajustar limite de abas simultâneas:
+Edite automacao_otimizada_etapas.py linha ~157:
+max_abas_simultaneas=10  (altere para o valor desejado)
+
+Para ajustar intervalo entre pesquisas:
+Edite automacao_otimizada_etapas.py linha ~157:
+intervalo_entre_abas=2  (altere para o valor desejado em segundos)
+
+========================================

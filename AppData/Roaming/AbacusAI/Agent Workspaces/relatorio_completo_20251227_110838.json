@@ -1,0 +1,173 @@
+{
+  "data_execucao": "2025-12-27 11:08:38",
+  "caminho_pdf": "C:/Users/55119/Downloads/notificacao-de-penalidade-pap-data-2025-12-21.pdf",
+  "total_pessoas": 187,
+  "processados": 10,
+  "processados_sucesso": 3,
+  "sem_resultado": 0,
+  "multiplos_resultados": 0,
+  "erros": 5,
+  "cancelados": 0,
+  "resultados": [
+    {
+      "indice": 1,
+      "pessoa": {
+        "publicacao": "N/A",
+        "nome": "FERNANDA JUNIA DOS SANTOS",
+        "renach": "02623539220",
+        "processo": "17651041",
+        "penalidade": "N/A"
+      },
+      "url": "https://mind-7.org/painel/consultas/nome_v2/",
+      "tipo_resultado": "erro",
+      "quantidade": 0,
+      "cpf": null,
+      "subpagina_aberta": false,
+      "status": "erro_detectar"
+    },
+    {
+      "indice": 2,
+      "pessoa": {
+        "publicacao": "N/A",
+        "nome": "BRENNO MAURICIO SANTOS DUMBA",
+        "renach": "05493688255",
+        "processo": "17651298",
+        "penalidade": "N/A"
+      },
+      "url": "https://mind-7.org/painel/consultas/nome_v2/",
+      "tipo_resultado": "unico",
+      "quantidade": 1,
+      "cpf": "10727260685",
+      "subpagina_aberta": true,
+      "status": "processado_sucesso"
+    },
+    {
+      "indice": 3,
+      "pessoa": {
+        "publicacao": "N/A",
+        "nome": "RICARDO HOMERO ALVES RICHARD",
+        "renach": "02576326001",
+        "processo": "17651040",
+        "penalidade": "N/A"
+      },
+      "url": "https://mind-7.org/painel/consultas/nome_v2/",
+      "tipo_resultado": "unico",
+      "quantidade": 1,
+      "cpf": "17572495672",
+      "subpagina_aberta": true,
+      "status": "processado_sucesso"
+    },
+    {
+      "indice": 4,
+      "pessoa": {
+        "publicacao": "N/A",
+        "nome": "DANIELA CURSINO ROMAO",
+        "renach": "02046935375",
+        "processo": "17666896",
+        "penalidade": "N/A"
+      },
+      "url": "https://mind-7.org/painel/consultas/nome_v2/",
+      "tipo_resultado": "erro",
+      "quantidade": 0,
+      "cpf": null,
+      "subpagina_aberta": false,
+      "status": "erro_detectar"
+    },
+    {
+      "indice": 5,
+      "pessoa": {
+        "publicacao": "N/A",
+        "nome": "CLEIDSON ALVARENGA LOUREIRO",
+        "renach": "03595366151",
+        "processo": "17651088",
+        "penalidade": "N/A"
+      },
+      "url": "https://mind-7.org/painel/consultas/nome_v2/",
+      "tipo_resultado": "unico",
+      "quantidade": 1,
+      "cpf": "10143976770",
+      "subpagina_aberta": true,
+      "status": "processado_sucesso"
+    },
+    {
+      "indice": 6,
+      "pessoa": {
+        "publicacao": "N/A",
+        "nome": "RONALDO MESSIAS DA SILVA",
+        "renach": "03044526513",
+        "processo": "17651052",
+        "penalidade": "N/A"
+      },
+      "url": "https://mind-7.org/painel/consultas/nome_v2/",
+      "tipo_resultado": "multiplo",
+      "quantidade": 24,
+      "cpf": null,
+      "subpagina_aberta": false,
+      "status": "multiplo_resultados_descartado"
+    },
+    {
+      "indice": 7,
+      "pessoa": {
+        "publicacao": "N/A",
+        "nome": "WILSON DOS SANTOS SILVA",
+        "renach": "01938598714",
+        "processo": "17666887",
+        "penalidade": "N/A"
+      },
+      "url": "https://mind-7.org/painel/consultas/nome_v2/",
+      "tipo_resultado": "multiplo",
+      "quantidade": 50,
+      "cpf": null,
+      "subpagina_aberta": false,
+      "status": "multiplo_resultados_descartado"
+    },
+    {
+      "indice": 8,
+      "pessoa": {
+        "publicacao": "N/A",
+        "nome": "ELAINE MARIA DO COUTO",
+        "renach": "03938011404",
+        "processo": "17667047",
+        "penalidade": "N/A"
+      },
+      "url": "https://mind-7.org/painel/consultas/nome_v2/",
+      "tipo_resultado": "erro",
+      "quantidade": 0,
+      "cpf": null,
+      "subpagina_aberta": false,
+      "status": "erro_detectar"
+    },
+    {
+      "indice": 9,
+      "pessoa": {
+        "publicacao": "N/A",
+        "nome": "RAPHAEL ELIAS PEREIRA DA",
+        "renach": "05868042010",
+        "processo": "17667142",
+        "penalidade": "N/A"
+      },
+      "url": null,
+      "tipo_resultado": null,
+      "quantidade": 0,
+      "cpf": null,
+      "subpagina_aberta": false,
+      "status": "erro"
+    },
+    {
+      "indice": 10,
+      "pessoa": {
+        "publicacao": "N/A",
+        "nome": "JENIFFER EDWIGES DE ALMEIDA",
+        "renach": "07103925647",
+        "processo": "17651322",
+        "penalidade": "N/A"
+      },
+      "url": null,
+      "tipo_resultado": null,
+      "quantidade": 0,
+      "cpf": null,
+      "subpagina_aberta": false,
+      "status": "erro"
+    }
+  ]
+}
