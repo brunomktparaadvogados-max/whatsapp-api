@@ -102,6 +102,23 @@ class DatabaseManager {
       )
     `);
 
+    try {
+      await this.run(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name='messages' AND column_name='contact_phone'
+          ) THEN
+            ALTER TABLE messages ADD COLUMN contact_phone TEXT;
+          END IF;
+        END $$;
+      `);
+      console.log('✅ Migração: coluna contact_phone verificada/adicionada');
+    } catch (error) {
+      console.error('⚠️ Erro na migração contact_phone:', error.message);
+    }
+
     await this.run(`
       CREATE TABLE IF NOT EXISTS auto_replies (
         id SERIAL PRIMARY KEY,
@@ -203,18 +220,31 @@ class DatabaseManager {
   }
 
   async saveMessage(messageData) {
-    return await this.run(`
-      INSERT INTO messages (id, session_id, contact_phone, message_type, body, media_url, media_mimetype, from_me, timestamp, status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    `,
-      [messageData.id, messageData.sessionId, messageData.contactPhone, messageData.messageType,
-        messageData.body, messageData.mediaUrl, messageData.mediaMimetype,
-        messageData.fromMe, messageData.timestamp, messageData.status]
-    );
+    try {
+      return await this.run(`
+        INSERT INTO messages (id, session_id, contact_phone, message_type, body, media_url, media_mimetype, from_me, timestamp, status)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (id) DO UPDATE SET
+          status = EXCLUDED.status,
+          body = EXCLUDED.body
+      `,
+        [messageData.id, messageData.sessionId, messageData.contactPhone, messageData.messageType,
+          messageData.body, messageData.mediaUrl, messageData.mediaMimetype,
+          messageData.fromMe, messageData.timestamp, messageData.status]
+      );
+    } catch (error) {
+      console.error('❌ Erro ao salvar mensagem:', error.message);
+      throw error;
+    }
   }
 
   async updateMessageStatus(messageId, status) {
-    return await this.run('UPDATE messages SET status = $1 WHERE id = $2', [status, messageId]);
+    try {
+      return await this.run('UPDATE messages SET status = $1 WHERE id = $2', [status, messageId]);
+    } catch (error) {
+      console.error('❌ Erro ao atualizar status da mensagem:', error.message, 'MessageId:', messageId);
+      throw error;
+    }
   }
 
   async getMessagesByContact(sessionId, contactPhone, limit = 100) {

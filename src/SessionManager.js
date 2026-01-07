@@ -879,8 +879,73 @@ class SessionManager {
         }
       }
 
-      console.log(`✅ Restauração concluída. ${restoredCount} sessões restauradas, ${removedCount} órfãs removidas.`);
-      console.log(`📊 Total de sessões ativas: ${this.sessions.size}`);
+      const sessionFiles = fs.readdirSync(this.sessionDir).filter(f => f.startsWith('session-'));
+      for (const sessionFile of sessionFiles) {
+        const sessionId = sessionFile.replace('session-', '');
+
+        if (!this.sessions.has(sessionId)) {
+          const dbSession = await this.db.getSession(sessionId);
+
+          if (!dbSession) {
+            console.log(`📱 Encontrada sessão no disco sem registro no banco: ${sessionId}`);
+            console.log(`💾 Criando registro no banco para sessão ${sessionId}...`);
+
+            try {
+              await this.db.createSession(sessionId, userId);
+              console.log(`✅ Registro criado no banco para sessão ${sessionId}`);
+
+              const sessionPath = path.join(this.sessionDir, sessionFile);
+              console.log(`📱 Restaurando sessão do disco: ${sessionId}`);
+
+              const sessionData = {
+                id: sessionId,
+                userId: userId,
+                qrCode: null,
+                status: 'initializing',
+                client: null,
+                info: null
+              };
+
+              const client = new Client({
+                authStrategy: new LocalAuth({
+                  clientId: sessionId,
+                  dataPath: this.sessionDir
+                }),
+                puppeteer: {
+                  headless: true,
+                  args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--disable-gpu'
+                  ]
+                }
+              });
+
+              this.setupClientEvents(client, sessionData);
+              sessionData.client = client;
+              this.sessions.set(sessionId, sessionData);
+
+              const initPromise = client.initialize();
+              const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Timeout na restauração')), 45000)
+              );
+
+              await Promise.race([initPromise, timeoutPromise]);
+              restoredCount++;
+              console.log(`✅ Sessão ${sessionId} restaurada com sucesso`);
+            } catch (error) {
+              console.error(`❌ Erro ao restaurar sessão ${sessionId}:`, error.message);
+              this.sessions.delete(sessionId);
+            }
+          }
+        }
+      }
+
+      console.log(`✅ Processo de restauração concluído. ${restoredCount} sessões ativas.`);
     } catch (error) {
       console.error('❌ Erro ao restaurar sessões:', error);
     }
