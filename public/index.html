@@ -906,11 +906,38 @@
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                     }
                 });
+
+                // Verificar status HTTP 401 - Token inválido ou expirado
+                if (response.status === 401) {
+                    document.getElementById('allSessions').innerHTML = '<p style="color: #f5576c;">❌ Erro: Token inválido ou expirado. Faça login novamente.</p>';
+                    alert('❌ Erro: Token inválido ou expirado. Faça login novamente.');
+                    logout();
+                    return;
+                }
+
+                // Verificar status HTTP 403 - Acesso negado
+                if (response.status === 403) {
+                    document.getElementById('allSessions').innerHTML = '<p style="color: #f5576c;">❌ Erro: Acesso negado. Apenas administradores podem acessar esta seção.</p>';
+                    return;
+                }
+
+                // Verificar outros erros HTTP
+                if (!response.ok) {
+                    document.getElementById('allSessions').innerHTML = `<p style="color: #f5576c;">❌ Erro HTTP ${response.status}: Falha ao carregar sessões</p>`;
+                    return;
+                }
+
                 const data = await response.json();
+
+                // Verificar se a resposta foi bem-sucedida
+                if (!data.success) {
+                    document.getElementById('allSessions').innerHTML = `<p style="color: #f5576c;">❌ Erro ao carregar sessões: ${data.error || 'Erro desconhecido'}</p>`;
+                    return;
+                }
 
                 const container = document.getElementById('allSessions');
 
-                if (data.sessions.length === 0) {
+                if (!data.sessions || data.sessions.length === 0) {
                     container.innerHTML = '<div class="loading">Nenhuma sessão ativa</div>';
                     return;
                 }
@@ -936,7 +963,8 @@
 
                 container.innerHTML = html;
             } catch (error) {
-                document.getElementById('allSessions').innerHTML = '<div class="loading">Erro ao carregar sessões</div>';
+                console.error('Erro ao carregar sessões:', error);
+                document.getElementById('allSessions').innerHTML = `<p style="color: #f5576c;">❌ Erro ao carregar sessões: ${error.message}</p>`;
             }
         }
 
@@ -1153,15 +1181,37 @@
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                     }
                 });
+
+                // Verificar status HTTP 401 - Token inválido ou expirado
+                if (response.status === 401) {
+                    document.getElementById('usersList').innerHTML = '<p style="color: #f5576c;">❌ Erro: Token inválido ou expirado. Faça login novamente.</p>';
+                    alert('❌ Erro: Token inválido ou expirado. Faça login novamente.');
+                    logout();
+                    return;
+                }
+
+                // Verificar status HTTP 403 - Acesso negado
+                if (response.status === 403) {
+                    document.getElementById('usersList').innerHTML = '<p style="color: #f5576c;">❌ Erro: Acesso negado. Apenas administradores podem acessar esta seção.</p>';
+                    return;
+                }
+
+                // Verificar outros erros HTTP
+                if (!response.ok) {
+                    document.getElementById('usersList').innerHTML = `<p style="color: #f5576c;">❌ Erro HTTP ${response.status}: Falha ao carregar usuários</p>`;
+                    return;
+                }
+
                 const data = await response.json();
 
+                // Verificar se a resposta foi bem-sucedida
                 if (!data.success) {
-                    document.getElementById('usersList').innerHTML = '<p>❌ Erro ao carregar usuários</p>';
+                    document.getElementById('usersList').innerHTML = `<p style="color: #f5576c;">❌ Erro ao carregar usuários: ${data.error || 'Erro desconhecido'}</p>`;
                     return;
                 }
 
                 const users = data.users;
-                if (users.length === 0) {
+                if (!users || users.length === 0) {
                     document.getElementById('usersList').innerHTML = '<p>Nenhum usuário encontrado</p>';
                     return;
                 }
@@ -1222,7 +1272,8 @@
 
                 document.getElementById('usersList').innerHTML = usersHtml.join('');
             } catch (error) {
-                document.getElementById('usersList').innerHTML = `<p>❌ Erro: ${error.message}</p>`;
+                console.error('Erro ao carregar usuários:', error);
+                document.getElementById('usersList').innerHTML = `<p style="color: #f5576c;">❌ Erro: ${error.message}</p>`;
             }
         }
 
