@@ -1291,6 +1291,7 @@ app.get('/api/database-stats', authMiddleware, async (req, res) => {
 });
 
 // Endpoint simplificado para envio de mensagens (auto-detecta sessão)
+// Atualizado: Admin pode enviar mensagens de qualquer sessão
 app.post('/api/messages/send', authMiddleware, async (req, res) => {
   try {
     const { to, message, sessionId } = req.body;
