@@ -234,6 +234,14 @@ class SessionManager {
   }
 
   setupClientEvents(client, sessionData) {
+    client.on('error', (error) => {
+      if (error.message && error.message.includes('evaluation failed') && error.message.includes('markedUnread')) {
+        console.log(`⚠️ [${sessionData.id}] Erro ignorado (sendSeen): ${error.message.substring(0, 100)}...`);
+        return;
+      }
+      console.error(`❌ [${sessionData.id}] Erro no cliente:`, error);
+    });
+
     client.on('loading_screen', (percent, message) => {
       console.log(`⏳ [${sessionData.id}] Loading: ${percent}% - ${message}`);
       sessionData.lastSeen = Date.now();
