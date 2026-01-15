@@ -970,15 +970,31 @@ class SessionManager {
     const chatId = to.includes('@c.us') ? to : `${to}@c.us`;
     console.log(`📞 Enviando para: ${chatId}`);
 
-    const result = await session.client.sendMessage(chatId, message);
+    try {
+      const result = await session.client.sendMessage(chatId, message);
 
-    console.log(`✅ Mensagem enviada com sucesso! ID: ${result.id._serialized}`);
+      console.log(`✅ Mensagem enviada com sucesso! ID: ${result.id._serialized}`);
 
-    return {
-      success: true,
-      messageId: result.id._serialized,
-      timestamp: result.timestamp
-    };
+      return {
+        success: true,
+        messageId: result.id._serialized,
+        timestamp: result.timestamp
+      };
+    } catch (error) {
+      if (error.message && error.message.includes('evaluation failed') && error.message.includes('markedUnread')) {
+        console.log(`⚠️ Erro ignorado (sendSeen): ${error.message.substring(0, 100)}...`);
+        console.log(`✅ Mensagem foi enviada apesar do erro do sendSeen`);
+
+        return {
+          success: true,
+          messageId: 'sent_with_warning',
+          timestamp: Date.now(),
+          warning: 'Mensagem enviada mas houve erro ao marcar como lida'
+        };
+      }
+
+      throw error;
+    }
   }
 
   async sendMedia(sessionId, to, mediaUrl, caption = '') {
