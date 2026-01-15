@@ -386,6 +386,28 @@ class DatabaseManager {
     }
   }
 
+  async getMessagesCount() {
+    try {
+      const result = await this.get('SELECT COUNT(*) as count FROM messages');
+      return result?.count || 0;
+    } catch (error) {
+      console.error('❌ Erro ao contar mensagens:', error.message);
+      return 0;
+    }
+  }
+
+  async getDatabaseSize() {
+    try {
+      const result = await this.get(`
+        SELECT pg_size_pretty(pg_database_size(current_database())) as size
+      `);
+      return result;
+    } catch (error) {
+      console.error('❌ Erro ao obter tamanho do banco:', error.message);
+      return null;
+    }
+  }
+
   async close() {
     await this.pool.end();
   }
