@@ -1287,11 +1287,17 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
       });
     }
 
+    const currentUser = await db.getUserById(req.userId);
+    const isAdmin = currentUser.email === 'admin@flow.com';
+
     let targetSessionId = sessionId;
 
     // Auto-detectar sessão se não for informada
     if (!targetSessionId) {
-      const userSessions = await db.getSessionsByUserId(req.userId);
+      const userSessions = isAdmin
+        ? await db.all('SELECT * FROM sessions WHERE status = ?', ['connected'])
+        : await db.getSessionsByUserId(req.userId);
+
       const activeSessions = userSessions.filter(s => {
         const session = sessionManager.getSession(s.id);
         return session && session.status === 'connected';
@@ -1317,10 +1323,15 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
       }
     }
 
-    // Verificar se a sessão pertence ao usuário
+    // Verificar se a sessão existe
     const dbSession = await db.getSession(targetSessionId);
-    if (!dbSession || dbSession.user_id !== req.userId) {
-      return res.status(404).json({ error: 'Sessão não encontrada ou não pertence a você' });
+    if (!dbSession) {
+      return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+
+    // Verificar permissões: admin pode usar qualquer sessão, usuário comum apenas suas próprias
+    if (!isAdmin && dbSession.user_id !== req.userId) {
+      return res.status(403).json({ error: 'Sessão não encontrada ou não pertence a você' });
     }
 
     const result = await sessionManager.sendMessage(targetSessionId, to, message);
