@@ -1124,6 +1124,24 @@ cron.schedule('0 * * * *', async () => {
   }
 });
 
+cron.schedule('5 * * * *', async () => {
+  console.log('🧹 Executando limpeza automática de mensagens antigas...');
+  try {
+    const deletedCount = await db.deleteOldMessages(24);
+    const totalMessages = await db.getMessagesCount();
+    const dbSize = await db.getDatabaseSize();
+
+    console.log(`✅ Limpeza concluída:`);
+    console.log(`   - ${deletedCount} mensagens antigas removidas`);
+    console.log(`   - ${totalMessages} mensagens restantes`);
+    if (dbSize) {
+      console.log(`   - Tamanho do banco: ${dbSize.size}`);
+    }
+  } catch (error) {
+    console.error('❌ Erro na limpeza de mensagens:', error.message);
+  }
+});
+
 app.get('/api/debug/chromium', async (req, res) => {
   const { execSync } = require('child_process');
   try {
@@ -1186,6 +1204,75 @@ app.get('/api/debug/sessions', authMiddleware, async (req, res) => {
   } catch (error) {
     console.error('Erro no debug:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint de limpeza manual de mensagens antigas
+app.post('/api/cleanup-messages', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = await db.getUserById(req.userId);
+    if (currentUser.email !== 'admin@flow.com') {
+      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
+    }
+
+    const { hoursOld = 24 } = req.body;
+
+    console.log(`🧹 Limpeza manual de mensagens iniciada (>${hoursOld}h)...`);
+
+    const deletedCount = await db.deleteOldMessages(hoursOld);
+    const totalMessages = await db.getMessagesCount();
+    const dbSize = await db.getDatabaseSize();
+
+    res.json({
+      success: true,
+      deletedCount,
+      remainingMessages: totalMessages,
+      databaseSize: dbSize?.size || 'N/A',
+      databaseSizeBytes: dbSize?.size_bytes || 0,
+      message: `${deletedCount} mensagens antigas foram removidas com sucesso`
+    });
+  } catch (error) {
+    console.error('❌ Erro na limpeza manual:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      message: 'Erro ao executar limpeza de mensagens'
+    });
+  }
+});
+
+// Endpoint para obter estatísticas do banco de dados
+app.get('/api/database-stats', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = await db.getUserById(req.userId);
+    if (currentUser.email !== 'admin@flow.com') {
+      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
+    }
+
+    const totalMessages = await db.getMessagesCount();
+    const dbSize = await db.getDatabaseSize();
+    const allUsers = await db.all('SELECT COUNT(*) as count FROM users');
+    const allSessions = await db.all('SELECT COUNT(*) as count FROM sessions');
+    const allContacts = await db.all('SELECT COUNT(*) as count FROM contacts');
+
+    res.json({
+      success: true,
+      stats: {
+        totalMessages: totalMessages || 0,
+        totalUsers: allUsers[0]?.count || 0,
+        totalSessions: allSessions[0]?.count || 0,
+        totalContacts: allContacts[0]?.count || 0,
+        databaseSize: dbSize?.size || 'N/A',
+        databaseSizeBytes: dbSize?.size_bytes || 0
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Erro ao obter estatísticas:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 });
 

@@ -18,6 +18,19 @@ class DatabaseManager {
     });
 
     this.initTables();
+    this.runInitialCleanup();
+  }
+
+  async runInitialCleanup() {
+    setTimeout(async () => {
+      try {
+        console.log('🧹 Executando limpeza inicial de mensagens antigas...');
+        const deletedCount = await this.deleteOldMessages(24);
+        console.log(`✅ Limpeza inicial: ${deletedCount} mensagens antigas removidas`);
+      } catch (error) {
+        console.error('❌ Erro na limpeza inicial:', error.message);
+      }
+    }, 5000);
   }
 
   async query(sql, params = []) {
@@ -357,6 +370,20 @@ class DatabaseManager {
   async getSessionWebhook(sessionId) {
     const session = await this.get('SELECT webhook_url FROM sessions WHERE id = $1', [sessionId]);
     return session?.webhook_url || null;
+  }
+
+  async deleteOldMessages(hoursOld = 24) {
+    try {
+      const result = await this.run(`
+        DELETE FROM messages
+        WHERE created_at < NOW() - INTERVAL '${hoursOld} hours'
+      `);
+      console.log(`🧹 Limpeza automática: ${result.changes || 0} mensagens antigas removidas (>${hoursOld}h)`);
+      return result.changes || 0;
+    } catch (error) {
+      console.error('❌ Erro ao deletar mensagens antigas:', error.message);
+      return 0;
+    }
   }
 
   async close() {
