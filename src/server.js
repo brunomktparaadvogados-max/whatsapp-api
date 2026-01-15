@@ -641,7 +641,10 @@ app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) =>
     console.log(`     * Status: ${dbSession.status}`);
     console.log(`     * Req User ID: ${req.userId}`);
 
-    if (dbSession.user_id !== req.userId) {
+    const currentUser = await db.getUserById(req.userId);
+    const isAdmin = currentUser.email === 'admin@flow.com';
+
+    if (!isAdmin && dbSession.user_id !== req.userId) {
       console.log(`❌ [SEND MESSAGE] Sessão pertence ao usuário ${dbSession.user_id}, mas requisição é do usuário ${req.userId}`);
       return res.status(403).json({
         error: 'Você não tem permissão para usar esta sessão',
@@ -650,6 +653,10 @@ app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) =>
           requestUserId: req.userId
         }
       });
+    }
+
+    if (isAdmin) {
+      console.log(`✅ [SEND MESSAGE] Admin ${req.userId} autorizado a usar sessão de outro usuário`);
     }
 
     if (!to || !message) {
@@ -681,8 +688,15 @@ app.post('/api/sessions/:sessionId/messages/media', authMiddleware, async (req, 
     const { sessionId } = req.params;
     const { to, mediaUrl, caption } = req.body;
 
+    const currentUser = await db.getUserById(req.userId);
+    const isAdmin = currentUser.email === 'admin@flow.com';
+
     const dbSession = await db.getSession(sessionId);
-    if (!dbSession || dbSession.user_id !== req.userId) {
+    if (!dbSession) {
+      return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+
+    if (!isAdmin && dbSession.user_id !== req.userId) {
       return res.status(404).json({ error: 'Sessão não encontrada' });
     }
 
