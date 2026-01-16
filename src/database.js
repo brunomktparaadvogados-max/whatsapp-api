@@ -173,23 +173,7 @@ class DatabaseManager {
       )
     `);
 
-    await this.run(`
-      CREATE TABLE IF NOT EXISTS leads (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL,
-        contact_phone TEXT NOT NULL,
-        stage TEXT NOT NULL,
-        keyword TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id, contact_phone),
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
-
     await this.run(`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)`);
-    await this.run(`CREATE INDEX IF NOT EXISTS idx_leads_user ON leads(user_id)`);
-    await this.run(`CREATE INDEX IF NOT EXISTS idx_leads_stage ON leads(stage)`);
 
     const adminExists = await this.get('SELECT id FROM users WHERE email = $1', ['admin@flow.com']);
     if (!adminExists) {
@@ -420,68 +404,6 @@ class DatabaseManager {
       return result;
     } catch (error) {
       console.error('❌ Erro ao obter tamanho do banco:', error.message);
-      return null;
-    }
-  }
-
-  async initLeadsTable() {
-    await this.run(`
-      CREATE TABLE IF NOT EXISTS leads (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL,
-        contact_phone TEXT NOT NULL,
-        stage TEXT DEFAULT 'new',
-        keyword TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id, contact_phone),
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
-    console.log('✅ Tabela de leads verificada/criada');
-  }
-
-  async updateLeadStage(userId, contactPhone, stage, keyword) {
-    try {
-      const result = await this.run(`
-        INSERT INTO leads (user_id, contact_phone, stage, keyword, updated_at)
-        VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
-        ON CONFLICT (user_id, contact_phone)
-        DO UPDATE SET
-          stage = $3,
-          keyword = $4,
-          updated_at = CURRENT_TIMESTAMP
-      `, [userId, contactPhone, stage, keyword]);
-
-      console.log(`✅ Lead atualizado: ${contactPhone} → ${stage} (keyword: ${keyword})`);
-      return result;
-    } catch (error) {
-      console.error('❌ Erro ao atualizar lead:', error.message);
-      throw error;
-    }
-  }
-
-  async getLeadsByUser(userId) {
-    try {
-      return await this.all(`
-        SELECT * FROM leads
-        WHERE user_id = $1
-        ORDER BY updated_at DESC
-      `, [userId]);
-    } catch (error) {
-      console.error('❌ Erro ao buscar leads:', error.message);
-      return [];
-    }
-  }
-
-  async getLeadByContact(userId, contactPhone) {
-    try {
-      return await this.get(`
-        SELECT * FROM leads
-        WHERE user_id = $1 AND contact_phone = $2
-      `, [userId, contactPhone]);
-    } catch (error) {
-      console.error('❌ Erro ao buscar lead:', error.message);
       return null;
     }
   }
