@@ -403,23 +403,25 @@ class SessionManager {
       if (webhookUrl) {
         console.log(`✅ Webhook encontrado: ${webhookUrl}`);
         try {
-          const eventType = message.fromMe ? 'ao_enviar' : 'ao_receber';
-
           const webhookPayload = {
-            event: eventType,
-            sessionId: sessionData.id,
-            userId: sessionData.userId,
-            phone: contactPhone,
-            message: messageData.body || '',
-            fromMe: message.fromMe,
-            timestamp: messageData.timestamp,
-            type: messageData.messageType,
-            mediaUrl: messageData.mediaUrl,
-            mediaMimetype: messageData.mediaMimetype,
-            messageId: messageData.id
+            event: 'message',
+            data: {
+              sessionId: sessionData.id,
+              userId: sessionData.userId,
+              from: contactPhone,
+              message: {
+                body: messageData.body || '',
+                type: messageData.messageType
+              },
+              fromMe: message.fromMe,
+              timestamp: messageData.timestamp,
+              messageId: messageData.id,
+              mediaUrl: messageData.mediaUrl,
+              mediaMimetype: messageData.mediaMimetype
+            }
           };
 
-          console.log(`📤 Enviando webhook [${eventType}] para ${webhookUrl}`, JSON.stringify(webhookPayload, null, 2));
+          console.log(`📤 Enviando webhook [message] para ${webhookUrl}`, JSON.stringify(webhookPayload, null, 2));
           const webhookResponse = await fetch(webhookUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -472,27 +474,31 @@ class SessionManager {
           message: messageData
         });
 
-        console.log(`🔍 Verificando webhook para sessão ${sessionData.id} (ao_enviar)...`);
+        console.log(`🔍 Verificando webhook para sessão ${sessionData.id} (message_create)...`);
         const webhookUrl = await this.db.getSessionWebhook(sessionData.id);
 
         if (webhookUrl) {
           console.log(`✅ Webhook encontrado: ${webhookUrl}`);
           try {
             const webhookPayload = {
-              event: 'ao_enviar',
-              sessionId: sessionData.id,
-              userId: sessionData.userId,
-              phone: contactPhone,
-              message: messageData.body || '',
-              fromMe: true,
-              timestamp: messageData.timestamp,
-              type: messageData.messageType,
-              mediaUrl: messageData.mediaUrl,
-              mediaMimetype: messageData.mediaMimetype,
-              messageId: messageData.id
+              event: 'message',
+              data: {
+                sessionId: sessionData.id,
+                userId: sessionData.userId,
+                from: contactPhone,
+                message: {
+                  body: messageData.body || '',
+                  type: messageData.messageType
+                },
+                fromMe: true,
+                timestamp: messageData.timestamp,
+                messageId: messageData.id,
+                mediaUrl: messageData.mediaUrl,
+                mediaMimetype: messageData.mediaMimetype
+              }
             };
 
-            console.log(`📤 Enviando webhook [ao_enviar] para ${webhookUrl}`, JSON.stringify(webhookPayload, null, 2));
+            console.log(`📤 Enviando webhook [message] para ${webhookUrl}`, JSON.stringify(webhookPayload, null, 2));
             const webhookResponse = await fetch(webhookUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -515,6 +521,7 @@ class SessionManager {
         }
       }
     });
+
 
     client.on('message_ack', async (message, ack) => {
       const statusMap = {
