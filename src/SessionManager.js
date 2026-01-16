@@ -471,6 +471,48 @@ class SessionManager {
           sessionId: sessionData.id,
           message: messageData
         });
+
+        console.log(`🔍 Verificando webhook para sessão ${sessionData.id} (ao_enviar)...`);
+        const webhookUrl = await this.db.getSessionWebhook(sessionData.id);
+
+        if (webhookUrl) {
+          console.log(`✅ Webhook encontrado: ${webhookUrl}`);
+          try {
+            const webhookPayload = {
+              event: 'ao_enviar',
+              sessionId: sessionData.id,
+              userId: sessionData.userId,
+              phone: contactPhone,
+              message: messageData.body || '',
+              fromMe: true,
+              timestamp: messageData.timestamp,
+              type: messageData.messageType,
+              mediaUrl: messageData.mediaUrl,
+              mediaMimetype: messageData.mediaMimetype,
+              messageId: messageData.id
+            };
+
+            console.log(`📤 Enviando webhook [ao_enviar] para ${webhookUrl}`, JSON.stringify(webhookPayload, null, 2));
+            const webhookResponse = await fetch(webhookUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(webhookPayload),
+              timeout: 5000
+            });
+
+            if (webhookResponse.ok) {
+              const responseText = await webhookResponse.text();
+              console.log(`✅ Webhook enviado com sucesso! Status: ${webhookResponse.status}, Response:`, responseText);
+            } else {
+              const errorText = await webhookResponse.text();
+              console.error(`❌ Webhook falhou: ${webhookResponse.status} ${webhookResponse.statusText}`, errorText);
+            }
+          } catch (error) {
+            console.error(`❌ Erro ao enviar webhook:`, error.message, error.stack);
+          }
+        } else {
+          console.warn(`⚠️ Nenhum webhook configurado para sessão ${sessionData.id}`);
+        }
       }
     });
 
