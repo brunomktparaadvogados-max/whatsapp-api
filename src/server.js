@@ -271,10 +271,20 @@ app.post('/api/admin/cleanup-sessions', authMiddleware, async (req, res) => {
 app.get('/health', async (req, res) => {
   try {
     const health = await sessionManager.healthCheck();
+    const dbCapacity = await db.getDatabaseCapacityPercentage();
+    const messagesCount = await db.getMessagesCount();
+    const dbSize = await db.getDatabaseSize();
+
     res.json({
       status: 'ok',
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
+      database: {
+        capacity: `${dbCapacity.toFixed(2)}%`,
+        size: dbSize?.size || 'unknown',
+        messages: messagesCount,
+        status: dbCapacity < 80 ? 'healthy' : 'warning'
+      },
       ...health
     });
   } catch (error) {
@@ -288,11 +298,21 @@ app.get('/health', async (req, res) => {
 app.get('/api/health', async (req, res) => {
   try {
     const health = await sessionManager.healthCheck();
+    const dbCapacity = await db.getDatabaseCapacityPercentage();
+    const messagesCount = await db.getMessagesCount();
+    const dbSize = await db.getDatabaseSize();
+
     res.json({
       success: true,
       status: 'healthy',
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
+      database: {
+        capacity: `${dbCapacity.toFixed(2)}%`,
+        size: dbSize?.size || 'unknown',
+        messages: messagesCount,
+        status: dbCapacity < 80 ? 'healthy' : 'warning'
+      },
       ...health
     });
   } catch (error) {
@@ -1188,21 +1208,59 @@ cron.schedule('0 * * * *', async () => {
   }
 });
 
-cron.schedule('5 * * * *', async () => {
-  console.log('🧹 Executando limpeza automática de mensagens antigas...');
+
+cron.schedule('*/10 * * * *', async () => {
+  console.log('🧹 Executando limpeza automática de mensagens antigas (a cada 10 minutos)...');
   try {
-    const deletedCount = await db.deleteOldMessages(24);
+    const deletedCount = await db.deleteOldMessages(20);
     const totalMessages = await db.getMessagesCount();
     const dbSize = await db.getDatabaseSize();
+    const capacity = await db.getDatabaseCapacityPercentage();
 
     console.log(`✅ Limpeza concluída:`);
-    console.log(`   - ${deletedCount} mensagens antigas removidas`);
+    console.log(`   - ${deletedCount} mensagens antigas removidas (>20min)`);
     console.log(`   - ${totalMessages} mensagens restantes`);
     if (dbSize) {
-      console.log(`   - Tamanho do banco: ${dbSize.size}`);
+      console.log(`   - Tamanho do banco: ${dbSize.size} (${capacity.toFixed(2)}%)`);
+    }
+
+    if (capacity >= 50) {
+      console.log(`⚠️ Capacidade crítica! Executando limpeza adicional...`);
+      const cleanedByCapacity = await db.cleanupByCapacity();
+      console.log(`   - ${cleanedByCapacity} mensagens adicionais removidas`);
     }
   } catch (error) {
     console.error('❌ Erro na limpeza de mensagens:', error.message);
+  }
+});
+
+cron.schedule('0 */6 * * *', async () => {
+  console.log('💾 Executando backup de usuários (a cada 6 horas)...');
+  try {
+    const users = await db.backupUsers();
+    console.log(`✅ Backup concluído: ${users.length} usuários salvos`);
+  } catch (error) {
+    console.error('❌ Erro no backup de usuários:', error.message);
+  }
+});
+
+cron.schedule('*/5 * * * *', async () => {
+  console.log('🔍 Verificando saúde do sistema (a cada 5 minutos)...');
+  try {
+    const capacity = await db.getDatabaseCapacityPercentage();
+    const sessions = sessionManager.getAllSessions();
+    const activeSessions = sessions.filter(s => s.status === 'connected').length;
+    
+    console.log(`📊 Status do sistema:`);
+    console.log(`   - Capacidade do banco: ${capacity.toFixed(2)}%`);
+    console.log(`   - Sessões ativas: ${activeSessions}/${sessions.length}`);
+    
+    if (capacity > 90) {
+      console.error(`🚨 ALERTA: Banco de dados com ${capacity.toFixed(2)}% de capacidade!`);
+      await db.cleanupByCapacity();
+    }
+  } catch (error) {
+    console.error('❌ Erro na verificação de saúde:', error.message);
   }
 });
 

@@ -372,13 +372,13 @@ class DatabaseManager {
     return session?.webhook_url || null;
   }
 
-  async deleteOldMessages(hoursOld = 24) {
+  async deleteOldMessages(minutesOld = 20) {
     try {
       const result = await this.run(`
         DELETE FROM messages
-        WHERE created_at < NOW() - INTERVAL '${hoursOld} hours'
+        WHERE created_at < NOW() - INTERVAL '${minutesOld} minutes'
       `);
-      console.log(`🧹 Limpeza automática: ${result.changes || 0} mensagens antigas removidas (>${hoursOld}h)`);
+      console.log(`🧹 Limpeza automática: ${result.changes || 0} mensagens antigas removidas (>${minutesOld}min)`);
       return result.changes || 0;
     } catch (error) {
       console.error('❌ Erro ao deletar mensagens antigas:', error.message);
@@ -399,12 +399,88 @@ class DatabaseManager {
   async getDatabaseSize() {
     try {
       const result = await this.get(`
-        SELECT pg_size_pretty(pg_database_size(current_database())) as size
+        SELECT pg_size_pretty(pg_database_size(current_database())) as size,
+               pg_database_size(current_database()) as size_bytes
       `);
       return result;
     } catch (error) {
       console.error('❌ Erro ao obter tamanho do banco:', error.message);
       return null;
+    }
+  }
+
+  async getDatabaseCapacityPercentage() {
+    try {
+      const sizeInfo = await this.getDatabaseSize();
+      if (!sizeInfo) return 0;
+
+      const maxSize = 500 * 1024 * 1024;
+      const currentSize = parseInt(sizeInfo.size_bytes);
+      const percentage = (currentSize / maxSize) * 100;
+
+      console.log(`📊 Uso do banco: ${percentage.toFixed(2)}% (${sizeInfo.size} / 500MB)`);
+      return percentage;
+    } catch (error) {
+      console.error('❌ Erro ao calcular capacidade do banco:', error.message);
+      return 0;
+    }
+  }
+
+  async cleanupByCapacity() {
+    try {
+      const capacity = await this.getDatabaseCapacityPercentage();
+
+      if (capacity >= 50) {
+        console.log(`⚠️ Banco atingiu ${capacity.toFixed(2)}% da capacidade. Iniciando limpeza agressiva...`);
+
+        const result = await this.run(`
+          DELETE FROM messages
+          WHERE id IN (
+            SELECT id FROM messages
+  async cleanupByCapacity() {
+    try {
+      const capacity = await this.getDatabaseCapacityPercentage();
+
+      if (capacity >= 50) {
+        console.log(`⚠️ Banco atingiu ${capacity.toFixed(2)}% da capacidade. Iniciando limpeza agressiva...`);
+
+        const result = await this.run(`
+          DELETE FROM messages
+          WHERE id IN (
+            SELECT id FROM messages
+            ORDER BY created_at ASC
+            LIMIT (SELECT COUNT(*) / 2 FROM messages)
+          )
+        `);
+
+        console.log(`🧹 Limpeza por capacidade: ${result.changes || 0} mensagens removidas`);
+        return result.changes || 0;
+      }
+
+      return 0;
+    } catch (error) {
+      console.error('❌ Erro na limpeza por capacidade:', error.message);
+      return 0;
+    }
+  }
+
+  async backupUsers() {
+    try {
+      const users = await this.all('SELECT id, email, name, company, created_at FROM users');
+      console.log(`💾 Backup de usuários: ${users.length} usuários salvos em memória`);
+      return users;
+    } catch (error) {
+      console.error('❌ Erro ao fazer backup de usuários:', error.message);
+      return [];
+    }
+  }
+
+  async getAllUsers() {
+    try {
+      return await this.all('SELECT id, email, name, company, created_at FROM users ORDER BY created_at DESC');
+    } catch (error) {
+      console.error('❌ Erro ao buscar usuários:', error.message);
+      return [];
     }
   }
 
