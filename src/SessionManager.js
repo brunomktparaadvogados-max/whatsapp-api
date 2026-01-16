@@ -348,6 +348,11 @@ class SessionManager {
       const contactPhone = message.from.replace('@c.us', '');
       sessionData.lastSeen = Date.now();
 
+      if (message.from.includes('status@broadcast') || message.from.includes('@lid')) {
+        console.log(`⏭️ Ignorando mensagem de ${message.from} (status/lid)`);
+        return;
+      }
+
       console.log(`📩 Mensagem recebida - SessionId: ${sessionData.id}, From: ${contactPhone}, FromMe: ${message.fromMe}`);
 
       const messageData = {
@@ -403,15 +408,13 @@ class SessionManager {
               event: 'message',
               sessionId: sessionData.id,
               userId: sessionData.userId,
-              message: {
-                id: messageData.id,
-                from: contactPhone,
-                body: messageData.body,
-                type: messageData.messageType,
-                timestamp: messageData.timestamp,
-                mediaUrl: messageData.mediaUrl,
-                mediaMimetype: messageData.mediaMimetype
-              }
+              phone: contactPhone,
+              message: messageData.body || '',
+              fromMe: false,
+              timestamp: messageData.timestamp,
+              type: messageData.messageType,
+              mediaUrl: messageData.mediaUrl,
+              mediaMimetype: messageData.mediaMimetype
             };
 
             console.log(`📤 Enviando webhook para ${webhookUrl}`, JSON.stringify(webhookPayload, null, 2));
