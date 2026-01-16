@@ -439,6 +439,7 @@ class SessionManager {
           console.warn(`⚠️ Nenhum webhook configurado para sessão ${sessionData.id}`);
         }
 
+        await this.processLeadMovement(sessionData.userId, contactPhone, messageData.body, sessionData.id);
         await this.processAutoReplies(sessionData.id, message);
       } else {
         console.log(`⏭️ Mensagem enviada por mim, ignorando webhook`);
@@ -1103,6 +1104,63 @@ class SessionManager {
         }
       }
       console.log(`🗑️ ${clearedCount} conversas limpas da memória para sessão ${sessionId}`);
+    }
+  }
+
+  async processLeadMovement(userId, contactPhone, messageBody, sessionId) {
+    try {
+      if (!messageBody || typeof messageBody !== 'string') {
+        return;
+      }
+
+      const messageLower = messageBody.toLowerCase();
+
+      const leadStages = {
+        'interessado': 'qualified',
+        'quero saber mais': 'qualified',
+        'tenho interesse': 'qualified',
+        'gostaria de saber': 'qualified',
+        'me interessa': 'qualified',
+        'quero comprar': 'qualified',
+        'não tenho interesse': 'lost',
+        'não me interessa': 'lost',
+        'não quero': 'lost',
+        'desisto': 'lost',
+        'já comprei': 'won',
+        'fechado': 'won',
+        'vamos fechar': 'won',
+        'aceito': 'won'
+      };
+
+      let detectedStage = null;
+      let detectedKeyword = null;
+
+      for (const [keyword, stage] of Object.entries(leadStages)) {
+        if (messageLower.includes(keyword)) {
+          detectedStage = stage;
+          detectedKeyword = keyword;
+          break;
+        }
+      }
+
+      if (detectedStage) {
+        console.log(`🎯 Lead detectado! Contato: ${contactPhone}, Palavra-chave: "${detectedKeyword}", Novo estágio: ${detectedStage}`);
+
+        await this.db.updateLeadStage(userId, contactPhone, detectedStage, detectedKeyword);
+
+        this.io.to(`user_${userId}`).emit('lead_moved', {
+          sessionId,
+          contactPhone,
+          newStage: detectedStage,
+          keyword: detectedKeyword,
+          message: messageBody,
+          timestamp: Date.now()
+        });
+
+        console.log(`✅ Lead movido com sucesso! ${contactPhone} → ${detectedStage}`);
+      }
+    } catch (error) {
+      console.error(`❌ Erro ao processar movimentação de lead:`, error.message);
     }
   }
 }

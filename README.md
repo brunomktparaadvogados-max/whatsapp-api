@@ -1,268 +1,174 @@
-# 📱 WhatsApp API Gratuita
+# 🚀 API WhatsApp + CRM Integrado
 
-API REST completa e **100% gratuita** para integrar WhatsApp em seus sistemas, similar ao W-API mas totalmente open-source e sem custos.
+API REST completa para WhatsApp com sistema de CRM que move leads automaticamente baseado em palavras-chave.
 
-## ✨ Características
+## ✨ Funcionalidades
 
-- ✅ **Totalmente Gratuito** - Sem custos, sem limites
-- 🔄 **Múltiplas Instâncias** - Gerencie várias contas WhatsApp simultaneamente
-- 🪝 **Webhooks** - Receba eventos em tempo real (mensagens, status, etc)
-- 📱 **QR Code** - Interface web para escanear e conectar
-- 🚀 **REST API** - Endpoints simples e intuitivos
-- 🐳 **Docker Ready** - Deploy fácil com Docker
-- 💚 **Open Source** - Código aberto e personalizável
+### WhatsApp
+- ✅ Conexão via QR Code
+- ✅ Envio de mensagens
+- ✅ Recebimento de mensagens via WebSocket
+- ✅ Suporte a mídia (imagens, áudios, vídeos)
+- ✅ Lista de contatos
+- ✅ Histórico de conversas
+- ✅ Webhook para integração
 
-## 🚀 Instalação Rápida
+### CRM
+- ✅ Movimentação automática de leads
+- ✅ Detecção de palavras-chave
+- ✅ Notificações em tempo real via WebSocket
+- ✅ API REST para gerenciar leads
+- ✅ Histórico de movimentações
 
-### Opção 1: Docker (Recomendado)
+## 🎯 Palavras-chave Configuradas
+
+| Palavra-chave | Estágio | Descrição |
+|---------------|---------|-----------|
+| "interessado" | qualified | Lead qualificado |
+| "quero saber mais" | qualified | Lead qualificado |
+| "não tenho interesse" | lost | Lead perdido |
+| "já comprei" | won | Lead ganho |
+
+## 🚀 Deploy Rápido
 
 ```bash
+# 1. Clone o repositório
+git clone https://github.com/seu-usuario/whatsapp-api.git
 cd whatsapp-api
-docker-compose up -d
+
+# 2. Configure as variáveis de ambiente
+cp .env.example .env
+# Edite o .env com suas credenciais
+
+# 3. Faça deploy no Render
+# Siga o guia: DEPLOY_RAPIDO.md
 ```
 
-Acesse: http://localhost:3000
+## 📚 Documentação
 
-### Opção 2: Node.js
+- [Guia de Deploy Rápido](DEPLOY_RAPIDO.md) - Deploy em 5 minutos
+- [Guia Completo de Deploy](GUIA_DEPLOY_CORRIGIDO.md) - Documentação detalhada
+- [Resumo da Correção CRM](RESUMO_CORRECAO_CRM.md) - Como funciona o CRM
+
+## 🔗 Endpoints Principais
+
+### Autenticação
+```bash
+POST /api/auth/login
+POST /api/auth/register
+```
+
+### Sessões WhatsApp
+```bash
+GET /api/sessions
+POST /api/sessions
+DELETE /api/sessions/:id
+GET /api/sessions/:id/qr
+```
+
+### Mensagens
+```bash
+POST /api/messages/send
+GET /api/sessions/:id/messages
+```
+
+### CRM - Leads
+```bash
+GET /api/leads
+GET /api/leads/:contactPhone
+PUT /api/leads/:contactPhone
+```
+
+## 🧪 Testar
 
 ```bash
-cd whatsapp-api
-npm install
-npm start
+# Testar API
+chmod +x testar_api_crm.sh
+./testar_api_crm.sh
+
+# Ou manualmente
+curl https://seu-servico.onrender.com/health
 ```
 
-## 📖 Como Usar
+## 🔧 Tecnologias
 
-### 1. Criar uma Sessão
-
-**Via Interface Web:**
-- Acesse http://localhost:3000
-- Preencha o ID da sessão e webhook (opcional)
-- Clique em "Criar Sessão"
-- Escaneie o QR Code com seu WhatsApp
-
-**Via API:**
-```bash
-curl -X POST http://localhost:3000/api/sessions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "sessionId": "minha-sessao",
-    "webhookUrl": "https://seu-servidor.com/webhook"
-  }'
-```
-
-### 2. Obter QR Code
-
-```bash
-curl http://localhost:3000/api/sessions/minha-sessao/qr
-```
-
-### 3. Enviar Mensagem
-
-```bash
-curl -X POST http://localhost:3000/api/sessions/minha-sessao/messages \
-  -H "Content-Type: application/json" \
-  -d '{
-    "to": "5511999999999",
-    "message": "Olá! Mensagem enviada pela API gratuita!"
-  }'
-```
-
-### 4. Enviar Mídia (Imagem, Vídeo, Documento)
-
-```bash
-curl -X POST http://localhost:3000/api/sessions/minha-sessao/messages/media \
-  -H "Content-Type: application/json" \
-  -d '{
-    "to": "5511999999999",
-    "mediaUrl": "https://exemplo.com/imagem.jpg",
-    "caption": "Legenda da imagem"
-  }'
-```
-
-## 🔌 Endpoints da API
-
-| Método | Endpoint | Descrição |
-|--------|----------|-----------|
-| POST | `/api/sessions` | Criar nova sessão |
-| GET | `/api/sessions` | Listar todas as sessões |
-| GET | `/api/sessions/:id` | Obter detalhes da sessão |
-| GET | `/api/sessions/:id/qr` | Obter QR Code |
-| DELETE | `/api/sessions/:id` | Deletar sessão |
-| POST | `/api/sessions/:id/messages` | Enviar mensagem de texto |
-| POST | `/api/sessions/:id/messages/media` | Enviar mídia |
-| GET | `/api/sessions/:id/chats` | Listar conversas |
-| GET | `/api/sessions/:id/contacts` | Listar contatos |
-| PUT | `/api/sessions/:id/webhook` | Atualizar webhook |
-
-## 🪝 Webhooks
-
-Configure um webhook para receber eventos em tempo real:
-
-### Eventos Disponíveis:
-
-**1. ready** - Cliente conectado
-```json
-{
-  "event": "ready",
-  "sessionId": "minha-sessao",
-  "data": {
-    "wid": "5511999999999@c.us",
-    "pushname": "Meu Nome",
-    "platform": "android"
-  }
-}
-```
-
-**2. message** - Nova mensagem recebida
-```json
-{
-  "event": "message",
-  "sessionId": "minha-sessao",
-  "data": {
-    "id": "message-id",
-    "from": "5511888888888@c.us",
-    "to": "5511999999999@c.us",
-    "body": "Olá!",
-    "type": "chat",
-    "timestamp": 1234567890,
-    "fromMe": false,
-    "hasMedia": false
-  }
-}
-```
-
-**3. message_ack** - Status da mensagem
-```json
-{
-  "event": "message_ack",
-  "sessionId": "minha-sessao",
-  "data": {
-    "id": "message-id",
-    "ack": 3
-  }
-}
-```
-
-Status (ack):
-- 0: Erro
-- 1: Pendente
-- 2: Enviada ao servidor
-- 3: Entregue
-- 4: Lida
-
-**4. disconnected** - Cliente desconectado
-```json
-{
-  "event": "disconnected",
-  "sessionId": "minha-sessao",
-  "reason": "LOGOUT"
-}
-```
-
-## 🔧 Integração com N8N
-
-1. No N8N, crie um Webhook node
-2. Copie a URL do webhook
-3. Configure na sua sessão:
-
-```bash
-curl -X PUT http://localhost:3000/api/sessions/minha-sessao/webhook \
-  -H "Content-Type: application/json" \
-  -d '{
-    "webhookUrl": "https://seu-n8n.com/webhook/whatsapp"
-  }'
-```
-
-4. Pronto! Todos os eventos serão enviados para o N8N
-
-## 📋 Exemplos de Uso
-
-### Enviar mensagem para múltiplos contatos
-
-```javascript
-const contacts = ['5511999999999', '5511888888888'];
-const message = 'Olá! Esta é uma mensagem em massa.';
-
-for (const contact of contacts) {
-  await fetch('http://localhost:3000/api/sessions/minha-sessao/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ to: contact, message })
-  });
-}
-```
-
-### Responder mensagens automaticamente
-
-Configure um webhook e crie um endpoint que responde:
-
-```javascript
-app.post('/webhook', async (req, res) => {
-  const { event, data } = req.body;
-  
-  if (event === 'message' && !data.fromMe) {
-    await fetch('http://localhost:3000/api/sessions/minha-sessao/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        to: data.from,
-        message: 'Obrigado pela mensagem! Responderemos em breve.'
-      })
-    });
-  }
-  
-  res.sendStatus(200);
-});
-```
-
-## 🆚 Comparação com W-API
-
-| Recurso | W-API | Esta API |
-|---------|-------|----------|
-| Custo | Pago | **Gratuito** |
-| Múltiplas Instâncias | ✅ | ✅ |
-| Webhooks | ✅ | ✅ |
-| QR Code | ✅ | ✅ |
-| Enviar Mensagens | ✅ | ✅ |
-| Enviar Mídia | ✅ | ✅ |
-| Open Source | ❌ | ✅ |
-| Self-Hosted | ❌ | ✅ |
-
-## 🛠️ Tecnologias
-
-- **Node.js** - Runtime JavaScript
+- **Node.js** - Runtime
 - **Express** - Framework web
-- **whatsapp-web.js** - Biblioteca WhatsApp Web
+- **whatsapp-web.js** - Cliente WhatsApp
+- **Socket.io** - WebSocket
+- **PostgreSQL** - Banco de dados (Supabase)
 - **Puppeteer** - Automação do navegador
-- **Docker** - Containerização
 
-## ⚠️ Avisos Importantes
+## 📊 Fluxo de Funcionamento
 
-1. **Uso Responsável**: Use esta API de acordo com os Termos de Serviço do WhatsApp
-2. **Não é Oficial**: Esta API não é oficial do WhatsApp
-3. **Risco de Ban**: Uso excessivo pode resultar em banimento da conta
-4. **Backup**: Faça backup da pasta `sessions` para não perder suas conexões
+### Enviar Mensagem
+```
+Lovable → API → WhatsApp → Contato
+```
+
+### Receber Mensagem + Mover Lead
+```
+Contato → WhatsApp → API → Detecta palavra-chave → Move lead → WebSocket → Lovable
+```
+
+## 🌐 Integração com Lovable
+
+```typescript
+// src/services/whatsappApi.ts
+const API_URL = import.meta.env.VITE_WHATSAPP_API_URL;
+
+export const whatsappApi = {
+  login: async (email, password) => { ... },
+  sendMessage: async (token, sessionId, to, message) => { ... },
+  getLeads: async (token) => { ... },
+  updateLead: async (token, contactPhone, stage) => { ... }
+}
+
+// Escutar eventos
+socket.on('new_message', (data) => { ... });
+socket.on('lead_moved', (data) => { ... });
+```
+
+## 🐛 Troubleshooting
+
+### Deploy falhou
+- Verifique os logs no Render
+- Confirme que o `DATABASE_URL` está configurado
+
+### Leads não estão sendo movidos
+- Verifique se a mensagem contém uma palavra-chave
+- Veja os logs da API
+
+### WhatsApp não conecta
+- Aguarde 2-3 minutos após escanear o QR Code
+- Verifique se o Chromium está instalado
+
+## 📝 Variáveis de Ambiente
+
+```env
+NODE_ENV=production
+PORT=3000
+DATABASE_URL=postgresql://...
+JWT_SECRET=seu-secret-aqui
+PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+```
 
 ## 🤝 Contribuindo
 
-Contribuições são bem-vindas! Sinta-se à vontade para:
-- Reportar bugs
-- Sugerir novas funcionalidades
-- Enviar pull requests
+1. Fork o projeto
+2. Crie uma branch: `git checkout -b feature/nova-funcionalidade`
+3. Commit: `git commit -m 'feat: adiciona nova funcionalidade'`
+4. Push: `git push origin feature/nova-funcionalidade`
+5. Abra um Pull Request
 
 ## 📄 Licença
 
-MIT License - Livre para uso pessoal e comercial
+MIT
 
-## 🌟 Créditos
+## 👨‍💻 Autor
 
-Baseado em:
-- [whatsapp-web.js](https://github.com/pedroslopez/whatsapp-web.js)
-- Inspirado no W-API e outras soluções comerciais
+Sistema Flow - Automação de WhatsApp + CRM
 
 ---
 
-**Desenvolvido com 💚 para a comunidade open-source**
-
-Se este projeto foi útil, considere dar uma ⭐ no repositório!
+**⚡ Deploy em 5 minutos | 🚀 Pronto para produção | 💪 100% funcional**
