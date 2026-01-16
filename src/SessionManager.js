@@ -403,8 +403,10 @@ class SessionManager {
       if (webhookUrl) {
         console.log(`✅ Webhook encontrado: ${webhookUrl}`);
         try {
+          const eventType = message.fromMe ? 'ao_enviar' : 'ao_receber';
+
           const webhookPayload = {
-            event: 'message',
+            event: eventType,
             sessionId: sessionData.id,
             userId: sessionData.userId,
             phone: contactPhone,
@@ -413,10 +415,11 @@ class SessionManager {
             timestamp: messageData.timestamp,
             type: messageData.messageType,
             mediaUrl: messageData.mediaUrl,
-            mediaMimetype: messageData.mediaMimetype
+            mediaMimetype: messageData.mediaMimetype,
+            messageId: messageData.id
           };
 
-          console.log(`📤 Enviando webhook para ${webhookUrl}`, JSON.stringify(webhookPayload, null, 2));
+          console.log(`📤 Enviando webhook [${eventType}] para ${webhookUrl}`, JSON.stringify(webhookPayload, null, 2));
           const webhookResponse = await fetch(webhookUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
