@@ -437,17 +437,6 @@ class DatabaseManager {
           DELETE FROM messages
           WHERE id IN (
             SELECT id FROM messages
-  async cleanupByCapacity() {
-    try {
-      const capacity = await this.getDatabaseCapacityPercentage();
-
-      if (capacity >= 50) {
-        console.log(`⚠️ Banco atingiu ${capacity.toFixed(2)}% da capacidade. Iniciando limpeza agressiva...`);
-
-        const result = await this.run(`
-          DELETE FROM messages
-          WHERE id IN (
-            SELECT id FROM messages
             ORDER BY created_at ASC
             LIMIT (SELECT COUNT(*) / 2 FROM messages)
           )
