@@ -404,21 +404,16 @@ class SessionManager {
         console.log(`✅ Webhook encontrado: ${webhookUrl}`);
         try {
           const webhookPayload = {
-            event: 'message',
-            data: {
-              sessionId: sessionData.id,
-              userId: sessionData.userId,
-              from: contactPhone,
-              message: {
-                body: messageData.body || '',
-                type: messageData.messageType
-              },
-              fromMe: message.fromMe,
-              timestamp: messageData.timestamp,
-              messageId: messageData.id,
-              mediaUrl: messageData.mediaUrl,
-              mediaMimetype: messageData.mediaMimetype
-            }
+            phone: contactPhone,
+            message: messageData.body || '',
+            fromMe: message.fromMe,
+            timestamp: messageData.timestamp,
+            messageId: messageData.id,
+            sessionId: sessionData.id,
+            userId: sessionData.userId,
+            messageType: messageData.messageType,
+            mediaUrl: messageData.mediaUrl,
+            mediaMimetype: messageData.mediaMimetype
           };
 
           console.log(`📤 Enviando webhook [message] para ${webhookUrl}`, JSON.stringify(webhookPayload, null, 2));
@@ -481,21 +476,16 @@ class SessionManager {
           console.log(`✅ Webhook encontrado: ${webhookUrl}`);
           try {
             const webhookPayload = {
-              event: 'message',
-              data: {
-                sessionId: sessionData.id,
-                userId: sessionData.userId,
-                from: contactPhone,
-                message: {
-                  body: messageData.body || '',
-                  type: messageData.messageType
-                },
-                fromMe: true,
-                timestamp: messageData.timestamp,
-                messageId: messageData.id,
-                mediaUrl: messageData.mediaUrl,
-                mediaMimetype: messageData.mediaMimetype
-              }
+              phone: contactPhone,
+              message: messageData.body || '',
+              fromMe: true,
+              timestamp: messageData.timestamp,
+              messageId: messageData.id,
+              sessionId: sessionData.id,
+              userId: sessionData.userId,
+              messageType: messageData.messageType,
+              mediaUrl: messageData.mediaUrl,
+              mediaMimetype: messageData.mediaMimetype
             };
 
             console.log(`📤 Enviando webhook [message] para ${webhookUrl}`, JSON.stringify(webhookPayload, null, 2));
