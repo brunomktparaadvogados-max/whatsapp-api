@@ -982,13 +982,10 @@ class SessionManager {
     console.log(`📞 Enviando para: ${chatId}`);
 
     try {
-      const sendPromise = session.client.sendMessage(chatId, message);
-
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Timeout ao enviar mensagem')), 30000);
-      });
-
-      const result = await Promise.race([sendPromise, timeoutPromise]);
+      const result = await session.client.pupPage.evaluate(async ({ chatId, message }) => {
+        const chat = await window.WWebJS.getChat(chatId);
+        return await chat.sendMessage(message);
+      }, { chatId, message });
 
       console.log(`✅ Mensagem enviada com sucesso! ID: ${result.id._serialized}`);
 
@@ -998,22 +995,6 @@ class SessionManager {
         timestamp: result.timestamp
       };
     } catch (error) {
-      if (error.message && (
-        error.message.includes('evaluation failed') ||
-        error.message.includes('markedUnread') ||
-        error.message.includes('sendSeen')
-      )) {
-        console.log(`⚠️ Erro ignorado (sendSeen/markedUnread): ${error.message.substring(0, 100)}...`);
-        console.log(`✅ Retornando sucesso pois a mensagem provavelmente foi enviada`);
-
-        return {
-          success: true,
-          messageId: `msg_${Date.now()}`,
-          timestamp: Date.now(),
-          warning: 'Mensagem enviada mas houve erro ao marcar como lida'
-        };
-      }
-
       console.error(`❌ Erro ao enviar mensagem:`, error.message);
       throw error;
     }
