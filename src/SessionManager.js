@@ -11,6 +11,7 @@ class SessionManager {
     this.io = io;
     this.reconnectAttempts = new Map();
     this.maxReconnectAttempts = 5;
+    this.inMemoryMessages = new Map();
 
     this.initMongoDB();
   }
@@ -370,6 +371,17 @@ class SessionManager {
         } catch (error) {
           console.error('Erro ao baixar mídia:', error);
         }
+      }
+
+      const sessionKey = `${sessionData.id}_${contactPhone}`;
+      if (!this.inMemoryMessages.has(sessionKey)) {
+        this.inMemoryMessages.set(sessionKey, []);
+      }
+      this.inMemoryMessages.get(sessionKey).push(messageData);
+
+      const messages = this.inMemoryMessages.get(sessionKey);
+      if (messages.length > 100) {
+        messages.shift();
       }
 
       await this.db.saveMessage(messageData);
@@ -1057,6 +1069,38 @@ class SessionManager {
       isMyContact: contact.isMyContact,
       isBlocked: contact.isBlocked
     }));
+  }
+
+  getInMemoryMessages(sessionId, contactPhone = null) {
+    if (contactPhone) {
+      const sessionKey = `${sessionId}_${contactPhone}`;
+      return this.inMemoryMessages.get(sessionKey) || [];
+    }
+
+    const allMessages = [];
+    for (const [key, messages] of this.inMemoryMessages.entries()) {
+      if (key.startsWith(`${sessionId}_`)) {
+        allMessages.push(...messages);
+      }
+    }
+    return allMessages.sort((a, b) => a.timestamp - b.timestamp);
+  }
+
+  clearInMemoryMessages(sessionId, contactPhone = null) {
+    if (contactPhone) {
+      const sessionKey = `${sessionId}_${contactPhone}`;
+      this.inMemoryMessages.delete(sessionKey);
+      console.log(`🗑️ Mensagens em memória limpas para ${sessionKey}`);
+    } else {
+      let clearedCount = 0;
+      for (const key of this.inMemoryMessages.keys()) {
+        if (key.startsWith(`${sessionId}_`)) {
+          this.inMemoryMessages.delete(key);
+          clearedCount++;
+        }
+      }
+      console.log(`🗑️ ${clearedCount} conversas limpas da memória para sessão ${sessionId}`);
+    }
   }
 }
 

@@ -798,18 +798,68 @@ app.get('/api/sessions/:sessionId/contacts', authMiddleware, async (req, res) =>
 app.get('/api/sessions/:sessionId/contacts/:contactPhone/messages', authMiddleware, async (req, res) => {
   try {
     const { sessionId, contactPhone } = req.params;
-    const { limit = 100 } = req.query;
+    const { limit = 100, source = 'db' } = req.query;
 
     const dbSession = await db.getSession(sessionId);
     if (!dbSession || dbSession.user_id !== req.userId) {
       return res.status(404).json({ error: 'Sessão não encontrada' });
     }
 
-    const messages = await db.getMessagesByContact(sessionId, contactPhone, parseInt(limit));
+    let messages;
+    if (source === 'memory') {
+      messages = sessionManager.getInMemoryMessages(sessionId, contactPhone);
+    } else {
+      messages = await db.getMessagesByContact(sessionId, contactPhone, parseInt(limit));
+      messages = messages.reverse();
+    }
 
     res.json({
       success: true,
-      messages: messages.reverse()
+      messages,
+      source
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.get('/api/sessions/:sessionId/messages/memory', authMiddleware, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { contactPhone } = req.query;
+
+    const dbSession = await db.getSession(sessionId);
+    if (!dbSession || dbSession.user_id !== req.userId) {
+      return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+
+    const messages = sessionManager.getInMemoryMessages(sessionId, contactPhone);
+
+    res.json({
+      success: true,
+      messages,
+      count: messages.length
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete('/api/sessions/:sessionId/messages/memory', authMiddleware, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { contactPhone } = req.query;
+
+    const dbSession = await db.getSession(sessionId);
+    if (!dbSession || dbSession.user_id !== req.userId) {
+      return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+
+    sessionManager.clearInMemoryMessages(sessionId, contactPhone);
+
+    res.json({
+      success: true,
+      message: 'Mensagens em memória limpas com sucesso'
     });
   } catch (error) {
     res.status(400).json({ error: error.message });
