@@ -982,10 +982,7 @@ class SessionManager {
     console.log(`📞 Enviando para: ${chatId}`);
 
     try {
-      const result = await session.client.pupPage.evaluate(async ({ chatId, message }) => {
-        const chat = await window.WWebJS.getChat(chatId);
-        return await chat.sendMessage(message);
-      }, { chatId, message });
+      const result = await session.client.sendMessage(chatId, message, { sendSeen: false });
 
       console.log(`✅ Mensagem enviada com sucesso! ID: ${result.id._serialized}`);
 
