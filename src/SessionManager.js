@@ -389,7 +389,6 @@ class SessionManager {
         messages.shift();
       }
 
-      await this.db.saveMessage(messageData);
       await this.db.upsertContact(sessionData.id, contactPhone, message._data.notifyName);
 
       this.io.to(`user_${sessionData.userId}`).emit('new_message', {
@@ -461,7 +460,6 @@ class SessionManager {
           status: 'sent'
         };
 
-        await this.db.saveMessage(messageData);
         await this.db.upsertContact(sessionData.id, contactPhone);
 
         this.io.to(`user_${sessionData.userId}`).emit('message_sent', {
@@ -682,7 +680,6 @@ class SessionManager {
         status: 'sent'
       };
 
-      await this.db.saveMessage(messageData);
       await this.db.upsertContact(sessionId, normalizedPhone);
 
       session.lastSeen = Date.now();
@@ -720,7 +717,6 @@ class SessionManager {
             status: 'sent'
           };
 
-          await this.db.saveMessage(messageData);
           await this.db.upsertContact(sessionId, phoneWithout9);
 
           session.lastSeen = Date.now();
@@ -762,7 +758,6 @@ class SessionManager {
             status: 'sent'
           };
 
-          await this.db.saveMessage(messageData);
           await this.db.upsertContact(sessionId, phoneWith9);
 
           session.lastSeen = Date.now();

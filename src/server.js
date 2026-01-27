@@ -1131,6 +1131,39 @@ app.post('/api/meta/send-bulk', authMiddleware, async (req, res) => {
   }
 });
 
+app.post('/api/admin/cleanup-messages', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = await db.getUserById(req.userId);
+    if (currentUser.email !== 'admin@flow.com') {
+      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
+    }
+
+    console.log('🗑️ Iniciando limpeza de mensagens...');
+
+    const countResult = await db.all('SELECT COUNT(*) as count FROM messages');
+    const totalMensagens = countResult[0].count;
+
+    console.log(`📊 Total de mensagens antes da limpeza: ${totalMensagens}`);
+
+    await db.run('DELETE FROM messages');
+
+    const newCountResult = await db.all('SELECT COUNT(*) as count FROM messages');
+    const remainingMessages = newCountResult[0].count;
+
+    console.log(`✅ Limpeza concluída! Mensagens deletadas: ${totalMensagens}`);
+
+    res.json({
+      success: true,
+      message: 'Todas as mensagens foram deletadas com sucesso',
+      deletedCount: totalMensagens,
+      remainingCount: remainingMessages
+    });
+  } catch (error) {
+    console.error('❌ Erro ao limpar mensagens:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
