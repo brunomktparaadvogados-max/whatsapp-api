@@ -365,8 +365,8 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
         success: true,
         qrCode: null,
         status: session.status,
-        message: session.status === 'connected' 
-          ? 'WhatsApp já está conectado!' 
+        message: (session.status === 'connected' || session.status === 'authenticated')
+          ? 'WhatsApp já está conectado!'
           : 'QR Code ainda não disponível. Aguarde...'
       });
     }
@@ -566,7 +566,7 @@ app.post('/api/sessions/:sessionId/messages', authMiddleware, async (req, res) =
       const userSessions = await db.getSessionsByUserId(req.userId);
       const activeSessions = userSessions.filter(s => {
         const session = sessionManager.getSession(s.id);
-        return session && session.status === 'connected';
+        return session && (session.status === 'connected' || session.status === 'authenticated');
       });
 
       if (activeSessions.length === 0) {
@@ -623,7 +623,7 @@ app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) =>
 
       const activeSessions = userSessions.filter(s => {
         const session = sessionManager.getSession(s.id);
-        const isActive = session && session.status === 'connected';
+        const isActive = session && (session.status === 'connected' || session.status === 'authenticated');
         console.log(`     * ${s.id} - Em memória: ${!!session} - Status: ${session?.status || 'N/A'} - Ativa: ${isActive}`);
         return isActive;
       });
@@ -1451,12 +1451,12 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
     // Auto-detectar sessão se não for informada
     if (!targetSessionId) {
       const userSessions = isAdmin
-        ? await db.all('SELECT * FROM sessions WHERE status = ?', ['connected'])
+        ? await db.all('SELECT * FROM sessions WHERE status IN (?, ?)', ['connected', 'authenticated'])
         : await db.getSessionsByUserId(req.userId);
 
       const activeSessions = userSessions.filter(s => {
         const session = sessionManager.getSession(s.id);
-        return session && session.status === 'connected';
+        return session && (session.status === 'connected' || session.status === 'authenticated');
       });
 
       if (activeSessions.length === 0) {
