@@ -1,4 +1,4 @@
-const { Client, RemoteAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
@@ -134,6 +134,10 @@ class SessionManager {
         executablePath: execPath,
         timeout: 180000
       },
+      authStrategy: new LocalAuth({
+        clientId: sessionId,
+        dataPath: path.join(__dirname, '..', '.wwebjs_auth')
+      }),
       markOnlineAvailable: false,
       syncFullHistory: false,
       disableAutoSeen: true
@@ -143,19 +147,9 @@ class SessionManager {
       headless: clientConfig.puppeteer.headless,
       executablePath: clientConfig.puppeteer.executablePath,
       timeout: clientConfig.puppeteer.timeout,
-      argsCount: clientConfig.puppeteer.args.length
+      argsCount: clientConfig.puppeteer.args.length,
+      authStrategy: 'LocalAuth'
     }, null, 2));
-
-    if (this.isMongoConnected && this.mongoStore) {
-      clientConfig.authStrategy = new RemoteAuth({
-        clientId: sessionId,
-        store: this.mongoStore,
-        backupSyncIntervalMs: 300000
-      });
-      console.log(`🔐 Usando RemoteAuth com MongoDB para sessão ${sessionId}`);
-    } else {
-      console.warn(`⚠️ MongoDB não disponível. Sessão ${sessionId} não persistirá após restart`);
-    }
 
     console.log(`✅ Cliente WhatsApp criado com sucesso para sessão ${sessionId}`);
     return new Client(clientConfig);
@@ -340,7 +334,7 @@ class SessionManager {
     });
 
     client.on('remote_session_saved', () => {
-      console.log(`💾 Sessão remota salva no MongoDB: ${sessionData.id}`);
+      console.log(`💾 Sessão local salva: ${sessionData.id}`);
       sessionData.lastSeen = Date.now();
     });
 
@@ -821,12 +815,12 @@ class SessionManager {
       totalSessions: this.sessions.size,
       connectedSessions: 0,
       disconnectedSessions: 0,
-      mongoConnected: this.isMongoConnected,
+      authStrategy: 'LocalAuth',
       sessions: []
     };
 
     this.sessions.forEach((session, id) => {
-      if (session.status === 'connected') {
+      if (session.status === 'connected' || session.status === 'authenticated') {
         health.connectedSessions++;
       } else {
         health.disconnectedSessions++;
