@@ -1149,7 +1149,6 @@ class SessionManager {
       console.log(`🗑️ ${clearedCount} conversas limpas da memória para sessão ${sessionId}`);
     }
   }
-}
 
 
   // ═══════════════════════════════════════════════════════════════════
@@ -1184,5 +1183,5 @@ class SessionManager {
       }
     }, 10000); // verifica a cada 10 segundos
   }
-
+}
 module.exports = SessionManager;
