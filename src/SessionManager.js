@@ -12,8 +12,10 @@ class SessionManager {
     this.reconnectAttempts = new Map();
     this.maxReconnectAttempts = 5;
     this.inMemoryMessages = new Map();
+    this.sessionLastActivity = new Map();
 
     this.initMongoDB();
+    setTimeout(() => this.startAutoCleanup(), 5000);
   }
 
   async initMongoDB() {
@@ -83,6 +85,7 @@ class SessionManager {
 
     sessionData.client = client;
     this.sessions.set(sessionId, sessionData);
+    this.sessionLastActivity.set(sessionId, Date.now());
 
     try {
       await client.initialize();
@@ -188,6 +191,7 @@ class SessionManager {
 
     sessionData.client = client;
     this.sessions.set(sessionId, sessionData);
+      this.sessionLastActivity.set(sessionId, Date.now());
 
     console.log(`⏳ Iniciando cliente ${sessionId} em background...`);
 
@@ -609,6 +613,17 @@ class SessionManager {
     this.sessions.delete(sessionId);
     this.reconnectAttempts.delete(sessionId);
     await this.db.deleteSession(sessionId);
+      this.sessionLastActivity.delete(sessionId);
+      // 🧹 Limpar arquivos do disco para liberar memória RAM
+      const _sPaths = [
+        path.join(__dirname, '..', '.wwebjs_auth', `session-${sessionId}`),
+        path.join(__dirname, '..', '.wwebjs_cache', `session-${sessionId}`),
+        path.join('/app', '.wwebjs_auth', `session-${sessionId}`),
+        path.join('/app', '.wwebjs_cache', `session-${sessionId}`),
+      ];
+      for (const _sp of _sPaths) {
+        try { if (fs.existsSync(_sp)) { fs.rmSync(_sp, { recursive: true, force: true }); console.log(`🗑️ Removido disco: ${_sp}`); } } catch (_e) {}
+      }
 
     console.log(`✅ Sessão ${sessionId} deletada completamente`);
   }
@@ -1135,5 +1150,39 @@ class SessionManager {
     }
   }
 }
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  // AUTO-CLEANUP: Destroi sessões sem atividade após 40s (libera memória)
+  // ═══════════════════════════════════════════════════════════════════
+  startAutoCleanup() {
+    const IDLE_MS = 40 * 1000; // 40 segundos sem atividade
+    console.log('🔄 Auto-limpeza iniciada: sessões ociosas serão destruídas após 40s');
+    setInterval(async () => {
+      const now = Date.now();
+      const toDestroy = [];
+      for (const [sid, lastTs] of this.sessionLastActivity.entries()) {
+        const sess = this.sessions.get(sid);
+        if (!sess) { this.sessionLastActivity.delete(sid); continue; }
+        const isReady = sess.status === 'ready';
+        if (!isReady && (now - lastTs) > IDLE_MS) {
+          toDestroy.push({ sid, idleSec: Math.round((now - lastTs) / 1000) });
+        }
+      }
+      for (const { sid, idleSec } of toDestroy) {
+        console.log(`🧹 Auto-limpeza: "${sid}" ocioso ${idleSec}s (não conectado) — destruindo...`);
+        try {
+          await this.deleteSession(sid);
+        } catch (e) {
+          console.error(`Erro ao auto-limpar ${sid}:`, e.message);
+          this.sessions.delete(sid);
+          this.sessionLastActivity.delete(sid);
+        }
+      }
+      if (toDestroy.length > 0) {
+        console.log(`✅ Auto-limpeza: ${toDestroy.length} sessão(ões) removidas. Sessões ativas: ${this.sessions.size}`);
+      }
+    }, 10000); // verifica a cada 10 segundos
+  }
 
 module.exports = SessionManager;
