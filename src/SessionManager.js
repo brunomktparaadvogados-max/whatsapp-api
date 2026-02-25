@@ -12,6 +12,7 @@ class SessionManager {
     this.reconnectAttempts = new Map();
     this.maxReconnectAttempts = 5;
     this.inMemoryMessages = new Map();
+    this.sessionLastActivity = new Map();
     
     this.initMongoDB();
       }
