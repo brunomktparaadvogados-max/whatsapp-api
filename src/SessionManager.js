@@ -12,11 +12,9 @@ class SessionManager {
     this.reconnectAttempts = new Map();
     this.maxReconnectAttempts = 5;
     this.inMemoryMessages = new Map();
-    this.sessionLastActivity = new Map();
-
+    
     this.initMongoDB();
-    setTimeout(() => this.startAutoCleanup(), 5000);
-  }
+      }
 
   async initMongoDB() {
     console.log('⚠️ MongoDB/Mongoose não é mais usado. Usando PostgreSQL (Supabase).');
