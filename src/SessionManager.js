@@ -275,8 +275,6 @@ class SessionManager {
           '--disable-dev-shm-usage',
           '--disable-gpu',
           '--no-first-run',
-          '--no-zygote',
-          '--single-process',
           '--disable-extensions',
           '--disable-background-networking',
           '--disable-default-apps',
@@ -286,9 +284,12 @@ class SessionManager {
           '--mute-audio',
           '--no-default-browser-check',
           '--disable-software-rasterizer',
-          '--disable-web-security',
-          '--disable-features=IsolateOrigins,site-per-process',
-          '--js-flags=--max-old-space-size=128',
+          '--disable-features=TranslateUI',
+          '--disable-ipc-flooding-protection',
+          '--disable-renderer-backgrounding',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-component-update',
+          '--js-flags=--max-old-space-size=512',
           '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         ],
         executablePath: actualExecPath,
@@ -622,7 +623,7 @@ class SessionManager {
     }
 
     this.reconnectAttempts.set(sessionId, attempts + 1);
-    const delay = Math.min(5000 * Math.pow(2, attempts), 60000); // 5s, 10s, 20s...
+    const delay = Math.min(2000 * Math.pow(2, attempts), 30000); // 2s, 4s, 8s... max 30s
 
     console.log(`🔄 [${sessionId}] Reconexão completa ${attempts + 1}/${this.maxReconnectAttempts} em ${delay / 1000}s...`);
 
@@ -973,9 +974,56 @@ class SessionManager {
         this.logRecentError(sessionId, error);
         console.error(`❌ [${sessionId}] Erro envio (tentativa ${attempt + 1}):`, error.message);
 
-        // Se é um erro fatal do Chromium, não adianta retry
+        // Se é um erro fatal do Chromium, tenta reconexão rápida inline
         if (this.isFatalSessionError(error)) {
           console.error(`💀 [${sessionId}] Erro FATAL de Chromium detectado: ${error.message}`);
+          console.log(`🔄 [${sessionId}] Tentando reconexão rápida inline...`);
+
+          try {
+            // Destrói cliente antigo
+            if (session.client) {
+              try { await session.client.destroy(); } catch (e) { /* ignora */ }
+            }
+
+            // Cria novo cliente e inicializa
+            const newClient = await this.createWhatsAppClient(sessionId);
+            this.setupClientEvents(newClient, session);
+            session.client = newClient;
+            session.status = 'initializing';
+            this.sessions.set(sessionId, session);
+
+            // Inicializa com timeout de 60s
+            await Promise.race([
+              newClient.initialize(),
+              new Promise((_, rej) => setTimeout(() => rej(new Error('reconnect_timeout')), 60000))
+            ]);
+
+            // Espera um pouco para stabilizar
+            await new Promise(resolve => setTimeout(resolve, 3000));
+
+            // Verifica se reconectou
+            if (session.status === 'connected' || session.status === 'authenticated') {
+              console.log(`✅ [${sessionId}] Reconexão rápida bem-sucedida! Reenviando mensagem...`);
+              this.reconnectAttempts.set(sessionId, 0); // Reset counter
+
+              // Tenta reenviar a mensagem
+              const sentMessage = await this.sendMessageWithTimeout(session.client, chatId, message, mediaUrl);
+              session.lastSeen = Date.now();
+              this.sessionLastActivity.set(sessionId, Date.now());
+              await this.db.upsertContact(sessionId, normalizedPhone);
+              return {
+                id: sentMessage.id._serialized,
+                sessionId, contactPhone: normalizedPhone,
+                messageType: sentMessage.type, body: message,
+                mediaUrl, mediaMimetype: null, fromMe: true,
+                timestamp: sentMessage.timestamp, status: 'sent'
+              };
+            }
+          } catch (reconnectError) {
+            console.error(`❌ [${sessionId}] Reconexão rápida falhou: ${reconnectError.message}`);
+          }
+
+          // Reconexão rápida falhou — marca como desconectado
           session.status = 'disconnected';
           await this.db.updateSessionStatus(sessionId, 'disconnected');
 
@@ -984,7 +1032,7 @@ class SessionManager {
             reason: 'CHROMIUM_CRASH'
           });
 
-          // Tenta reconectar em background
+          // Tenta reconectar em background como fallback
           this.attemptFullReconnect(session);
 
           throw new Error('Sessão WhatsApp caiu. Reconectando automaticamente, tente novamente em 1 minuto.');
