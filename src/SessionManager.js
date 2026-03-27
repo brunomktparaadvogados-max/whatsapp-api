@@ -785,6 +785,7 @@ class SessionManager {
       'getModelsArray',
       'getLabelModel',
       'sendSeen',
+      'markSeen',
       'getProfilePicUrl',
       'presenceAvailable',
       'archiveChat',
@@ -792,6 +793,8 @@ class SessionManager {
       'pinChat',
       'starMessage',
       'getStatus',
+      'No LID for user',
+      'getIsMyContact',
     ];
     return ignorablePatterns.some(p => msg.includes(p));
   }
@@ -1012,30 +1015,6 @@ class SessionManager {
 
         return messageData;
       } catch (error) {
-        // Se é um erro IGNORÁVEL do WhatsApp Web (markedUnread, sendSeen, etc.),
-        // a mensagem provavelmente FOI enviada com sucesso — o erro vem de
-        // um callback interno do WhatsApp Web, não do envio.
-        if (this.isIgnorableWhatsAppError(error)) {
-          console.warn(`⚠️ [${sessionId}] Erro ignorável do WhatsApp Web durante envio: ${error.message.substring(0, 100)}`);
-          this.logRecentError(sessionId, new Error(`[IGNORABLE_DURING_SEND] ${error.message.substring(0, 100)}`));
-          // Considera como sucesso — retorna dados simulados
-          session.lastSeen = Date.now();
-          this.sessionLastActivity.set(sessionId, Date.now());
-          await this.db.upsertContact(sessionId, normalizedPhone);
-          return {
-            id: `sent-${Date.now()}`,
-            sessionId: sessionId,
-            contactPhone: normalizedPhone,
-            messageType: 'chat',
-            body: message,
-            mediaUrl: mediaUrl,
-            mediaMimetype: null,
-            fromMe: true,
-            timestamp: Math.floor(Date.now() / 1000),
-            status: 'sent'
-          };
-        }
-
         lastError = error;
         this.logRecentError(sessionId, error);
         console.error(`❌ [${sessionId}] Erro envio (tentativa ${attempt + 1}):`, error.message);
