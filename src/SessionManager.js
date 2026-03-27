@@ -888,13 +888,77 @@ class SessionManager {
     }
 
     const client = session.client;
+
+    // ═══════════════════════════════════════════════════════════════════
+    // VERIFICAÇÃO REAL: Checa se o WhatsApp Web está REALMENTE conectado
+    // O status "authenticated" NÃO garante que mensagens serão entregues.
+    // Precisamos que client.getState() retorne "CONNECTED".
+    // ═══════════════════════════════════════════════════════════════════
+    try {
+      const state = await Promise.race([
+        client.getState(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('getState_timeout')), 10000))
+      ]);
+      console.log(`📊 [${sessionId}] Estado real do WhatsApp: ${state}`);
+
+      if (state !== 'CONNECTED') {
+        // Se não está CONNECTED, espera até 30s
+        console.log(`⏳ [${sessionId}] WhatsApp não está CONNECTED (estado: ${state}). Aguardando...`);
+        let waited = 0;
+        const waitInterval = 3000;
+        const maxWait = 30000;
+        while (waited < maxWait) {
+          await new Promise(resolve => setTimeout(resolve, waitInterval));
+          waited += waitInterval;
+          try {
+            const newState = await Promise.race([
+              client.getState(),
+              new Promise((_, rej) => setTimeout(() => rej(new Error('getState_timeout')), 8000))
+            ]);
+            console.log(`📊 [${sessionId}] Estado após ${waited / 1000}s: ${newState}`);
+            if (newState === 'CONNECTED') {
+              session.status = 'connected';
+              break;
+            }
+          } catch (e) {
+            if (!this.isIgnorableWhatsAppError(e)) {
+              console.error(`❌ [${sessionId}] Erro ao verificar estado: ${e.message}`);
+              break;
+            }
+          }
+        }
+
+        // Verifica uma última vez
+        const finalState = await Promise.race([
+          client.getState(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('getState_timeout')), 8000))
+        ]).catch(() => null);
+
+        if (finalState !== 'CONNECTED') {
+          console.error(`❌ [${sessionId}] WhatsApp NÃO está CONNECTED após espera. Estado: ${finalState}`);
+          throw new Error(`WhatsApp não está pronto para enviar. Estado: ${finalState}. Reconecte a sessão.`);
+        }
+        session.status = 'connected';
+      }
+    } catch (stateError) {
+      if (this.isIgnorableWhatsAppError(stateError)) {
+        console.warn(`⚠️ [${sessionId}] Erro ignorável ao verificar estado, prosseguindo...`);
+      } else if (stateError.message.includes('não está pronto') || stateError.message.includes('não está CONNECTED')) {
+        throw stateError;
+      } else {
+        console.error(`❌ [${sessionId}] Não foi possível verificar estado do WhatsApp: ${stateError.message}`);
+        this.logRecentError(sessionId, stateError);
+        throw new Error('Sessão WhatsApp instável. Reconecte a sessão.');
+      }
+    }
+
     const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
     const chatId = normalizedPhone.includes('@c.us') ? normalizedPhone : `${normalizedPhone}@c.us`;
 
     // Rate limiting: espera intervalo mínimo entre mensagens
     await this.waitForRateLimit(sessionId);
 
-    console.log(`📞 Enviando para: ${phoneNumber} → ${normalizedPhone}`);
+    console.log(`📞 [${sessionId}] Enviando para: ${phoneNumber} → ${normalizedPhone}`);
 
     // Tenta enviar com retries
     let lastError = null;
@@ -927,6 +991,7 @@ class SessionManager {
       try {
         // Tenta enviar para o número original
         const sentMessage = await this.sendMessageWithTimeout(client, chatId, message, mediaUrl);
+        console.log(`✅ [${sessionId}] Mensagem enviada com sucesso! ID: ${sentMessage?.id?._serialized || 'N/A'}`);
 
         const messageData = {
           id: sentMessage.id._serialized,
@@ -951,7 +1016,8 @@ class SessionManager {
         // a mensagem provavelmente FOI enviada com sucesso — o erro vem de
         // um callback interno do WhatsApp Web, não do envio.
         if (this.isIgnorableWhatsAppError(error)) {
-          console.warn(`⚠️ [${sessionId}] Erro ignorável do WhatsApp Web durante envio (mensagem provavelmente enviada): ${error.message.substring(0, 100)}`);
+          console.warn(`⚠️ [${sessionId}] Erro ignorável do WhatsApp Web durante envio: ${error.message.substring(0, 100)}`);
+          this.logRecentError(sessionId, new Error(`[IGNORABLE_DURING_SEND] ${error.message.substring(0, 100)}`));
           // Considera como sucesso — retorna dados simulados
           session.lastSeen = Date.now();
           this.sessionLastActivity.set(sessionId, Date.now());
@@ -1158,6 +1224,7 @@ class SessionManager {
       sessions: []
     };
 
+    const sessionPromises = [];
     this.sessions.forEach((session, id) => {
       if (session.status === 'connected' || session.status === 'authenticated') {
         health.connectedSessions++;
@@ -1165,13 +1232,33 @@ class SessionManager {
         health.disconnectedSessions++;
       }
 
-      health.sessions.push({
+      // Tenta obter o estado REAL do WhatsApp
+      const sessionInfo = {
         id: session.id,
         status: session.status,
         lastSeen: session.lastSeen,
-        timeSinceLastSeen: Date.now() - session.lastSeen
-      });
+        timeSinceLastSeen: Date.now() - session.lastSeen,
+        whatsappState: 'unknown'
+      };
+
+      if (session.client) {
+        sessionPromises.push(
+          Promise.race([
+            session.client.getState(),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))
+          ])
+          .then(state => { sessionInfo.whatsappState = state || 'null'; })
+          .catch(e => { sessionInfo.whatsappState = `error: ${e.message.substring(0, 50)}`; })
+          .then(() => sessionInfo)
+        );
+      } else {
+        sessionInfo.whatsappState = 'no_client';
+        sessionPromises.push(Promise.resolve(sessionInfo));
+      }
     });
+
+    const resolvedSessions = await Promise.all(sessionPromises);
+    health.sessions = resolvedSessions;
 
     return health;
   }
