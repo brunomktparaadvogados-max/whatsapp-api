@@ -706,10 +706,25 @@ app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) =>
     });
   } catch (error) {
     console.error(`❌ [SEND MESSAGE] Erro ao enviar mensagem:`, error);
-    res.status(400).json({
+
+    const errorMsg = (error.message || '').toLowerCase();
+    const isSessionDead = errorMsg.includes('perdeu conexão') ||
+                          errorMsg.includes('caiu') ||
+                          errorMsg.includes('reconectando') ||
+                          errorMsg.includes('não está conectada') ||
+                          errorMsg.includes('não encontrada') ||
+                          errorMsg.includes('não disponível');
+    const isRateLimit = errorMsg.includes('timeout') || errorMsg.includes('rate');
+    const statusCode = isSessionDead ? 503 : (isRateLimit ? 429 : 400);
+
+    res.status(statusCode).json({
       success: false,
       error: error.message,
-      details: 'Falha ao enviar mensagem. Verifique o número e tente novamente.'
+      errorType: isSessionDead ? 'session_error' : (isRateLimit ? 'rate_limit' : 'send_error'),
+      action: isSessionDead ? 'reconnect_session' : 'check_number',
+      details: isSessionDead
+        ? 'Sessão WhatsApp desconectou. Reconexão automática em progresso.'
+        : 'Falha ao enviar mensagem. Verifique o número e tente novamente.'
     });
   }
 });
@@ -1480,10 +1495,32 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
     });
   } catch (error) {
     console.error(`Erro ao enviar mensagem:`, error);
-    res.status(400).json({
+
+    // Categoriza o erro para o frontend saber o que fazer
+    const errorMsg = (error.message || '').toLowerCase();
+    const isSessionDead = errorMsg.includes('perdeu conexão') ||
+                          errorMsg.includes('caiu') ||
+                          errorMsg.includes('reconectando') ||
+                          errorMsg.includes('não está conectada') ||
+                          errorMsg.includes('não encontrada') ||
+                          errorMsg.includes('não disponível');
+
+    const isRateLimit = errorMsg.includes('timeout') || errorMsg.includes('rate');
+
+    // Erro de sessão = 503 (Service Unavailable, temporário)
+    // Erro de rate limit = 429
+    // Erro de número/conteúdo = 400
+    const statusCode = isSessionDead ? 503 : (isRateLimit ? 429 : 400);
+    const action = isSessionDead ? 'reconnect_session' : (isRateLimit ? 'slow_down' : 'check_number');
+
+    res.status(statusCode).json({
       success: false,
       error: error.message,
-      details: 'Falha ao enviar mensagem. Verifique o número e tente novamente.'
+      errorType: isSessionDead ? 'session_error' : (isRateLimit ? 'rate_limit' : 'send_error'),
+      action: action,
+      details: isSessionDead
+        ? 'Sessão WhatsApp desconectou. Reconexão automática em progresso. Tente novamente em 1 minuto.'
+        : 'Falha ao enviar mensagem. Verifique o número e tente novamente.'
     });
   }
 });
@@ -1559,6 +1596,44 @@ app.get('/api/webhooks/info', authMiddleware, async (req, res) => {
       success: false,
       error: error.message
     });
+  }
+});
+
+// Endpoint de diagnóstico — mostra erros recentes e saúde das sessões
+app.get('/api/debug/errors', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = await db.getUserById(req.userId);
+    if (currentUser.email !== 'admin@flow.com') {
+      return res.status(403).json({ error: 'Acesso negado' });
+    }
+    const health = await sessionManager.healthCheck();
+    const recentErrors = sessionManager.getRecentErrors(20);
+    res.json({
+      success: true,
+      health,
+      recentErrors,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint para verificar se uma sessão específica está viva
+app.get('/api/sessions/:sessionId/alive', authMiddleware, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const alive = await sessionManager.isSessionAlive(sessionId);
+    const session = sessionManager.getSession(sessionId);
+    res.json({
+      success: true,
+      sessionId,
+      alive,
+      status: session?.status || 'not_in_memory',
+      lastSeen: session?.lastSeen ? new Date(session.lastSeen).toISOString() : null
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 

@@ -12,6 +12,9 @@ const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
 const IDLE_CLEANUP_MS = 10 * 60 * 1000;          // 10 minutos de inatividade
 const CLEANUP_INTERVAL_MS = 30 * 1000;           // verifica a cada 30 segundos
 const SESSION_INIT_TIMEOUT_MS = 120000;           // 2 minutos para Chromium iniciar
+const MESSAGE_SEND_TIMEOUT_MS = 30000;            // 30 segundos timeout por mensagem
+const MIN_MESSAGE_INTERVAL_MS = 1500;             // 1.5 segundos entre mensagens (anti-rate-limit)
+const MAX_SEND_RETRIES = 2;                       // tentativas de reenvio por mensagem
 
 class SessionManager {
   constructor(database, io) {
@@ -24,6 +27,9 @@ class SessionManager {
     this.sessionLastActivity = new Map();
     this.sessionCreationQueue = [];
     this.isProcessingQueue = false;
+    this.sessionSendLock = new Map();       // Evita envio simultâneo na mesma sessão
+    this.lastMessageTime = new Map();       // Controle de rate-limit por sessão
+    this.recentErrors = [];                 // Log de erros recentes para diagnóstico
 
     this.init();
   }
@@ -301,11 +307,30 @@ class SessionManager {
   }
 
   setupClientEvents(client, sessionData) {
-    client.on('error', (error) => {
-      if (error.message && error.message.includes('evaluation failed') && error.message.includes('markedUnread')) {
-        return; // Erro ignorável
+    client.on('error', async (error) => {
+      // Erros ignoráveis do WhatsApp Web (não afetam funcionalidade)
+      const ignorablePatterns = ['markedUnread', 'getModelsArray', 'getLabelModel'];
+      if (error.message && ignorablePatterns.some(p => error.message.includes(p))) {
+        return;
       }
+
       console.error(`❌ [${sessionData.id}] Erro no cliente:`, error.message);
+      this.logRecentError(sessionData.id, error);
+
+      // Se é um erro fatal que indica que o Chromium morreu
+      if (this.isFatalSessionError(error)) {
+        console.error(`💀 [${sessionData.id}] Erro FATAL detectado no event handler. Iniciando reconexão...`);
+        sessionData.status = 'disconnected';
+        await this.db.updateSessionStatus(sessionData.id, 'disconnected');
+
+        this.io.to(`user_${sessionData.userId}`).emit('session_disconnected', {
+          sessionId: sessionData.id,
+          reason: 'CHROMIUM_CRASH'
+        });
+
+        // Reconectar automaticamente
+        this.attemptFullReconnect(sessionData);
+      }
     });
 
     client.on('loading_screen', (percent, message) => {
@@ -577,28 +602,69 @@ class SessionManager {
   }
 
   async attemptReconnect(sessionData) {
-    const attempts = this.reconnectAttempts.get(sessionData.id) || 0;
+    // Redireciona para o novo método robusto
+    await this.attemptFullReconnect(sessionData);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // RECONEXÃO COMPLETA: Destrói o cliente antigo e cria um novo
+  // Isso é necessário porque quando Chromium crasha, o cliente antigo
+  // não pode ser reutilizado — precisa criar um novo processo
+  // ═══════════════════════════════════════════════════════════════════
+  async attemptFullReconnect(sessionData) {
+    const sessionId = sessionData.id;
+    const attempts = this.reconnectAttempts.get(sessionId) || 0;
 
     if (attempts >= this.maxReconnectAttempts) {
-      console.log(`❌ Máximo de tentativas de reconexão atingido para ${sessionData.id}`);
-      await this.cleanupSession(sessionData.id);
+      console.log(`❌ [${sessionId}] Máximo de ${this.maxReconnectAttempts} reconexões atingido. Sessão precisa ser recriada manualmente.`);
+      await this.cleanupSession(sessionId);
+      await this.db.updateSessionStatus(sessionId, 'failed');
       return;
     }
 
-    this.reconnectAttempts.set(sessionData.id, attempts + 1);
-    const delay = Math.min(1000 * Math.pow(2, attempts), 30000);
+    this.reconnectAttempts.set(sessionId, attempts + 1);
+    const delay = Math.min(5000 * Math.pow(2, attempts), 60000); // 5s, 10s, 20s...
 
-    console.log(`🔄 Tentativa ${attempts + 1}/${this.maxReconnectAttempts} para ${sessionData.id} em ${delay}ms`);
+    console.log(`🔄 [${sessionId}] Reconexão completa ${attempts + 1}/${this.maxReconnectAttempts} em ${delay / 1000}s...`);
 
     setTimeout(async () => {
       try {
+        // 1. Destrói o cliente antigo completamente
         if (sessionData.client) {
-          await sessionData.client.initialize();
-          console.log(`✅ Reconexão bem-sucedida para ${sessionData.id}`);
+          try {
+            await sessionData.client.destroy();
+          } catch (e) {
+            console.warn(`⚠️ [${sessionId}] Erro ao destruir cliente antigo: ${e.message}`);
+          }
         }
+
+        // 2. Verifica se ainda temos espaço para Chromium
+        const activeCount = this.getActiveChromiumCount();
+        if (activeCount >= MAX_CONCURRENT_SESSIONS) {
+          console.warn(`⚠️ [${sessionId}] Sem espaço para reconexão (${activeCount}/${MAX_CONCURRENT_SESSIONS})`);
+          await this.forceCleanupDeadSessions();
+        }
+
+        // 3. Cria um novo cliente WhatsApp
+        console.log(`🤖 [${sessionId}] Criando novo cliente WhatsApp...`);
+        const newClient = await this.createWhatsAppClient(sessionId);
+        this.setupClientEvents(newClient, sessionData);
+
+        sessionData.client = newClient;
+        sessionData.status = 'initializing';
+        sessionData.lastSeen = Date.now();
+        this.sessions.set(sessionId, sessionData);
+        this.sessionLastActivity.set(sessionId, Date.now());
+
+        // 4. Inicializa em background
+        this.initializeClientInBackground(newClient, sessionData);
+
+        console.log(`✅ [${sessionId}] Reconexão iniciada com sucesso`);
       } catch (error) {
-        console.error(`❌ Falha na reconexão de ${sessionData.id}:`, error.message);
-        await this.attemptReconnect(sessionData);
+        console.error(`❌ [${sessionId}] Falha na reconexão completa:`, error.message);
+        this.logRecentError(sessionId, error);
+        // Tenta novamente
+        await this.attemptFullReconnect(sessionData);
       }
     }, delay);
   }
@@ -679,6 +745,92 @@ class SessionManager {
     return normalized;
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  // VERIFICAÇÃO DE SAÚDE DA SESSÃO — Testa se Chromium ainda responde
+  // ═══════════════════════════════════════════════════════════════════
+  async isSessionAlive(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.client) return false;
+
+    try {
+      // Testa se o Chromium/Puppeteer ainda responde com timeout curto
+      const statePromise = session.client.getState();
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('health_check_timeout')), 5000)
+      );
+      const state = await Promise.race([statePromise, timeoutPromise]);
+      return state === 'CONNECTED';
+    } catch (error) {
+      console.warn(`⚠️ [${sessionId}] Health check falhou: ${error.message}`);
+      return false;
+    }
+  }
+
+  // Detecta se um erro indica que o Chromium/sessão morreu
+  isFatalSessionError(error) {
+    const fatalPatterns = [
+      'evaluation failed',
+      'execution context was destroyed',
+      'session closed',
+      'protocol error',
+      'target closed',
+      'page crashed',
+      'browser disconnected',
+      'navigation failed',
+      'frame was detached',
+      'cannot find context',
+      'websocket is not open',
+      'econnrefused',
+      'epipe',
+    ];
+    const msg = (error.message || '').toLowerCase();
+    return fatalPatterns.some(p => msg.includes(p));
+  }
+
+  // Registra erros recentes para diagnóstico
+  logRecentError(sessionId, error) {
+    this.recentErrors.push({
+      sessionId,
+      message: error.message,
+      timestamp: Date.now(),
+      stack: (error.stack || '').split('\n').slice(0, 3).join(' | ')
+    });
+    // Mantém apenas os últimos 50 erros
+    if (this.recentErrors.length > 50) {
+      this.recentErrors = this.recentErrors.slice(-50);
+    }
+  }
+
+  // Controle de rate-limit: espera intervalo mínimo entre mensagens
+  async waitForRateLimit(sessionId) {
+    const lastTime = this.lastMessageTime.get(sessionId) || 0;
+    const elapsed = Date.now() - lastTime;
+    if (elapsed < MIN_MESSAGE_INTERVAL_MS) {
+      const waitTime = MIN_MESSAGE_INTERVAL_MS - elapsed;
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    this.lastMessageTime.set(sessionId, Date.now());
+  }
+
+  // Envia uma mensagem com timeout
+  async sendMessageWithTimeout(client, chatId, message, mediaUrl, timeoutMs = MESSAGE_SEND_TIMEOUT_MS) {
+    const sendPromise = (async () => {
+      if (mediaUrl) {
+        const { MessageMedia } = require('whatsapp-web.js');
+        const media = await MessageMedia.fromUrl(mediaUrl);
+        return await client.sendMessage(chatId, media, { caption: message });
+      } else {
+        return await client.sendMessage(chatId, message);
+      }
+    })();
+
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Timeout: mensagem não enviada em ' + (timeoutMs / 1000) + 's')), timeoutMs)
+    );
+
+    return await Promise.race([sendPromise, timeoutPromise]);
+  }
+
   async sendMessage(sessionId, phoneNumber, message, mediaUrl = null) {
     const session = this.sessions.get(sessionId);
 
@@ -690,109 +842,141 @@ class SessionManager {
       throw new Error(`Sessão não está conectada. Status atual: ${session.status}`);
     }
 
+    if (!session.client) {
+      throw new Error('Cliente WhatsApp não disponível. Reconecte a sessão.');
+    }
+
     const client = session.client;
     const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
     const chatId = normalizedPhone.includes('@c.us') ? normalizedPhone : `${normalizedPhone}@c.us`;
 
+    // Rate limiting: espera intervalo mínimo entre mensagens
+    await this.waitForRateLimit(sessionId);
+
     console.log(`📞 Enviando para: ${phoneNumber} → ${normalizedPhone}`);
 
-    try {
-      let sentMessage;
+    // Tenta enviar com retries
+    let lastError = null;
+    for (let attempt = 0; attempt <= MAX_SEND_RETRIES; attempt++) {
+      if (attempt > 0) {
+        console.log(`🔄 [${sessionId}] Retry ${attempt}/${MAX_SEND_RETRIES} para ${normalizedPhone}...`);
+        // Espera progressiva entre retries
+        await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
 
-      if (mediaUrl) {
-        const { MessageMedia } = require('whatsapp-web.js');
-        const media = await MessageMedia.fromUrl(mediaUrl);
-        sentMessage = await client.sendMessage(chatId, media, { caption: message });
-      } else {
-        sentMessage = await client.sendMessage(chatId, message);
-      }
+        // Verifica se a sessão ainda está viva antes de retry
+        const alive = await this.isSessionAlive(sessionId);
+        if (!alive) {
+          console.error(`💀 [${sessionId}] Sessão morta detectada durante retry. Marcando como disconnected.`);
+          session.status = 'disconnected';
+          await this.db.updateSessionStatus(sessionId, 'disconnected');
 
-      const messageData = {
-        id: sentMessage.id._serialized,
-        sessionId: sessionId,
-        contactPhone: normalizedPhone,
-        messageType: sentMessage.type,
-        body: message,
-        mediaUrl: mediaUrl,
-        mediaMimetype: null,
-        fromMe: true,
-        timestamp: sentMessage.timestamp,
-        status: 'sent'
-      };
+          // Emite evento para frontend
+          this.io.to(`user_${session.userId}`).emit('session_disconnected', {
+            sessionId: sessionId,
+            reason: 'CHROMIUM_CRASH'
+          });
 
-      await this.db.upsertContact(sessionId, normalizedPhone);
-      session.lastSeen = Date.now();
-      this.sessionLastActivity.set(sessionId, Date.now());
+          // Tenta reconectar em background
+          this.attemptFullReconnect(session);
 
-      return messageData;
-    } catch (error) {
-      console.error(`❌ Erro ao enviar na sessão ${sessionId}:`, error.message);
-
-      // Retry com/sem 9º dígito
-      if (normalizedPhone.length === 13 && normalizedPhone.startsWith('55')) {
-        try {
-          console.log(`🔄 Tentando sem 9º dígito...`);
-          const phoneWithout9 = normalizedPhone.substring(0, 4) + normalizedPhone.substring(5);
-          const chatIdWithout9 = `${phoneWithout9}@c.us`;
-
-          let sentMessage;
-          if (mediaUrl) {
-            const { MessageMedia } = require('whatsapp-web.js');
-            const media = await MessageMedia.fromUrl(mediaUrl);
-            sentMessage = await client.sendMessage(chatIdWithout9, media, { caption: message });
-          } else {
-            sentMessage = await client.sendMessage(chatIdWithout9, message);
-          }
-
-          await this.db.upsertContact(sessionId, phoneWithout9);
-          session.lastSeen = Date.now();
-          this.sessionLastActivity.set(sessionId, Date.now());
-
-          return {
-            id: sentMessage.id._serialized,
-            sessionId, contactPhone: phoneWithout9,
-            messageType: sentMessage.type, body: message,
-            mediaUrl, mediaMimetype: null, fromMe: true,
-            timestamp: sentMessage.timestamp, status: 'sent'
-          };
-        } catch (retryError) {
-          throw error;
+          throw new Error('Sessão WhatsApp perdeu conexão. Reconectando automaticamente...');
         }
       }
 
-      if (normalizedPhone.length === 12 && normalizedPhone.startsWith('55')) {
-        try {
-          console.log(`🔄 Tentando com 9º dígito...`);
-          const phoneWith9 = normalizedPhone.substring(0, 4) + '9' + normalizedPhone.substring(4);
-          const chatIdWith9 = `${phoneWith9}@c.us`;
+      try {
+        // Tenta enviar para o número original
+        const sentMessage = await this.sendMessageWithTimeout(client, chatId, message, mediaUrl);
 
-          let sentMessage;
-          if (mediaUrl) {
-            const { MessageMedia } = require('whatsapp-web.js');
-            const media = await MessageMedia.fromUrl(mediaUrl);
-            sentMessage = await client.sendMessage(chatIdWith9, media, { caption: message });
-          } else {
-            sentMessage = await client.sendMessage(chatIdWith9, message);
-          }
+        const messageData = {
+          id: sentMessage.id._serialized,
+          sessionId: sessionId,
+          contactPhone: normalizedPhone,
+          messageType: sentMessage.type,
+          body: message,
+          mediaUrl: mediaUrl,
+          mediaMimetype: null,
+          fromMe: true,
+          timestamp: sentMessage.timestamp,
+          status: 'sent'
+        };
 
-          await this.db.upsertContact(sessionId, phoneWith9);
-          session.lastSeen = Date.now();
-          this.sessionLastActivity.set(sessionId, Date.now());
+        await this.db.upsertContact(sessionId, normalizedPhone);
+        session.lastSeen = Date.now();
+        this.sessionLastActivity.set(sessionId, Date.now());
 
-          return {
-            id: sentMessage.id._serialized,
-            sessionId, contactPhone: phoneWith9,
-            messageType: sentMessage.type, body: message,
-            mediaUrl, mediaMimetype: null, fromMe: true,
-            timestamp: sentMessage.timestamp, status: 'sent'
-          };
-        } catch (retryError) {
-          throw error;
+        return messageData;
+      } catch (error) {
+        lastError = error;
+        this.logRecentError(sessionId, error);
+        console.error(`❌ [${sessionId}] Erro envio (tentativa ${attempt + 1}):`, error.message);
+
+        // Se é um erro fatal do Chromium, não adianta retry
+        if (this.isFatalSessionError(error)) {
+          console.error(`💀 [${sessionId}] Erro FATAL de Chromium detectado: ${error.message}`);
+          session.status = 'disconnected';
+          await this.db.updateSessionStatus(sessionId, 'disconnected');
+
+          this.io.to(`user_${session.userId}`).emit('session_disconnected', {
+            sessionId: sessionId,
+            reason: 'CHROMIUM_CRASH'
+          });
+
+          // Tenta reconectar em background
+          this.attemptFullReconnect(session);
+
+          throw new Error('Sessão WhatsApp caiu. Reconectando automaticamente, tente novamente em 1 minuto.');
         }
       }
-
-      throw error;
     }
+
+    // Se chegou aqui, todas as tentativas falharam. Tenta variação de 9º dígito.
+    if (normalizedPhone.length === 13 && normalizedPhone.startsWith('55')) {
+      try {
+        console.log(`🔄 Tentando sem 9º dígito...`);
+        const phoneWithout9 = normalizedPhone.substring(0, 4) + normalizedPhone.substring(5);
+        const chatIdWithout9 = `${phoneWithout9}@c.us`;
+        const sentMessage = await this.sendMessageWithTimeout(client, chatIdWithout9, message, mediaUrl);
+
+        await this.db.upsertContact(sessionId, phoneWithout9);
+        session.lastSeen = Date.now();
+        this.sessionLastActivity.set(sessionId, Date.now());
+
+        return {
+          id: sentMessage.id._serialized,
+          sessionId, contactPhone: phoneWithout9,
+          messageType: sentMessage.type, body: message,
+          mediaUrl, mediaMimetype: null, fromMe: true,
+          timestamp: sentMessage.timestamp, status: 'sent'
+        };
+      } catch (retryError) {
+        // Ignora, vai lançar o lastError
+      }
+    }
+
+    if (normalizedPhone.length === 12 && normalizedPhone.startsWith('55')) {
+      try {
+        console.log(`🔄 Tentando com 9º dígito...`);
+        const phoneWith9 = normalizedPhone.substring(0, 4) + '9' + normalizedPhone.substring(4);
+        const chatIdWith9 = `${phoneWith9}@c.us`;
+        const sentMessage = await this.sendMessageWithTimeout(client, chatIdWith9, message, mediaUrl);
+
+        await this.db.upsertContact(sessionId, phoneWith9);
+        session.lastSeen = Date.now();
+        this.sessionLastActivity.set(sessionId, Date.now());
+
+        return {
+          id: sentMessage.id._serialized,
+          sessionId, contactPhone: phoneWith9,
+          messageType: sentMessage.type, body: message,
+          mediaUrl, mediaMimetype: null, fromMe: true,
+          timestamp: sentMessage.timestamp, status: 'sent'
+        };
+      } catch (retryError) {
+        // Ignora, vai lançar o lastError
+      }
+    }
+
+    throw lastError;
   }
 
   async getQRCode(sessionId) {
@@ -837,6 +1021,15 @@ class SessionManager {
     };
   }
 
+  getRecentErrors(limit = 10) {
+    return this.recentErrors.slice(-limit).map(e => ({
+      sessionId: e.sessionId,
+      message: e.message,
+      timestamp: new Date(e.timestamp).toISOString(),
+      age: `${Math.round((Date.now() - e.timestamp) / 1000)}s ago`
+    }));
+  }
+
   async healthCheck() {
     const memUsage = process.memoryUsage();
     const health = {
@@ -845,6 +1038,7 @@ class SessionManager {
       disconnectedSessions: 0,
       authStrategy: 'LocalAuth',
       maxConcurrent: MAX_CONCURRENT_SESSIONS,
+      recentErrors: this.getRecentErrors(5),
       memory: {
         heapUsed: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
         heapTotal: `${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`,
