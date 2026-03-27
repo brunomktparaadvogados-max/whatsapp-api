@@ -1451,7 +1451,7 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
     // Auto-detectar sessão se não for informada
     if (!targetSessionId) {
       const userSessions = isAdmin
-        ? await db.all('SELECT * FROM sessions WHERE status IN (?, ?)', ['connected', 'authenticated'])
+        ? await db.all('SELECT * FROM sessions WHERE status IN ($1, $2)', ['connected', 'authenticated'])
         : await db.getSessionsByUserId(req.userId);
 
       const activeSessions = userSessions.filter(s => {
