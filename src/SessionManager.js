@@ -652,7 +652,7 @@ class SessionManager {
       throw new Error('Sessão não encontrada');
     }
 
-    if (session.status !== 'connected') {
+    if (session.status !== 'connected' && session.status !== 'authenticated') {
       throw new Error(`Sessão não está conectada. Status atual: ${session.status}`);
     }
 
@@ -1020,40 +1020,6 @@ class SessionManager {
     }
   }
 
-  async sendMessage(sessionId, to, message) {
-    const session = this.getSession(sessionId);
-    if (!session || !session.client) {
-      console.error(`❌ Erro ao enviar mensagem: Sessão ${sessionId} não encontrada na memória`);
-      throw new Error('Sessão não encontrada ou não conectada');
-    }
-
-    console.log(`📤 Tentando enviar mensagem na sessão ${sessionId}`);
-    console.log(`   Status atual: ${session.status}`);
-    console.log(`   Cliente existe: ${!!session.client}`);
-
-    if (session.status !== 'connected' && session.status !== 'authenticated') {
-      console.error(`❌ Erro: Status inválido para envio. Status atual: ${session.status}`);
-      throw new Error(`Cliente não está conectado. Status atual: ${session.status}`);
-    }
-
-    const chatId = to.includes('@c.us') ? to : `${to}@c.us`;
-    console.log(`📞 Enviando para: ${chatId}`);
-
-    try {
-      const result = await session.client.sendMessage(chatId, message, { sendSeen: false });
-
-      console.log(`✅ Mensagem enviada com sucesso! ID: ${result.id._serialized}`);
-
-      return {
-        success: true,
-        messageId: result.id._serialized,
-        timestamp: result.timestamp
-      };
-    } catch (error) {
-      console.error(`❌ Erro ao enviar mensagem:`, error.message);
-      throw error;
-    }
-  }
 
   async sendMedia(sessionId, to, mediaUrl, caption = '') {
     const session = this.getSession(sessionId);
@@ -1162,8 +1128,8 @@ class SessionManager {
       for (const [sid, lastTs] of this.sessionLastActivity.entries()) {
         const sess = this.sessions.get(sid);
         if (!sess) { this.sessionLastActivity.delete(sid); continue; }
-        const isReady = sess.status === 'ready';
-        if (!isReady && (now - lastTs) > IDLE_MS) {
+        const isActive = sess.status === 'connected' || sess.status === 'authenticated';
+        if (!isActive && (now - lastTs) > IDLE_MS) {
           toDestroy.push({ sid, idleSec: Math.round((now - lastTs) / 1000) });
         }
       }
