@@ -4,81 +4,150 @@ const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = require('path');
 
+// ═══════════════════════════════════════════════════════════════════
+// LIMITES DE MEMÓRIA — Evita sobrecarga no Koyeb
+// ═══════════════════════════════════════════════════════════════════
+const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 4;
+const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
+const IDLE_CLEANUP_MS = 10 * 60 * 1000;          // 10 minutos de inatividade
+const CLEANUP_INTERVAL_MS = 30 * 1000;           // verifica a cada 30 segundos
+const SESSION_INIT_TIMEOUT_MS = 120000;           // 2 minutos para Chromium iniciar
+
 class SessionManager {
   constructor(database, io) {
     this.sessions = new Map();
     this.db = database;
     this.io = io;
     this.reconnectAttempts = new Map();
-    this.maxReconnectAttempts = 5;
+    this.maxReconnectAttempts = 3;
     this.inMemoryMessages = new Map();
     this.sessionLastActivity = new Map();
-    
-    this.initMongoDB();
-      }
+    this.sessionCreationQueue = [];
+    this.isProcessingQueue = false;
 
-  async initMongoDB() {
-    console.log('⚠️ MongoDB/Mongoose não é mais usado. Usando PostgreSQL (Supabase).');
-    console.log('✅ Banco de dados configurado via DATABASE_URL');
-
-    await this.restoreAllSessions();
+    this.init();
   }
 
-  async restoreAllSessions() {
-    try {
-      console.log('🔄 Restaurando sessões do banco de dados...');
-      const dbSessions = await this.db.getAllSessionsFromDB();
+  async init() {
+    console.log('⚠️ MongoDB/Mongoose não é mais usado. Usando PostgreSQL (Supabase).');
+    console.log('✅ Banco de dados configurado via DATABASE_URL');
+    console.log(`📊 Limite de sessões simultâneas: ${MAX_CONCURRENT_SESSIONS}`);
 
+    // Em vez de restaurar todas as sessões (que cria N processos Chromium),
+    // apenas marca todas como desconectadas. Usuário reconecta sob demanda.
+    await this.markAllSessionsDisconnected();
+
+    // Inicia limpeza automática inteligente
+    this.startAutoCleanup();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // STARTUP: Marca todas as sessões como desconectadas (não cria Chromium)
+  // Isso evita 21 processos Chromium no startup que causa crash de memória
+  // ═══════════════════════════════════════════════════════════════════
+  async markAllSessionsDisconnected() {
+    try {
+      console.log('🔄 Marcando todas as sessões como desconectadas (startup limpo)...');
+      const dbSessions = await this.db.getAllSessionsFromDB();
       console.log(`📊 Total de sessões no banco: ${dbSessions.length}`);
 
+      let cleaned = 0;
       for (const session of dbSessions) {
         const sessionId = session.id;
 
+        // Remove sessões inválidas
         if (!sessionId || sessionId === 'T' || sessionId === 'test' || sessionId === 'default') {
           console.log(`🗑️ Removendo sessão inválida: ${sessionId}`);
           await this.db.deleteSession(sessionId);
+          cleaned++;
           continue;
         }
 
         if (!sessionId.startsWith('user_')) {
           console.log(`⚠️ Sessão ${sessionId} não segue padrão user_X, removendo...`);
           await this.db.deleteSession(sessionId);
+          cleaned++;
           continue;
         }
 
+        // Marca como disconnected em vez de tentar restaurar
         if (session.status === 'connected' || session.status === 'authenticated') {
-          console.log(`🔄 Tentando restaurar sessão: ${sessionId}`);
-          try {
-            await this.restoreSession(session.id, session.user_id);
-          } catch (error) {
-            console.error(`❌ Erro ao restaurar sessão ${session.id}:`, error.message);
-            await this.db.updateSessionStatus(session.id, 'disconnected');
-          }
+          await this.db.updateSessionStatus(sessionId, 'disconnected');
+          console.log(`📴 Sessão ${sessionId}: ${session.status} → disconnected`);
         }
       }
 
-      console.log(`✅ Processo de restauração concluído. ${this.sessions.size} sessões ativas.`);
+      if (cleaned > 0) {
+        console.log(`🗑️ ${cleaned} sessões inválidas removidas`);
+      }
+      console.log(`✅ Startup limpo concluído. 0 processos Chromium criados (economia de memória).`);
+      console.log(`💡 Sessões serão reconectadas sob demanda quando o usuário acessar.`);
     } catch (error) {
-      console.error('❌ Erro ao restaurar sessões:', error);
+      console.error('❌ Erro ao marcar sessões como desconectadas:', error);
     }
   }
 
-  async restoreSession(sessionId, userId) {
+  // ═══════════════════════════════════════════════════════════════════
+  // CRIAÇÃO DE SESSÃO — Com fila para limitar Chromium simultâneos
+  // ═══════════════════════════════════════════════════════════════════
+  getActiveChromiumCount() {
+    let count = 0;
+    this.sessions.forEach((session) => {
+      if (session.client) count++;
+    });
+    return count;
+  }
+
+  async createSession(sessionId, userId) {
+    console.log(`🆕 Criando nova sessão: ${sessionId}`);
+
+    // Se a sessão já existe na memória E tem cliente ativo, retorna ela
     if (this.sessions.has(sessionId)) {
-      console.log(`⚠️ Sessão ${sessionId} já está ativa`);
-      return this.sessions.get(sessionId);
+      const existing = this.sessions.get(sessionId);
+      if (existing.client && (existing.status === 'connected' || existing.status === 'qr_code' || existing.status === 'initializing')) {
+        console.log(`⚠️ Sessão ${sessionId} já existe na memória com status ${existing.status}`);
+        return existing;
+      }
+      // Se está em estado morto, limpa primeiro
+      console.log(`🧹 Sessão ${sessionId} existe na memória mas está morta (${existing.status}), limpando...`);
+      await this.cleanupSession(sessionId);
     }
+
+    // Se existe no banco mas não na memória, DELETE o registro antigo
+    const existingDbSession = await this.db.getSession(sessionId);
+    if (existingDbSession) {
+      console.log(`🔄 Sessão ${sessionId} existe no banco com status '${existingDbSession.status}', recriando...`);
+      await this.db.deleteSession(sessionId);
+    }
+
+    // Verifica limite de Chromium simultâneos
+    const activeCount = this.getActiveChromiumCount();
+    if (activeCount >= MAX_CONCURRENT_SESSIONS) {
+      console.warn(`⚠️ Limite de ${MAX_CONCURRENT_SESSIONS} sessões Chromium atingido (${activeCount} ativas)`);
+      // Tenta liberar sessões mortas/inativas
+      await this.forceCleanupDeadSessions();
+
+      const newCount = this.getActiveChromiumCount();
+      if (newCount >= MAX_CONCURRENT_SESSIONS) {
+        throw new Error(`Limite de sessões simultâneas atingido (${MAX_CONCURRENT_SESSIONS}). Tente novamente em alguns minutos.`);
+      }
+    }
+
+    console.log(`💾 Criando sessão ${sessionId} no banco de dados...`);
+    await this.db.createSession(sessionId, userId);
 
     const sessionData = {
       id: sessionId,
       userId,
       qrCode: null,
-      status: 'restoring',
+      status: 'initializing',
       client: null,
       info: null,
-      lastSeen: Date.now()
+      lastSeen: Date.now(),
+      createdAt: Date.now()
     };
 
+    console.log(`🤖 Inicializando cliente WhatsApp para sessão ${sessionId}...`);
     const client = await this.createWhatsAppClient(sessionId);
     this.setupClientEvents(client, sessionData);
 
@@ -86,14 +155,90 @@ class SessionManager {
     this.sessions.set(sessionId, sessionData);
     this.sessionLastActivity.set(sessionId, Date.now());
 
+    console.log(`⏳ Iniciando cliente ${sessionId} em background...`);
+    console.log(`📊 Chromium ativos: ${this.getActiveChromiumCount()}/${MAX_CONCURRENT_SESSIONS}`);
+
+    // Inicializa em background sem bloquear
+    this.initializeClientInBackground(client, sessionData);
+
+    return sessionData;
+  }
+
+  async initializeClientInBackground(client, sessionData) {
     try {
-      await client.initialize();
-      console.log(`✅ Sessão ${sessionId} restaurada com sucesso`);
-      return sessionData;
+      console.log(`🚀 Inicializando cliente ${sessionData.id} em background...`);
+      console.log(`⏱️ Timeout configurado: ${SESSION_INIT_TIMEOUT_MS / 1000} segundos`);
+
+      const initPromise = client.initialize();
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`Timeout: Chromium não inicializou em ${SESSION_INIT_TIMEOUT_MS / 1000} segundos`)), SESSION_INIT_TIMEOUT_MS)
+      );
+
+      await Promise.race([initPromise, timeoutPromise]);
+
+      console.log(`✅ Cliente ${sessionData.id} inicializado com sucesso`);
+      this.reconnectAttempts.delete(sessionData.id);
     } catch (error) {
-      console.error(`❌ Erro ao restaurar sessão ${sessionId}:`, error.message);
-      this.sessions.delete(sessionId);
-      throw error;
+      console.error(`❌ Erro ao inicializar cliente ${sessionData.id}:`, error.message);
+
+      // Limpa recursos sem deletar do banco (permite tentar de novo)
+      await this.cleanupSession(sessionData.id);
+      await this.db.updateSessionStatus(sessionData.id, 'failed');
+
+      console.log(`💾 Sessão ${sessionData.id} marcada como 'failed' no banco`);
+    }
+  }
+
+  // Limpa sessão da memória e destrói Chromium, sem tocar no banco
+  async cleanupSession(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (session && session.client) {
+      try {
+        await session.client.destroy();
+        console.log(`✅ Cliente Chromium destruído: ${sessionId}`);
+      } catch (e) {
+        console.error(`⚠️ Erro ao destruir cliente ${sessionId}:`, e.message);
+      }
+    }
+    this.sessions.delete(sessionId);
+    this.sessionLastActivity.delete(sessionId);
+    this.reconnectAttempts.delete(sessionId);
+
+    // Limpa arquivos do disco para liberar espaço
+    this.cleanupSessionFiles(sessionId);
+  }
+
+  cleanupSessionFiles(sessionId) {
+    const paths = [
+      path.join(__dirname, '..', '.wwebjs_auth', `session-${sessionId}`),
+      path.join(__dirname, '..', '.wwebjs_cache', `session-${sessionId}`),
+      path.join('/app', '.wwebjs_auth', `session-${sessionId}`),
+      path.join('/app', '.wwebjs_cache', `session-${sessionId}`),
+    ];
+    for (const p of paths) {
+      try {
+        if (fs.existsSync(p)) {
+          fs.rmSync(p, { recursive: true, force: true });
+          console.log(`🗑️ Removido disco: ${p}`);
+        }
+      } catch (_e) {}
+    }
+  }
+
+  async forceCleanupDeadSessions() {
+    const toClean = [];
+    this.sessions.forEach((session, id) => {
+      // Limpa sessões em estado terminal ou mortas há muito tempo
+      if (['failed', 'auth_failure', 'disconnected'].includes(session.status)) {
+        toClean.push(id);
+      }
+    });
+    for (const id of toClean) {
+      console.log(`🧹 Forçando limpeza de sessão morta: ${id} (status: ${this.sessions.get(id)?.status})`);
+      await this.cleanupSession(id);
+    }
+    if (toClean.length > 0) {
+      console.log(`✅ ${toClean.length} sessões mortas limpas. Chromium ativos: ${this.getActiveChromiumCount()}`);
     }
   }
 
@@ -101,13 +246,19 @@ class SessionManager {
     console.log(`🔧 Criando cliente WhatsApp para sessão ${sessionId}...`);
 
     const execPath = process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_BIN || '/usr/bin/chromium-browser';
-    console.log(`🔍 Puppeteer executable path: ${execPath}`);
 
     if (!fs.existsSync(execPath)) {
-      console.error(`❌ Chromium não encontrado em: ${execPath}`);
-      throw new Error(`Chromium não encontrado em: ${execPath}`);
+      // Tenta path alternativo
+      const altPath = '/usr/bin/chromium';
+      if (fs.existsSync(altPath)) {
+        console.log(`✅ Chromium encontrado em path alternativo: ${altPath}`);
+      } else {
+        console.error(`❌ Chromium não encontrado em: ${execPath} nem ${altPath}`);
+        throw new Error(`Chromium não encontrado`);
+      }
     }
-    console.log(`✅ Chromium encontrado em: ${execPath}`);
+
+    const actualExecPath = fs.existsSync(execPath) ? execPath : '/usr/bin/chromium';
 
     const clientConfig = {
       puppeteer: {
@@ -131,10 +282,11 @@ class SessionManager {
           '--disable-software-rasterizer',
           '--disable-web-security',
           '--disable-features=IsolateOrigins,site-per-process',
+          '--js-flags=--max-old-space-size=128',
           '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         ],
-        executablePath: execPath,
-        timeout: 180000
+        executablePath: actualExecPath,
+        timeout: SESSION_INIT_TIMEOUT_MS
       },
       authStrategy: new LocalAuth({
         clientId: sessionId,
@@ -145,107 +297,21 @@ class SessionManager {
       disableAutoSeen: true
     };
 
-    console.log(`📋 Configuração do Puppeteer:`, JSON.stringify({
-      headless: clientConfig.puppeteer.headless,
-      executablePath: clientConfig.puppeteer.executablePath,
-      timeout: clientConfig.puppeteer.timeout,
-      argsCount: clientConfig.puppeteer.args.length,
-      authStrategy: 'LocalAuth'
-    }, null, 2));
-
-    console.log(`✅ Cliente WhatsApp criado com sucesso para sessão ${sessionId}`);
     return new Client(clientConfig);
-  }
-
-  async createSession(sessionId, userId) {
-    console.log(`🆕 Criando nova sessão: ${sessionId}`);
-
-    if (this.sessions.has(sessionId)) {
-      console.log(`⚠️ Sessão ${sessionId} já existe na memória`);
-      throw new Error('Sessão já existe na memória');
-    }
-
-    const existingSession = await this.db.getSession(sessionId);
-    if (existingSession) {
-      console.log(`⚠️ Sessão ${sessionId} já existe no banco`);
-      throw new Error('Sessão já existe no banco de dados');
-    }
-
-    console.log(`💾 Criando sessão ${sessionId} no banco de dados...`);
-    await this.db.createSession(sessionId, userId);
-
-    const sessionData = {
-      id: sessionId,
-      userId,
-      qrCode: null,
-      status: 'initializing',
-      client: null,
-      info: null,
-      lastSeen: Date.now()
-    };
-
-    console.log(`🤖 Inicializando cliente WhatsApp para sessão ${sessionId}...`);
-    const client = await this.createWhatsAppClient(sessionId);
-    this.setupClientEvents(client, sessionData);
-
-    sessionData.client = client;
-    this.sessions.set(sessionId, sessionData);
-      this.sessionLastActivity.set(sessionId, Date.now());
-
-    console.log(`⏳ Iniciando cliente ${sessionId} em background...`);
-
-    // Inicializa em background sem bloquear
-    this.initializeClientInBackground(client, sessionData);
-
-    return sessionData;
-  }
-
-  async initializeClientInBackground(client, sessionData) {
-    try {
-      console.log(`🚀 Inicializando cliente ${sessionData.id} em background...`);
-      console.log(`⏱️ Timeout configurado: 180 segundos`);
-
-      const initPromise = client.initialize();
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Timeout: Chromium não inicializou em 180 segundos')), 180000)
-      );
-
-      await Promise.race([initPromise, timeoutPromise]);
-
-      console.log(`✅ Cliente ${sessionData.id} inicializado com sucesso`);
-      this.reconnectAttempts.delete(sessionData.id);
-    } catch (error) {
-      console.error(`❌ Erro ao inicializar cliente ${sessionData.id}:`, error.message);
-      console.error(`📋 Stack trace:`, error.stack);
-
-      if (sessionData.client) {
-        try {
-          await sessionData.client.destroy();
-        } catch (e) {
-          console.error(`⚠️ Erro ao destruir cliente ${sessionData.id}:`, e.message);
-          console.error(`📋 Stack trace ao destruir:`, e.stack);
-        }
-      }
-
-      this.sessions.delete(sessionData.id);
-      await this.db.updateSessionStatus(sessionData.id, 'failed');
-
-      console.log(`💾 Sessão ${sessionData.id} marcada como 'failed' no banco`);
-    }
   }
 
   setupClientEvents(client, sessionData) {
     client.on('error', (error) => {
       if (error.message && error.message.includes('evaluation failed') && error.message.includes('markedUnread')) {
-        console.log(`⚠️ [${sessionData.id}] Erro ignorado (sendSeen): ${error.message.substring(0, 100)}...`);
-        return;
+        return; // Erro ignorável
       }
-      console.error(`❌ [${sessionData.id}] Erro no cliente:`, error);
+      console.error(`❌ [${sessionData.id}] Erro no cliente:`, error.message);
     });
 
     client.on('loading_screen', (percent, message) => {
       console.log(`⏳ [${sessionData.id}] Loading: ${percent}% - ${message}`);
       sessionData.lastSeen = Date.now();
+      this.sessionLastActivity.set(sessionData.id, Date.now());
 
       this.io.to(`user_${sessionData.userId}`).emit('loading_screen', {
         sessionId: sessionData.id,
@@ -259,6 +325,9 @@ class SessionManager {
       sessionData.qrCode = await QRCode.toDataURL(qr);
       sessionData.status = 'qr_code';
       sessionData.lastSeen = Date.now();
+      this.sessionLastActivity.set(sessionData.id, Date.now());
+
+      await this.db.updateSessionStatus(sessionData.id, 'qr_code');
 
       this.io.to(`user_${sessionData.userId}`).emit('qr_code', {
         sessionId: sessionData.id,
@@ -270,6 +339,7 @@ class SessionManager {
       console.log(`✅ Autenticado: ${sessionData.id}`);
       sessionData.status = 'authenticated';
       sessionData.lastSeen = Date.now();
+      this.sessionLastActivity.set(sessionData.id, Date.now());
 
       await this.db.updateSessionStatus(sessionData.id, 'authenticated');
 
@@ -289,6 +359,7 @@ class SessionManager {
       };
       sessionData.qrCode = null;
       sessionData.lastSeen = Date.now();
+      this.sessionLastActivity.set(sessionData.id, Date.now());
       this.reconnectAttempts.delete(sessionData.id);
 
       await this.db.updateSessionStatus(
@@ -298,9 +369,9 @@ class SessionManager {
         client.info.pushname
       );
 
-      console.log(`💾 Sessão ${sessionData.id} salva no banco com status: connected`);
-      console.log(`📞 Número conectado: ${client.info.wid._serialized}`);
-      console.log(`👤 Nome: ${client.info.pushname}`);
+      console.log(`💾 Sessão ${sessionData.id} salva com status: connected`);
+      console.log(`📞 Número: ${client.info.wid._serialized} | 👤 Nome: ${client.info.pushname}`);
+      console.log(`📊 Chromium ativos: ${this.getActiveChromiumCount()}/${MAX_CONCURRENT_SESSIONS}`);
 
       this.io.to(`user_${sessionData.userId}`).emit('session_connected', {
         sessionId: sessionData.id,
@@ -315,14 +386,17 @@ class SessionManager {
 
       await this.db.updateSessionStatus(sessionData.id, 'auth_failure');
 
+      // Limpa recursos de Chromium mas mantém registro no banco
+      await this.cleanupSession(sessionData.id);
+
       this.io.to(`user_${sessionData.userId}`).emit('session_error', {
         sessionId: sessionData.id,
-        error: 'Falha na autenticação'
+        error: 'Falha na autenticação. Tente reconectar.'
       });
     });
 
     client.on('disconnected', async (reason) => {
-      console.log(`🔴 Desconectado: ${sessionData.id}`, reason);
+      console.log(`🔴 Desconectado: ${sessionData.id} - Motivo: ${reason}`);
       sessionData.status = 'disconnected';
       sessionData.lastSeen = Date.now();
 
@@ -333,24 +407,30 @@ class SessionManager {
         reason
       });
 
-      await this.attemptReconnect(sessionData);
+      // Tenta reconectar apenas se o motivo não for logout manual
+      if (reason !== 'LOGOUT' && reason !== 'CONFLICT') {
+        await this.attemptReconnect(sessionData);
+      } else {
+        // Limpa recursos de Chromium
+        await this.cleanupSession(sessionData.id);
+      }
     });
 
     client.on('remote_session_saved', () => {
-      console.log(`💾 Sessão local salva: ${sessionData.id}`);
       sessionData.lastSeen = Date.now();
+      this.sessionLastActivity.set(sessionData.id, Date.now());
     });
 
     client.on('message', async (message) => {
       const contactPhone = message.from.replace('@c.us', '');
       sessionData.lastSeen = Date.now();
+      this.sessionLastActivity.set(sessionData.id, Date.now());
 
       if (message.from.includes('status@broadcast') || message.from.includes('@lid')) {
-        console.log(`⏭️ Ignorando mensagem de ${message.from} (status/lid)`);
         return;
       }
 
-      console.log(`📩 Mensagem recebida - SessionId: ${sessionData.id}, From: ${contactPhone}, FromMe: ${message.fromMe}`);
+      console.log(`📩 Msg recebida - Session: ${sessionData.id}, From: ${contactPhone}`);
 
       const messageData = {
         id: message.id._serialized,
@@ -371,18 +451,18 @@ class SessionManager {
           messageData.mediaUrl = `data:${media.mimetype};base64,${media.data}`;
           messageData.mediaMimetype = media.mimetype;
         } catch (error) {
-          console.error('Erro ao baixar mídia:', error);
+          console.error('Erro ao baixar mídia:', error.message);
         }
       }
 
+      // Armazena em memória (máx 50 por conversa para economizar RAM)
       const sessionKey = `${sessionData.id}_${contactPhone}`;
       if (!this.inMemoryMessages.has(sessionKey)) {
         this.inMemoryMessages.set(sessionKey, []);
       }
       this.inMemoryMessages.get(sessionKey).push(messageData);
-
       const messages = this.inMemoryMessages.get(sessionKey);
-      if (messages.length > 100) {
+      if (messages.length > 50) {
         messages.shift();
       }
 
@@ -393,11 +473,9 @@ class SessionManager {
         message: messageData
       });
 
-      console.log(`🔍 Verificando webhook para sessão ${sessionData.id}...`);
+      // Webhook
       const webhookUrl = await this.db.getSessionWebhook(sessionData.id);
-
       if (webhookUrl) {
-        console.log(`✅ Webhook encontrado: ${webhookUrl}`);
         try {
           const webhookPayload = {
             phone: contactPhone,
@@ -412,7 +490,6 @@ class SessionManager {
             mediaMimetype: messageData.mediaMimetype
           };
 
-          console.log(`📤 Enviando webhook [message] para ${webhookUrl}`, JSON.stringify(webhookPayload, null, 2));
           const webhookResponse = await fetch(webhookUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -420,18 +497,12 @@ class SessionManager {
             timeout: 5000
           });
 
-          if (webhookResponse.ok) {
-            const responseText = await webhookResponse.text();
-            console.log(`✅ Webhook enviado com sucesso! Status: ${webhookResponse.status}, Response:`, responseText);
-          } else {
-            const errorText = await webhookResponse.text();
-            console.error(`❌ Webhook falhou: ${webhookResponse.status} ${webhookResponse.statusText}`, errorText);
+          if (!webhookResponse.ok) {
+            console.error(`❌ Webhook falhou: ${webhookResponse.status}`);
           }
         } catch (error) {
-          console.error(`❌ Erro ao enviar webhook:`, error.message, error.stack);
+          console.error(`❌ Erro webhook:`, error.message);
         }
-      } else {
-        console.warn(`⚠️ Nenhum webhook configurado para sessão ${sessionData.id}`);
       }
 
       if (!message.fromMe) {
@@ -443,6 +514,7 @@ class SessionManager {
       if (message.fromMe) {
         const contactPhone = message.to.replace('@c.us', '');
         sessionData.lastSeen = Date.now();
+        this.sessionLastActivity.set(sessionData.id, Date.now());
 
         const messageData = {
           id: message.id._serialized,
@@ -464,11 +536,9 @@ class SessionManager {
           message: messageData
         });
 
-        console.log(`🔍 Verificando webhook para sessão ${sessionData.id} (message_create)...`);
+        // Webhook
         const webhookUrl = await this.db.getSessionWebhook(sessionData.id);
-
         if (webhookUrl) {
-          console.log(`✅ Webhook encontrado: ${webhookUrl}`);
           try {
             const webhookPayload = {
               phone: contactPhone,
@@ -477,46 +547,24 @@ class SessionManager {
               timestamp: messageData.timestamp,
               messageId: messageData.id,
               sessionId: sessionData.id,
-              userId: sessionData.userId,
-              messageType: messageData.messageType,
-              mediaUrl: messageData.mediaUrl,
-              mediaMimetype: messageData.mediaMimetype
+              userId: sessionData.userId
             };
 
-            console.log(`📤 Enviando webhook [message] para ${webhookUrl}`, JSON.stringify(webhookPayload, null, 2));
-            const webhookResponse = await fetch(webhookUrl, {
+            await fetch(webhookUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(webhookPayload),
               timeout: 5000
             });
-
-            if (webhookResponse.ok) {
-              const responseText = await webhookResponse.text();
-              console.log(`✅ Webhook enviado com sucesso! Status: ${webhookResponse.status}, Response:`, responseText);
-            } else {
-              const errorText = await webhookResponse.text();
-              console.error(`❌ Webhook falhou: ${webhookResponse.status} ${webhookResponse.statusText}`, errorText);
-            }
           } catch (error) {
-            console.error(`❌ Erro ao enviar webhook:`, error.message, error.stack);
+            console.error(`❌ Erro webhook:`, error.message);
           }
-        } else {
-          console.warn(`⚠️ Nenhum webhook configurado para sessão ${sessionData.id}`);
         }
       }
     });
 
-
     client.on('message_ack', async (message, ack) => {
-      const statusMap = {
-        0: 'error',
-        1: 'pending',
-        2: 'sent',
-        3: 'delivered',
-        4: 'read'
-      };
-
+      const statusMap = { 0: 'error', 1: 'pending', 2: 'sent', 3: 'delivered', 4: 'read' };
       const status = statusMap[ack] || 'unknown';
       await this.db.updateMessageStatus(message.id._serialized, status);
 
@@ -533,13 +581,14 @@ class SessionManager {
 
     if (attempts >= this.maxReconnectAttempts) {
       console.log(`❌ Máximo de tentativas de reconexão atingido para ${sessionData.id}`);
+      await this.cleanupSession(sessionData.id);
       return;
     }
 
     this.reconnectAttempts.set(sessionData.id, attempts + 1);
     const delay = Math.min(1000 * Math.pow(2, attempts), 30000);
 
-    console.log(`🔄 Tentativa ${attempts + 1}/${this.maxReconnectAttempts} de reconexão para ${sessionData.id} em ${delay}ms`);
+    console.log(`🔄 Tentativa ${attempts + 1}/${this.maxReconnectAttempts} para ${sessionData.id} em ${delay}ms`);
 
     setTimeout(async () => {
       try {
@@ -555,26 +604,30 @@ class SessionManager {
   }
 
   async processAutoReplies(sessionId, message) {
-    const autoReplies = await this.db.getAutoReplies(sessionId);
+    try {
+      const autoReplies = await this.db.getAutoReplies(sessionId);
 
-    for (const reply of autoReplies) {
-      let shouldReply = false;
+      for (const reply of autoReplies) {
+        let shouldReply = false;
 
-      if (reply.trigger_type === 'keyword') {
-        const keywords = reply.trigger_value.toLowerCase().split(',').map(k => k.trim());
-        const messageText = message.body.toLowerCase();
-        shouldReply = keywords.some(keyword => messageText.includes(keyword));
-      } else if (reply.trigger_type === 'exact') {
-        shouldReply = message.body.toLowerCase() === reply.trigger_value.toLowerCase();
-      } else if (reply.trigger_type === 'first_message') {
-        const previousMessages = await this.db.getMessagesByContact(sessionId, message.from.replace('@c.us', ''), 2);
-        shouldReply = previousMessages.length === 1;
+        if (reply.trigger_type === 'keyword') {
+          const keywords = reply.trigger_value.toLowerCase().split(',').map(k => k.trim());
+          const messageText = message.body.toLowerCase();
+          shouldReply = keywords.some(keyword => messageText.includes(keyword));
+        } else if (reply.trigger_type === 'exact') {
+          shouldReply = message.body.toLowerCase() === reply.trigger_value.toLowerCase();
+        } else if (reply.trigger_type === 'first_message') {
+          const previousMessages = await this.db.getMessagesByContact(sessionId, message.from.replace('@c.us', ''), 2);
+          shouldReply = previousMessages.length === 1;
+        }
+
+        if (shouldReply) {
+          await this.sendMessage(sessionId, message.from.replace('@c.us', ''), reply.response_message);
+          break;
+        }
       }
-
-      if (shouldReply) {
-        await this.sendMessage(sessionId, message.from.replace('@c.us', ''), reply.response_message);
-        break;
-      }
+    } catch (error) {
+      console.error(`❌ Erro em auto-replies para ${sessionId}:`, error.message);
     }
   }
 
@@ -598,50 +651,31 @@ class SessionManager {
 
   async deleteSession(sessionId) {
     console.log(`🗑️ Deletando sessão: ${sessionId}`);
-    const session = this.sessions.get(sessionId);
 
-    if (session && session.client) {
-      try {
-        await session.client.destroy();
-        console.log(`✅ Cliente WhatsApp destruído: ${sessionId}`);
-      } catch (error) {
-        console.error(`⚠️ Erro ao destruir cliente ${sessionId}:`, error.message);
+    await this.cleanupSession(sessionId);
+    await this.db.deleteSession(sessionId);
+
+    // Limpa mensagens em memória dessa sessão
+    for (const key of this.inMemoryMessages.keys()) {
+      if (key.startsWith(`${sessionId}_`)) {
+        this.inMemoryMessages.delete(key);
       }
     }
-
-    this.sessions.delete(sessionId);
-    this.reconnectAttempts.delete(sessionId);
-    await this.db.deleteSession(sessionId);
-      this.sessionLastActivity.delete(sessionId);
-      // 🧹 Limpar arquivos do disco para liberar memória RAM
-      const _sPaths = [
-        path.join(__dirname, '..', '.wwebjs_auth', `session-${sessionId}`),
-        path.join(__dirname, '..', '.wwebjs_cache', `session-${sessionId}`),
-        path.join('/app', '.wwebjs_auth', `session-${sessionId}`),
-        path.join('/app', '.wwebjs_cache', `session-${sessionId}`),
-      ];
-      for (const _sp of _sPaths) {
-        try { if (fs.existsSync(_sp)) { fs.rmSync(_sp, { recursive: true, force: true }); console.log(`🗑️ Removido disco: ${_sp}`); } } catch (_e) {}
-      }
 
     console.log(`✅ Sessão ${sessionId} deletada completamente`);
   }
 
   normalizePhoneNumber(phoneNumber) {
-    // Remove caracteres especiais
     let normalized = phoneNumber.replace(/\D/g, '');
 
-    // Adiciona código do país se não tiver
     if (!normalized.startsWith('55')) {
       normalized = `55${normalized}`;
     }
 
-    // Aceita tanto 12 dígitos (55 + DDD + 8 dígitos) quanto 13 dígitos (55 + DDD + 9 + 8 dígitos)
     if (normalized.length === 12 || normalized.length === 13) {
       return normalized;
     }
 
-    // Se tiver menos de 12 dígitos, retorna como está (pode ser número inválido)
     return normalized;
   }
 
@@ -657,12 +691,10 @@ class SessionManager {
     }
 
     const client = session.client;
-
-    // Normaliza o número (adiciona 9 se necessário)
     const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
     const chatId = normalizedPhone.includes('@c.us') ? normalizedPhone : `${normalizedPhone}@c.us`;
 
-    console.log(`📞 Enviando mensagem para: ${phoneNumber} → Normalizado: ${normalizedPhone}`);
+    console.log(`📞 Enviando para: ${phoneNumber} → ${normalizedPhone}`);
 
     try {
       let sentMessage;
@@ -689,17 +721,17 @@ class SessionManager {
       };
 
       await this.db.upsertContact(sessionId, normalizedPhone);
-
       session.lastSeen = Date.now();
+      this.sessionLastActivity.set(sessionId, Date.now());
 
       return messageData;
     } catch (error) {
-      console.error(`❌ Erro ao enviar mensagem na sessão ${sessionId}:`, error);
+      console.error(`❌ Erro ao enviar na sessão ${sessionId}:`, error.message);
 
-      // Se o número tem 13 dígitos (com 9), tenta com 12 dígitos (sem 9)
+      // Retry com/sem 9º dígito
       if (normalizedPhone.length === 13 && normalizedPhone.startsWith('55')) {
         try {
-          console.log(`🔄 Tentando enviar com 12 dígitos (removendo o 9)...`);
+          console.log(`🔄 Tentando sem 9º dígito...`);
           const phoneWithout9 = normalizedPhone.substring(0, 4) + normalizedPhone.substring(5);
           const chatIdWithout9 = `${phoneWithout9}@c.us`;
 
@@ -712,35 +744,25 @@ class SessionManager {
             sentMessage = await client.sendMessage(chatIdWithout9, message);
           }
 
-          const messageData = {
-            id: sentMessage.id._serialized,
-            sessionId: sessionId,
-            contactPhone: phoneWithout9,
-            messageType: sentMessage.type,
-            body: message,
-            mediaUrl: mediaUrl,
-            mediaMimetype: null,
-            fromMe: true,
-            timestamp: sentMessage.timestamp,
-            status: 'sent'
-          };
-
           await this.db.upsertContact(sessionId, phoneWithout9);
-
           session.lastSeen = Date.now();
+          this.sessionLastActivity.set(sessionId, Date.now());
 
-          console.log(`✅ Mensagem enviada com 12 dígitos`);
-          return messageData;
+          return {
+            id: sentMessage.id._serialized,
+            sessionId, contactPhone: phoneWithout9,
+            messageType: sentMessage.type, body: message,
+            mediaUrl, mediaMimetype: null, fromMe: true,
+            timestamp: sentMessage.timestamp, status: 'sent'
+          };
         } catch (retryError) {
-          console.error(`❌ Falha ao enviar com 12 dígitos:`, retryError);
           throw error;
         }
       }
 
-      // Se o número tem 12 dígitos (sem 9), tenta com 13 dígitos (com 9)
       if (normalizedPhone.length === 12 && normalizedPhone.startsWith('55')) {
         try {
-          console.log(`🔄 Tentando enviar com 13 dígitos (adicionando o 9)...`);
+          console.log(`🔄 Tentando com 9º dígito...`);
           const phoneWith9 = normalizedPhone.substring(0, 4) + '9' + normalizedPhone.substring(4);
           const chatIdWith9 = `${phoneWith9}@c.us`;
 
@@ -753,27 +775,18 @@ class SessionManager {
             sentMessage = await client.sendMessage(chatIdWith9, message);
           }
 
-          const messageData = {
-            id: sentMessage.id._serialized,
-            sessionId: sessionId,
-            contactPhone: phoneWith9,
-            messageType: sentMessage.type,
-            body: message,
-            mediaUrl: mediaUrl,
-            mediaMimetype: null,
-            fromMe: true,
-            timestamp: sentMessage.timestamp,
-            status: 'sent'
-          };
-
           await this.db.upsertContact(sessionId, phoneWith9);
-
           session.lastSeen = Date.now();
+          this.sessionLastActivity.set(sessionId, Date.now());
 
-          console.log(`✅ Mensagem enviada com 13 dígitos`);
-          return messageData;
+          return {
+            id: sentMessage.id._serialized,
+            sessionId, contactPhone: phoneWith9,
+            messageType: sentMessage.type, body: message,
+            mediaUrl, mediaMimetype: null, fromMe: true,
+            timestamp: sentMessage.timestamp, status: 'sent'
+          };
         } catch (retryError) {
-          console.error(`❌ Falha ao enviar com 13 dígitos:`, retryError);
           throw error;
         }
       }
@@ -809,7 +822,7 @@ class SessionManager {
         return {
           id: sessionId,
           status: 'disconnected',
-          message: 'Sessão existe no banco mas não está ativa na memória'
+          message: 'Sessão existe no banco mas não está ativa. Clique em "Criar Sessão" para reconectar.'
         };
       }
       throw new Error('Sessão não encontrada');
@@ -825,11 +838,18 @@ class SessionManager {
   }
 
   async healthCheck() {
+    const memUsage = process.memoryUsage();
     const health = {
       totalSessions: this.sessions.size,
       connectedSessions: 0,
       disconnectedSessions: 0,
       authStrategy: 'LocalAuth',
+      maxConcurrent: MAX_CONCURRENT_SESSIONS,
+      memory: {
+        heapUsed: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
+        heapTotal: `${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`,
+        rss: `${Math.round(memUsage.rss / 1024 / 1024)}MB`
+      },
       sessions: []
     };
 
@@ -869,157 +889,16 @@ class SessionManager {
     return sessionsToCleanup.length;
   }
 
-  async restoreSessionsFromDatabase(userId) {
-    try {
-      console.log('🔄 Restaurando sessões do banco de dados...');
-      const dbSessions = await this.db.getSessionsByUserId(userId);
-
-      let restoredCount = 0;
-      let removedCount = 0;
-
-      for (const dbSession of dbSessions) {
-        const sessionPath = path.join(this.sessionDir, `session-${dbSession.id}`);
-
-        if (this.sessions.has(dbSession.id)) {
-          console.log(`⏭️ Sessão ${dbSession.id} já está na memória, pulando...`);
-          continue;
-        }
-
-        if (fs.existsSync(sessionPath)) {
-          console.log(`📱 Restaurando sessão: ${dbSession.id}`);
-
-          try {
-            const sessionData = {
-              id: dbSession.id,
-              userId: dbSession.user_id,
-              qrCode: null,
-              status: 'initializing',
-              client: null,
-              info: dbSession.phone_number ? {
-                wid: dbSession.phone_number,
-                pushname: dbSession.phone_name || 'Desconhecido',
-                platform: 'unknown'
-              } : null
-            };
-
-            const client = new Client({
-              authStrategy: new LocalAuth({
-                clientId: dbSession.id,
-                dataPath: this.sessionDir
-              }),
-              puppeteer: {
-                headless: true,
-                args: [
-                  '--no-sandbox',
-                  '--disable-setuid-sandbox',
-                  '--disable-dev-shm-usage',
-                  '--disable-accelerated-2d-canvas',
-                  '--no-first-run',
-                  '--no-zygote',
-                  '--disable-gpu'
-                ]
-              }
-            });
-
-            this.setupClientEvents(client, sessionData);
-            sessionData.client = client;
-            this.sessions.set(dbSession.id, sessionData);
-
-            const initPromise = client.initialize();
-            const timeoutPromise = new Promise((_, reject) =>
-              setTimeout(() => reject(new Error('Timeout na restauração')), 45000)
-            );
-
-            await Promise.race([initPromise, timeoutPromise]);
-            restoredCount++;
-            console.log(`✅ Sessão ${dbSession.id} restaurada com sucesso`);
-          } catch (error) {
-            console.error(`❌ Erro ao restaurar sessão ${dbSession.id}:`, error.message);
-            this.sessions.delete(dbSession.id);
-
-            if (error.message.includes('Timeout')) {
-              console.log(`⏱️ Timeout ao restaurar ${dbSession.id}, mas sessão pode conectar depois`);
-            }
-          }
-        } else {
-          console.log(`🗑️ Removendo sessão órfã do banco: ${dbSession.id}`);
-          await this.db.deleteSession(dbSession.id);
-          removedCount++;
-        }
-      }
-
-      const sessionFiles = fs.readdirSync(this.sessionDir).filter(f => f.startsWith('session-'));
-      for (const sessionFile of sessionFiles) {
-        const sessionId = sessionFile.replace('session-', '');
-
-        if (!this.sessions.has(sessionId)) {
-          const dbSession = await this.db.getSession(sessionId);
-
-          if (!dbSession) {
-            console.log(`📱 Encontrada sessão no disco sem registro no banco: ${sessionId}`);
-            console.log(`💾 Criando registro no banco para sessão ${sessionId}...`);
-
-            try {
-              await this.db.createSession(sessionId, userId);
-              console.log(`✅ Registro criado no banco para sessão ${sessionId}`);
-
-              const sessionPath = path.join(this.sessionDir, sessionFile);
-              console.log(`📱 Restaurando sessão do disco: ${sessionId}`);
-
-              const sessionData = {
-                id: sessionId,
-                userId: userId,
-                qrCode: null,
-                status: 'initializing',
-                client: null,
-                info: null
-              };
-
-              const client = new Client({
-                authStrategy: new LocalAuth({
-                  clientId: sessionId,
-                  dataPath: this.sessionDir
-                }),
-                puppeteer: {
-                  headless: true,
-                  args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--disable-gpu'
-                  ]
-                }
-              });
-
-              this.setupClientEvents(client, sessionData);
-              sessionData.client = client;
-              this.sessions.set(sessionId, sessionData);
-
-              const initPromise = client.initialize();
-              const timeoutPromise = new Promise((_, reject) =>
-                setTimeout(() => reject(new Error('Timeout na restauração')), 45000)
-              );
-
-              await Promise.race([initPromise, timeoutPromise]);
-              restoredCount++;
-              console.log(`✅ Sessão ${sessionId} restaurada com sucesso`);
-            } catch (error) {
-              console.error(`❌ Erro ao restaurar sessão ${sessionId}:`, error.message);
-              this.sessions.delete(sessionId);
-            }
-          }
-        }
-      }
-
-      console.log(`✅ Processo de restauração concluído. ${restoredCount} sessões ativas.`);
-    } catch (error) {
-      console.error('❌ Erro ao restaurar sessões:', error);
-    }
+  // Mantém compatibilidade mas não faz nada perigoso no Koyeb
+  async restoreAllSessions() {
+    console.log('⚠️ restoreAllSessions chamado — redirecionando para markAllSessionsDisconnected');
+    await this.markAllSessionsDisconnected();
   }
 
+  async restoreSessionsFromDatabase(userId) {
+    console.log('⚠️ restoreSessionsFromDatabase chamado — no Koyeb sem dados persistentes, ignorando');
+    console.log('💡 Sessões serão criadas sob demanda quando o usuário acessar');
+  }
 
   async sendMedia(sessionId, to, mediaUrl, caption = '') {
     const session = this.getSession(sessionId);
@@ -1102,51 +981,77 @@ class SessionManager {
     if (contactPhone) {
       const sessionKey = `${sessionId}_${contactPhone}`;
       this.inMemoryMessages.delete(sessionKey);
-      console.log(`🗑️ Mensagens em memória limpas para ${sessionKey}`);
     } else {
-      let clearedCount = 0;
       for (const key of this.inMemoryMessages.keys()) {
         if (key.startsWith(`${sessionId}_`)) {
           this.inMemoryMessages.delete(key);
-          clearedCount++;
         }
       }
-      console.log(`🗑️ ${clearedCount} conversas limpas da memória para sessão ${sessionId}`);
     }
   }
 
-
   // ═══════════════════════════════════════════════════════════════════
-  // AUTO-CLEANUP: Destroi sessões sem atividade após 40s (libera memória)
+  // AUTO-CLEANUP INTELIGENTE:
+  // - Sessões qr_code: remove após 5 minutos (QR expirou)
+  // - Sessões failed/disconnected sem cliente: remove após 10 minutos
+  // - Sessões connected/authenticated: NUNCA remove automaticamente
   // ═══════════════════════════════════════════════════════════════════
   startAutoCleanup() {
-    const IDLE_MS = 40 * 1000; // 40 segundos sem atividade
-    console.log('🔄 Auto-limpeza iniciada: sessões ociosas serão destruídas após 40s');
+    console.log(`🔄 Auto-limpeza inteligente iniciada (verifica a cada ${CLEANUP_INTERVAL_MS / 1000}s)`);
+    console.log(`   - QR Code timeout: ${QR_CODE_TIMEOUT_MS / 1000}s`);
+    console.log(`   - Idle cleanup: ${IDLE_CLEANUP_MS / 1000}s`);
+
     setInterval(async () => {
       const now = Date.now();
       const toDestroy = [];
+
       for (const [sid, lastTs] of this.sessionLastActivity.entries()) {
         const sess = this.sessions.get(sid);
-        if (!sess) { this.sessionLastActivity.delete(sid); continue; }
-        const isActive = sess.status === 'connected' || sess.status === 'authenticated';
-        if (!isActive && (now - lastTs) > IDLE_MS) {
-          toDestroy.push({ sid, idleSec: Math.round((now - lastTs) / 1000) });
+        if (!sess) {
+          this.sessionLastActivity.delete(sid);
+          continue;
+        }
+
+        // NUNCA remove sessões connected ou authenticated
+        if (sess.status === 'connected' || sess.status === 'authenticated') {
+          continue;
+        }
+
+        // Sessões com QR code: remove após QR_CODE_TIMEOUT_MS (QR expirou)
+        if (sess.status === 'qr_code' && (now - lastTs) > QR_CODE_TIMEOUT_MS) {
+          toDestroy.push({ sid, reason: `QR expirado (${Math.round((now - lastTs) / 1000)}s)` });
+          continue;
+        }
+
+        // Sessões inicializando: permite até SESSION_INIT_TIMEOUT_MS + margem
+        if (sess.status === 'initializing' && (now - lastTs) > (SESSION_INIT_TIMEOUT_MS + 30000)) {
+          toDestroy.push({ sid, reason: `Inicialização travada (${Math.round((now - lastTs) / 1000)}s)` });
+          continue;
+        }
+
+        // Sessões mortas (failed, disconnected, etc): remove após IDLE_CLEANUP_MS
+        if (['failed', 'disconnected', 'auth_failure'].includes(sess.status) && (now - lastTs) > IDLE_CLEANUP_MS) {
+          toDestroy.push({ sid, reason: `Inativa ${Math.round((now - lastTs) / 1000)}s (${sess.status})` });
+          continue;
         }
       }
-      for (const { sid, idleSec } of toDestroy) {
-        console.log(`🧹 Auto-limpeza: "${sid}" ocioso ${idleSec}s (não conectado) — destruindo...`);
+
+      for (const { sid, reason } of toDestroy) {
+        console.log(`🧹 Auto-limpeza: "${sid}" — ${reason}`);
         try {
-          await this.deleteSession(sid);
+          await this.cleanupSession(sid);
         } catch (e) {
           console.error(`Erro ao auto-limpar ${sid}:`, e.message);
           this.sessions.delete(sid);
           this.sessionLastActivity.delete(sid);
         }
       }
+
       if (toDestroy.length > 0) {
-        console.log(`✅ Auto-limpeza: ${toDestroy.length} sessão(ões) removidas. Sessões ativas: ${this.sessions.size}`);
+        console.log(`✅ Auto-limpeza: ${toDestroy.length} sessão(ões) removidas. Chromium ativos: ${this.getActiveChromiumCount()}/${MAX_CONCURRENT_SESSIONS}`);
       }
-    }, 10000); // verifica a cada 10 segundos
+    }, CLEANUP_INTERVAL_MS);
   }
 }
+
 module.exports = SessionManager;
