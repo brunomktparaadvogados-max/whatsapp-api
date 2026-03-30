@@ -7,7 +7,7 @@ const path = require('path');
 // ═══════════════════════════════════════════════════════════════════
 // LIMITES DE MEMÓRIA — Evita sobrecarga no Koyeb
 // ═══════════════════════════════════════════════════════════════════
-const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 4;
+const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 10;
 const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
 const IDLE_CLEANUP_MS = 10 * 60 * 1000;          // 10 minutos de inatividade
 const CLEANUP_INTERVAL_MS = 30 * 1000;           // verifica a cada 30 segundos
