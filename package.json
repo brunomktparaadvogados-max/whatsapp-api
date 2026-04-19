@@ -4,7 +4,7 @@
   "description": "API REST gratuita para WhatsApp com CRM, chat em tempo real e integração Flow",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "node --expose-gc src/server.js",
     "dev": "nodemon src/server.js"
   },
   "keywords": [
