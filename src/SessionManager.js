@@ -6,7 +6,7 @@ const path = require('path');
 
 // ═══════════════════════════════════════════════════════════════════
 // LIMITES DE MEMÓRIA — Evita sobrecarga no Koyeb
-// ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════h
 const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 999;
 const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
 const IDLE_CLEANUP_MS = 10 * 60 * 1000;          // 10 minutos de inatividade
@@ -153,6 +153,12 @@ class SessionManager {
       createdAt: Date.now()
     };
 
+    // FIX QR: Limpa arquivos de auth ANTES de criar novo cliente
+        // Dados stale do LocalAuth causam "tente novamente mais tarde" no app WhatsApp.
+        // Limpar aqui garante que o novo QR Code seja gerado sem conflitos.
+        console.log(`Limpando dados de auth anteriores para sessão ${sessionId}...`);
+        this.cleanupSessionFiles(sessionId);
+    
     console.log(`🤖 Inicializando cliente WhatsApp para sessão ${sessionId}...`);
     const client = await this.createWhatsAppClient(sessionId);
     this.setupClientEvents(client, sessionData);
@@ -290,7 +296,7 @@ class SessionManager {
           '--disable-backgrounding-occluded-windows',
           '--disable-component-update',
           '--js-flags=--max-old-space-size=512',
-          '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         ],
         executablePath: actualExecPath,
         timeout: SESSION_INIT_TIMEOUT_MS
