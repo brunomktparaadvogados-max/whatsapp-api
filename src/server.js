@@ -1652,6 +1652,23 @@ if (process.env.RENDER_EXTERNAL_URL) {
   });
 }
 
+// ─── MONITOR DE MEMÓRIA (a cada 3 minutos) ───────────────────────────────────
+setInterval(() => {
+    try {
+          const memMB = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+          const rssMB = Math.round(process.memoryUsage().rss / 1024 / 1024);
+          console.log(`🧠 Memória — Heap: ${memMB}MB | RSS: ${rssMB}MB`);
+          if (memMB > 350) {
+                  console.log(`⚠️ Heap alto (${memMB}MB) — executando GC preventivo...`);
+                  if (global.gc) {
+                            global.gc();
+                            const afterMB = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+                            console.log(`✅ Após GC: ${afterMB}MB (liberou ${memMB - afterMB}MB)`);
+                  }
+          }
+    } catch (e) {}
+}, 3 * 60 * 1000);
+
 server.listen(PORT, HOST, async () => {
   console.log(`\n🚀 ========================================`);
   console.log(`   WhatsApp API Server v2.0`);
