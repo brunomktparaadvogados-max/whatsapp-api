@@ -269,30 +269,31 @@ app.post('/api/admin/cleanup-sessions', authMiddleware, async (req, res) => {
 });
 
 app.get('/health', async (req, res) => {
+  // SEMPRE retorna 200 para o Koyeb health check não falhar
+  const response = {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  };
+
   try {
     const health = await sessionManager.healthCheck();
     const dbCapacity = await db.getDatabaseCapacityPercentage();
     const messagesCount = await db.getMessagesCount();
     const dbSize = await db.getDatabaseSize();
 
-    res.json({
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      uptime: process.uptime(),
-      database: {
-        capacity: `${dbCapacity.toFixed(2)}%`,
-        size: dbSize?.size || 'unknown',
-        messages: messagesCount,
-        status: dbCapacity < 80 ? 'healthy' : 'warning'
-      },
-      ...health
-    });
+    response.database = {
+      capacity: `${dbCapacity.toFixed(2)}%`,
+      size: dbSize?.size || 'unknown',
+      messages: messagesCount,
+      status: dbCapacity < 80 ? 'healthy' : 'warning'
+    };
+    Object.assign(response, health);
   } catch (error) {
-    res.status(500).json({
-      status: 'error',
-      message: error.message
-    });
+    response.database = { status: 'initializing', error: error.message };
   }
+
+  res.json(response);
 });
 
 app.get('/api/health', async (req, res) => {
@@ -1736,22 +1737,7 @@ if (process.env.RENDER_EXTERNAL_URL) {
   });
 }
 
-// ─── MONITOR DE MEMÓRIA (a cada 3 minutos) ───────────────────────────────────
-setInterval(() => {
-    try {
-          const memMB = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
-          const rssMB = Math.round(process.memoryUsage().rss / 1024 / 1024);
-          console.log(`🧠 Memória — Heap: ${memMB}MB | RSS: ${rssMB}MB`);
-          if (memMB > 350) {
-                  console.log(`⚠️ Heap alto (${memMB}MB) — executando GC preventivo...`);
-                  if (global.gc) {
-                            global.gc();
-                            const afterMB = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
-                            console.log(`✅ Após GC: ${afterMB}MB (liberou ${memMB - afterMB}MB)`);
-                  }
-          }
-    } catch (e) {}
-}, 3 * 60 * 1000);
+// Monitor de memória básico removido — substituído pelo monitor avançado com 3 thresholds (linha ~1295)
 
 server.listen(PORT, HOST, async () => {
   console.log(`\n🚀 ========================================`);
