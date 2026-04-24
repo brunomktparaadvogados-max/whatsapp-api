@@ -453,15 +453,34 @@ class SessionManager {
     });
 
     client.on('message', async (message) => {
-      const contactPhone = message.from.replace('@c.us', '');
       sessionData.lastSeen = Date.now();
       this.sessionLastActivity.set(sessionData.id, Date.now());
 
-      if (message.from.includes('status@broadcast') || message.from.includes('@lid')) {
+      // Ignorar apenas status@broadcast (atualizações de status)
+      if (message.from.includes('status@broadcast')) {
         return;
       }
 
-      console.log(`📩 Msg recebida - Session: ${sessionData.id}, From: ${contactPhone}`);
+      // Resolver telefone: suporta @c.us e @lid (Linked ID do WhatsApp)
+      let contactPhone = message.from.replace('@c.us', '').replace('@lid', '');
+      let whatsappLid = null;
+
+      if (message.from.includes('@lid')) {
+        whatsappLid = message.from; // Preserva o LID completo para matching
+        try {
+          const contact = await message.getContact();
+          if (contact && contact.number) {
+            contactPhone = contact.number;
+            console.log(`🔗 LID resolvido: ${message.from} → ${contactPhone}`);
+          } else {
+            console.log(`⚠️ LID sem número: ${message.from}, usando ID como fallback`);
+          }
+        } catch (lidError) {
+          console.warn(`⚠️ Erro ao resolver LID ${message.from}: ${lidError.message}`);
+        }
+      }
+
+      console.log(`📩 Msg recebida - Session: ${sessionData.id}, From: ${contactPhone}${whatsappLid ? ` (LID: ${whatsappLid})` : ''}`);
 
       const messageData = {
         id: message.id._serialized,
@@ -473,7 +492,8 @@ class SessionManager {
         mediaMimetype: null,
         fromMe: message.fromMe,
         timestamp: message.timestamp,
-        status: 'received'
+        status: 'received',
+        whatsappLid
       };
 
       if (message.hasMedia) {
@@ -518,7 +538,9 @@ class SessionManager {
             userId: sessionData.userId,
             messageType: messageData.messageType,
             mediaUrl: messageData.mediaUrl,
-            mediaMimetype: messageData.mediaMimetype
+            mediaMimetype: messageData.mediaMimetype,
+            whatsappLid: whatsappLid, // Linked ID para matching no wa-webhook
+            notifyName: message._data?.notifyName || message._data?.pushname || null
           };
 
           const webhookResponse = await fetch(webhookUrl, {
@@ -528,8 +550,11 @@ class SessionManager {
             timeout: 5000
           });
 
+          const webhookBody = await webhookResponse.text();
           if (!webhookResponse.ok) {
-            console.error(`❌ Webhook falhou: ${webhookResponse.status}`);
+            console.error(`❌ Webhook falhou: ${webhookResponse.status} - ${webhookBody}`);
+          } else {
+            console.log(`✅ Webhook OK: ${webhookBody.substring(0, 200)}`);
           }
         } catch (error) {
           console.error(`❌ Erro webhook:`, error.message);
@@ -543,7 +568,22 @@ class SessionManager {
 
     client.on('message_create', async (message) => {
       if (message.fromMe) {
-        const contactPhone = message.to.replace('@c.us', '');
+        // Suporte a @c.us e @lid
+        let contactPhone = message.to.replace('@c.us', '').replace('@lid', '');
+        let outLid = null;
+
+        if (message.to.includes('@lid')) {
+          outLid = message.to;
+          try {
+            const contact = await message.getContact();
+            if (contact && contact.number) {
+              contactPhone = contact.number;
+            }
+          } catch (e) {
+            console.warn(`⚠️ Erro ao resolver LID outgoing: ${e.message}`);
+          }
+        }
+
         sessionData.lastSeen = Date.now();
         this.sessionLastActivity.set(sessionData.id, Date.now());
 
@@ -557,7 +597,8 @@ class SessionManager {
           mediaMimetype: null,
           fromMe: true,
           timestamp: message.timestamp,
-          status: 'sent'
+          status: 'sent',
+          whatsappLid: outLid
         };
 
         await this.db.upsertContact(sessionData.id, contactPhone);
@@ -578,7 +619,8 @@ class SessionManager {
               timestamp: messageData.timestamp,
               messageId: messageData.id,
               sessionId: sessionData.id,
-              userId: sessionData.userId
+              userId: sessionData.userId,
+              whatsappLid: outLid
             };
 
             await fetch(webhookUrl, {
