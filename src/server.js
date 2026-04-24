@@ -1190,9 +1190,7 @@ app.post('/api/admin/cleanup-messages', authMiddleware, async (req, res) => {
   }
 });
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
+// REMOVIDO: health simplificado duplicado que sobrescrevia o detalhado (linha ~271)
 
 cron.schedule('* * * * *', async () => {
   const pendingMessages = await db.getPendingScheduledMessages();
@@ -1292,6 +1290,92 @@ cron.schedule('*/5 * * * *', async () => {
     console.error('❌ Erro na verificação de saúde:', error.message);
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// MONITORAMENTO DE MEMÓRIA — Previne OOM kills no Koyeb
+// Verifica a cada 2 minutos. Se RSS > 400MB, força limpeza agressiva.
+// ═══════════════════════════════════════════════════════════════════
+const MEMORY_CHECK_INTERVAL_MS = 2 * 60 * 1000; // 2 minutos
+const MEMORY_WARN_MB = 300;   // Alerta
+const MEMORY_CRITICAL_MB = 400; // Limpeza agressiva
+const MEMORY_EMERGENCY_MB = 500; // Mata sessões ociosas
+
+setInterval(async () => {
+  const mem = process.memoryUsage();
+  const heapMB = Math.round(mem.heapUsed / 1024 / 1024);
+  const rssMB = Math.round(mem.rss / 1024 / 1024);
+  console.log(`🧠 Memória — Heap: ${heapMB}MB | RSS: ${rssMB}MB`);
+
+  // Tenta garbage collection se disponível
+  if (global.gc) {
+    global.gc();
+    const afterGC = process.memoryUsage();
+    console.log(`🧹 GC executado — Heap: ${Math.round(afterGC.heapUsed / 1024 / 1024)}MB | RSS: ${Math.round(afterGC.rss / 1024 / 1024)}MB`);
+  }
+
+  if (rssMB >= MEMORY_EMERGENCY_MB) {
+    console.error(`🚨 EMERGÊNCIA DE MEMÓRIA: ${rssMB}MB RSS! Limpando sessões não-connected...`);
+    // Mata TODAS as sessões que NÃO estão connected
+    const sessions = sessionManager.getAllSessions();
+    for (const s of sessions) {
+      if (s.status !== 'connected') {
+        console.log(`💀 Matando sessão ${s.id} (status: ${s.status}) para liberar memória`);
+        try { await sessionManager.cleanupSession(s.id); } catch (e) { /* ignora */ }
+      }
+    }
+    // Mata processos chromium órfãos
+    try {
+      const { execSync } = require('child_process');
+      execSync('pkill -f "chromium.*--type=renderer" 2>/dev/null || true');
+      console.log('🧹 Processos chromium renderer órfãos eliminados');
+    } catch (e) { /* ignora */ }
+
+  } else if (rssMB >= MEMORY_CRITICAL_MB) {
+    console.warn(`⚠️ MEMÓRIA CRÍTICA: ${rssMB}MB RSS! Limpando sessões mortas...`);
+    await sessionManager.forceCleanupDeadSessions();
+    // Limpa mensagens em memória antigas
+    sessionManager.inMemoryMessages.clear();
+    console.log('🧹 Cache de mensagens em memória limpo');
+
+  } else if (rssMB >= MEMORY_WARN_MB) {
+    console.warn(`⚠️ Memória elevada: ${rssMB}MB RSS`);
+  }
+}, MEMORY_CHECK_INTERVAL_MS);
+
+// ═══════════════════════════════════════════════════════════════════
+// VERIFICAÇÃO DE SESSÕES ZUMBIS — Mata sessões "authenticated" presas
+// Se uma sessão está "authenticated" por mais de 3 minutos sem virar
+// "connected", o Chromium provavelmente travou.
+// ═══════════════════════════════════════════════════════════════════
+const ZOMBIE_CHECK_INTERVAL_MS = 3 * 60 * 1000; // 3 minutos
+const AUTHENTICATED_MAX_AGE_MS = 3 * 60 * 1000; // 3 minutos máximo em "authenticated"
+
+setInterval(async () => {
+  const now = Date.now();
+  const allSessions = sessionManager.getAllSessions();
+
+  for (const s of allSessions) {
+    if (s.status === 'authenticated' && s.lastSeen && (now - s.lastSeen) > AUTHENTICATED_MAX_AGE_MS) {
+      console.warn(`🧟 Sessão zumbi detectada: ${s.id} — presa em "authenticated" por ${Math.round((now - s.lastSeen) / 1000)}s`);
+      console.log(`🔄 Destruindo e recriando sessão ${s.id}...`);
+
+      try {
+        const sessionData = sessionManager.getSession(s.id);
+        if (sessionData) {
+          // Tenta verificar se realmente está morta
+          const alive = await sessionManager.isSessionAlive(s.id);
+          if (!alive) {
+            console.log(`💀 Sessão ${s.id} confirmada como morta. Limpando...`);
+            await sessionManager.cleanupSession(s.id);
+            await db.updateSessionStatus(s.id, 'disconnected');
+          }
+        }
+      } catch (e) {
+        console.error(`❌ Erro ao limpar sessão zumbi ${s.id}:`, e.message);
+      }
+    }
+  }
+}, ZOMBIE_CHECK_INTERVAL_MS);
 
 app.get('/api/debug/chromium', async (req, res) => {
   const { execSync } = require('child_process');
