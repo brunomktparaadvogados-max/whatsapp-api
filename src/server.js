@@ -1349,30 +1349,46 @@ setInterval(async () => {
 // "connected", o Chromium provavelmente travou.
 // ═══════════════════════════════════════════════════════════════════
 const ZOMBIE_CHECK_INTERVAL_MS = 3 * 60 * 1000; // 3 minutos
-const AUTHENTICATED_MAX_AGE_MS = 3 * 60 * 1000; // 3 minutos máximo em "authenticated"
 
 setInterval(async () => {
   const now = Date.now();
   const allSessions = sessionManager.getAllSessions();
 
   for (const s of allSessions) {
-    if (s.status === 'authenticated' && s.lastSeen && (now - s.lastSeen) > AUTHENTICATED_MAX_AGE_MS) {
+    // Caso 1: Sessão presa em "authenticated" por mais de 3 minutos
+    if (s.status === 'authenticated' && s.lastSeen && (now - s.lastSeen) > 3 * 60 * 1000) {
       console.warn(`🧟 Sessão zumbi detectada: ${s.id} — presa em "authenticated" por ${Math.round((now - s.lastSeen) / 1000)}s`);
-      console.log(`🔄 Destruindo e recriando sessão ${s.id}...`);
-
       try {
-        const sessionData = sessionManager.getSession(s.id);
-        if (sessionData) {
-          // Tenta verificar se realmente está morta
-          const alive = await sessionManager.isSessionAlive(s.id);
-          if (!alive) {
-            console.log(`💀 Sessão ${s.id} confirmada como morta. Limpando...`);
-            await sessionManager.cleanupSession(s.id);
-            await db.updateSessionStatus(s.id, 'disconnected');
-          }
+        const alive = await sessionManager.isSessionAlive(s.id);
+        if (!alive) {
+          console.log(`💀 Sessão ${s.id} confirmada como morta. Limpando...`);
+          await sessionManager.cleanupSession(s.id);
+          await db.updateSessionStatus(s.id, 'disconnected');
         }
       } catch (e) {
         console.error(`❌ Erro ao limpar sessão zumbi ${s.id}:`, e.message);
+      }
+    }
+
+    // Caso 2: Sessão "connected" mas Chromium morto (getState timeout)
+    // Isso acontece quando o Chromium trava silenciosamente
+    if (s.status === 'connected') {
+      try {
+        const alive = await sessionManager.isSessionAlive(s.id);
+        if (!alive) {
+          console.warn(`🧟 Sessão ${s.id} mostra "connected" mas Chromium está morto!`);
+          console.log(`🔄 Limpando sessão morta ${s.id} e marcando como disconnected...`);
+          await sessionManager.cleanupSession(s.id);
+          await db.updateSessionStatus(s.id, 'disconnected');
+
+          // Notifica o frontend que a sessão caiu
+          io.to(`user_${s.userId}`).emit('session_disconnected', {
+            sessionId: s.id,
+            reason: 'CHROMIUM_DEAD'
+          });
+        }
+      } catch (e) {
+        console.error(`❌ Erro ao verificar sessão connected ${s.id}:`, e.message);
       }
     }
   }

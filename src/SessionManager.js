@@ -957,6 +957,26 @@ class SessionManager {
       } else {
         console.error(`❌ [${sessionId}] Não foi possível verificar estado do WhatsApp: ${stateError.message}`);
         this.logRecentError(sessionId, stateError);
+
+        // Se getState deu timeout, o Chromium provavelmente morreu.
+        // Tenta reconectar automaticamente em background e avisa o frontend.
+        if (stateError.message.includes('getState_timeout') || stateError.message.includes('timeout')) {
+          console.log(`🔄 [${sessionId}] Chromium morto detectado no envio. Iniciando reconexão automática...`);
+          session.status = 'disconnected';
+          await this.db.updateSessionStatus(sessionId, 'disconnected');
+
+          // Emite evento para frontend saber que precisa reconectar
+          this.io.to(`user_${session.userId}`).emit('session_disconnected', {
+            sessionId: sessionId,
+            reason: 'CHROMIUM_DEAD'
+          });
+
+          // Tenta reconectar em background
+          this.attemptFullReconnect(session);
+
+          throw new Error('Sessão WhatsApp perdeu conexão. Reconexão automática em andamento. Aguarde 1 minuto e tente novamente.');
+        }
+
         throw new Error('Sessão WhatsApp instável. Reconecte a sessão.');
       }
     }
