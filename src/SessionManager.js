@@ -45,7 +45,12 @@ class SessionManager {
     const mongoUri = process.env.MONGODB_URI;
     if (mongoUri) {
       try {
-        await mongoose.connect(mongoUri);
+        // family: 4 força IPv4 — resolve problema de DNS SRV no Koyeb
+        await mongoose.connect(mongoUri, {
+          family: 4,
+          serverSelectionTimeoutMS: 15000,
+          connectTimeoutMS: 15000
+        });
         this.mongoStore = new MongoStore({ mongoose });
         this.useRemoteAuth = true;
         console.log('✅ MongoDB conectado — sessões WhatsApp serão persistidas entre deploys!');
