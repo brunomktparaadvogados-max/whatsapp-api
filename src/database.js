@@ -224,6 +224,10 @@ class DatabaseManager {
     return await this.all('SELECT * FROM sessions');
   }
 
+  async getConnectedSessions() {
+    return await this.all("SELECT * FROM sessions WHERE status = 'connected'");
+  }
+
   async getSession(sessionId) {
     return await this.get('SELECT * FROM sessions WHERE id = $1', [sessionId]);
   }

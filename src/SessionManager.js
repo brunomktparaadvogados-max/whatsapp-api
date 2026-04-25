@@ -1,4 +1,6 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, RemoteAuth } = require('whatsapp-web.js');
+const { MongoStore } = require('wwebjs-mongo');
+const mongoose = require('mongoose');
 const QRCode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
@@ -30,21 +32,74 @@ class SessionManager {
     this.sessionSendLock = new Map();       // Evita envio simultâneo na mesma sessão
     this.lastMessageTime = new Map();       // Controle de rate-limit por sessão
     this.recentErrors = [];                 // Log de erros recentes para diagnóstico
+    this.mongoStore = null;                 // MongoStore para RemoteAuth (persistência de sessão)
+    this.useRemoteAuth = false;             // Flag: usar RemoteAuth ou LocalAuth
 
     this.init();
   }
 
   async init() {
-    console.log('⚠️ MongoDB/Mongoose não é mais usado. Usando PostgreSQL (Supabase).');
-    console.log('✅ Banco de dados configurado via DATABASE_URL');
+    // ═══════════════════════════════════════════════════════════════
+    // PERSISTÊNCIA DE SESSÃO — MongoDB para sobreviver a deploys
+    // ═══════════════════════════════════════════════════════════════
+    const mongoUri = process.env.MONGODB_URI;
+    if (mongoUri) {
+      try {
+        await mongoose.connect(mongoUri);
+        this.mongoStore = new MongoStore({ mongoose });
+        this.useRemoteAuth = true;
+        console.log('✅ MongoDB conectado — sessões WhatsApp serão persistidas entre deploys!');
+        console.log('🔒 RemoteAuth ativo: QR code só precisa ser escaneado 1 vez');
+      } catch (mongoError) {
+        console.error('⚠️ Falha ao conectar MongoDB, usando LocalAuth (sessões perdem no deploy):', mongoError.message);
+        this.useRemoteAuth = false;
+      }
+    } else {
+      console.log('⚠️ MONGODB_URI não configurado — usando LocalAuth (sessões perdem no deploy)');
+      console.log('💡 Configure MONGODB_URI no Koyeb para manter sessões entre deploys');
+    }
+
+    console.log('✅ Banco de dados principal: PostgreSQL (Supabase)');
     console.log(`📊 Limite de sessões simultâneas: ${MAX_CONCURRENT_SESSIONS}`);
 
-    // Em vez de restaurar todas as sessões (que cria N processos Chromium),
-    // apenas marca todas como desconectadas. Usuário reconecta sob demanda.
-    await this.markAllSessionsDisconnected();
+    if (this.useRemoteAuth) {
+      // Com RemoteAuth, tenta restaurar sessões automaticamente
+      console.log('🔄 Restaurando sessões salvas do MongoDB...');
+      await this.restoreSavedSessions();
+    } else {
+      // Sem RemoteAuth, marca todas como desconectadas
+      await this.markAllSessionsDisconnected();
+    }
 
     // Inicia limpeza automática inteligente
     this.startAutoCleanup();
+  }
+
+  async restoreSavedSessions() {
+    try {
+      const savedSessions = await this.db.getConnectedSessions();
+      if (!savedSessions || savedSessions.length === 0) {
+        console.log('📭 Nenhuma sessão salva para restaurar');
+        return;
+      }
+
+      console.log(`📦 ${savedSessions.length} sessão(ões) para restaurar...`);
+
+      for (const session of savedSessions) {
+        try {
+          console.log(`🔄 Restaurando sessão ${session.id} (user ${session.user_id})...`);
+          // Re-cria a sessão com RemoteAuth — o MongoDB tem os dados de auth
+          await this.createSession(session.id, session.user_id);
+          console.log(`✅ Sessão ${session.id} restaurada com sucesso`);
+        } catch (restoreError) {
+          console.error(`❌ Falha ao restaurar sessão ${session.id}:`, restoreError.message);
+          await this.db.updateSessionStatus(session.id, 'disconnected');
+        }
+      }
+    } catch (error) {
+      console.error('❌ Erro ao restaurar sessões:', error.message);
+      await this.markAllSessionsDisconnected();
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -301,10 +356,16 @@ class SessionManager {
         executablePath: actualExecPath,
         timeout: SESSION_INIT_TIMEOUT_MS
       },
-      authStrategy: new LocalAuth({
-        clientId: sessionId,
-        dataPath: path.join(__dirname, '..', '.wwebjs_auth')
-      }),
+      authStrategy: this.useRemoteAuth && this.mongoStore
+        ? new RemoteAuth({
+            clientId: sessionId,
+            store: this.mongoStore,
+            backupSyncIntervalMs: 5 * 60 * 1000 // Salva sessão no MongoDB a cada 5 minutos
+          })
+        : new LocalAuth({
+            clientId: sessionId,
+            dataPath: path.join(__dirname, '..', '.wwebjs_auth')
+          }),
       markOnlineAvailable: false,
       syncFullHistory: false,
       disableAutoSeen: true
@@ -378,6 +439,11 @@ class SessionManager {
         sessionId: sessionData.id,
         info: sessionData.info
       });
+    });
+
+    // RemoteAuth: sessão salva no MongoDB com sucesso
+    client.on('remote_session_saved', () => {
+      console.log(`💾 [${sessionData.id}] Sessão salva no MongoDB — sobrevive a deploys!`);
     });
 
     client.on('ready', async () => {
@@ -1260,7 +1326,7 @@ class SessionManager {
       totalSessions: this.sessions.size,
       connectedSessions: 0,
       disconnectedSessions: 0,
-      authStrategy: 'LocalAuth',
+      authStrategy: this.useRemoteAuth ? 'RemoteAuth (MongoDB)' : 'LocalAuth',
       maxConcurrent: MAX_CONCURRENT_SESSIONS,
       recentErrors: this.getRecentErrors(5),
       memory: {
