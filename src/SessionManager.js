@@ -5,13 +5,135 @@ const QRCode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = require('path');
-const dns = require('dns');
+const https = require('https');
 
 // ═══════════════════════════════════════════════════════════════════
 // DNS FIX: Koyeb não resolve DNS SRV (mongodb+srv://)
-// Configura DNS público para resolver registros SRV do MongoDB Atlas
+// Usa DNS-over-HTTPS (DoH) para resolver SRV e montar URI padrão
 // ═══════════════════════════════════════════════════════════════════
-dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
+
+/**
+ * Resolve DNS SRV via DNS-over-HTTPS (Google)
+ * Retorna array de { name, port, priority, weight }
+ */
+function resolveSrvViaDoH(srvName) {
+  return new Promise((resolve, reject) => {
+    const url = `https://dns.google/resolve?name=${encodeURIComponent(srvName)}&type=SRV`;
+    https.get(url, { timeout: 10000 }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.Answer && json.Answer.length > 0) {
+            const records = json.Answer
+              .filter(a => a.type === 33) // SRV type
+              .map(a => {
+                const parts = a.data.split(' ');
+                return {
+                  priority: parseInt(parts[0]),
+                  weight: parseInt(parts[1]),
+                  port: parseInt(parts[2]),
+                  name: parts[3].replace(/\.$/, '')
+                };
+              });
+            resolve(records);
+          } else {
+            reject(new Error(`No SRV records found for ${srvName}: ${JSON.stringify(json)}`));
+          }
+        } catch (e) {
+          reject(new Error(`Failed to parse DoH response: ${e.message}`));
+        }
+      });
+    }).on('error', (err) => {
+      reject(new Error(`DoH request failed: ${err.message}`));
+    });
+  });
+}
+
+/**
+ * Resolve DNS TXT via DNS-over-HTTPS (Google)
+ * Retorna string com opções (ex: "authSource=admin&replicaSet=...")
+ */
+function resolveTxtViaDoH(domain) {
+  return new Promise((resolve, reject) => {
+    const url = `https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=TXT`;
+    https.get(url, { timeout: 10000 }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.Answer && json.Answer.length > 0) {
+            const txt = json.Answer
+              .filter(a => a.type === 16) // TXT type
+              .map(a => a.data.replace(/"/g, ''))
+              .join('&');
+            resolve(txt);
+          } else {
+            resolve(''); // TXT is optional
+          }
+        } catch (e) {
+          resolve(''); // TXT is optional
+        }
+      });
+    }).on('error', () => {
+      resolve(''); // TXT is optional
+    });
+  });
+}
+
+/**
+ * Converte mongodb+srv:// para mongodb:// usando DNS-over-HTTPS
+ * Ex: mongodb+srv://user:pass@cluster0.abc.mongodb.net/db?opts
+ *  →  mongodb://user:pass@shard-00-00.abc.mongodb.net:27017,...,shard-00-02.abc.mongodb.net:27017/db?ssl=true&authSource=admin&replicaSet=...&opts
+ */
+async function resolveSrvUri(srvUri) {
+  const match = srvUri.match(/^mongodb\+srv:\/\/([^@]+)@([^/?]+)(\/[^?]*)?(\?.*)?$/);
+  if (!match) throw new Error('Invalid mongodb+srv:// URI format');
+
+  const credentials = match[1]; // user:pass
+  const hostname = match[2];    // cluster0.cl02hcn.mongodb.net
+  const dbPath = match[3] || '/'; // /whatsapp
+  const queryString = match[4] || ''; // ?retryWrites=true&...
+
+  console.log(`🔍 Resolvendo SRV via DNS-over-HTTPS para: ${hostname}`);
+
+  // Resolve SRV records
+  const srvRecords = await resolveSrvViaDoH(`_mongodb._tcp.${hostname}`);
+  console.log(`✅ SRV resolvido: ${srvRecords.length} hosts encontrados`);
+
+  // Resolve TXT records (has replicaSet and authSource)
+  const txtOptions = await resolveTxtViaDoH(hostname);
+  console.log(`📋 TXT options: ${txtOptions || '(none)'}`);
+
+  // Build host list
+  const hostList = srvRecords
+    .sort((a, b) => a.priority - b.priority || b.weight - a.weight)
+    .map(r => `${r.name}:${r.port}`)
+    .join(',');
+
+  // Merge query params: TXT options + original query + ssl=true
+  const params = new URLSearchParams();
+  params.set('ssl', 'true');
+  if (txtOptions) {
+    for (const pair of txtOptions.split('&')) {
+      const [k, v] = pair.split('=');
+      if (k && v) params.set(k, v);
+    }
+  }
+  if (queryString) {
+    const originalParams = new URLSearchParams(queryString.replace(/^\?/, ''));
+    for (const [k, v] of originalParams) {
+      params.set(k, v);
+    }
+  }
+
+  const standardUri = `mongodb://${credentials}@${hostList}${dbPath}?${params.toString()}`;
+  console.log(`🔗 URI convertida: mongodb://${credentials.split(':')[0]}:***@${hostList}${dbPath}?${params.toString()}`);
+
+  return standardUri;
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // LIMITES DE MEMÓRIA — Sessões sob demanda para 20+ usuários
@@ -49,10 +171,20 @@ class SessionManager {
     // ═══════════════════════════════════════════════════════════════
     // PERSISTÊNCIA DE SESSÃO — MongoDB para sobreviver a deploys
     // ═══════════════════════════════════════════════════════════════
-    const mongoUri = process.env.MONGODB_URI;
+    let mongoUri = process.env.MONGODB_URI;
     if (mongoUri) {
       try {
-        // family: 4 força IPv4 — resolve problema de DNS SRV no Koyeb
+        // Se a URI usa mongodb+srv://, resolve via DNS-over-HTTPS (Koyeb não resolve SRV nativo)
+        if (mongoUri.startsWith('mongodb+srv://')) {
+          console.log('🔄 URI usa mongodb+srv:// — resolvendo via DNS-over-HTTPS...');
+          try {
+            mongoUri = await resolveSrvUri(mongoUri);
+          } catch (srvError) {
+            console.error('⚠️ Falha ao resolver SRV via DoH:', srvError.message);
+            console.log('🔄 Tentando conexão direta com mongodb+srv:// (pode falhar no Koyeb)...');
+          }
+        }
+
         await mongoose.connect(mongoUri, {
           family: 4,
           serverSelectionTimeoutMS: 15000,
