@@ -5,6 +5,13 @@ const QRCode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = require('path');
+const dns = require('dns');
+
+// ═══════════════════════════════════════════════════════════════════
+// DNS FIX: Koyeb não resolve DNS SRV (mongodb+srv://)
+// Configura DNS público para resolver registros SRV do MongoDB Atlas
+// ═══════════════════════════════════════════════════════════════════
+dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
 
 // ═══════════════════════════════════════════════════════════════════
 // LIMITES DE MEMÓRIA — Sessões sob demanda para 20+ usuários
