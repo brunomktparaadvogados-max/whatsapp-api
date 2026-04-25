@@ -13,80 +13,97 @@ const https = require('https');
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * Resolve DNS SRV via DNS-over-HTTPS (Google)
+ * Faz HTTP(S) GET e retorna o body como string
+ */
+function httpGet(url, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https') ? https : require('http');
+    mod.get(url, { timeout: timeoutMs, headers: { 'Accept': 'application/dns-json, application/json' } }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    }).on('error', reject).on('timeout', function() { this.destroy(); reject(new Error('timeout')); });
+  });
+}
+
+/**
+ * Resolve DNS SRV via DNS-over-HTTPS — tenta múltiplos provedores
  * Retorna array de { name, port, priority, weight }
  */
-function resolveSrvViaDoH(srvName) {
-  return new Promise((resolve, reject) => {
-    const url = `https://dns.google/resolve?name=${encodeURIComponent(srvName)}&type=SRV`;
-    https.get(url, { timeout: 10000 }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          if (json.Answer && json.Answer.length > 0) {
-            const records = json.Answer
-              .filter(a => a.type === 33) // SRV type
-              .map(a => {
-                const parts = a.data.split(' ');
-                return {
-                  priority: parseInt(parts[0]),
-                  weight: parseInt(parts[1]),
-                  port: parseInt(parts[2]),
-                  name: parts[3].replace(/\.$/, '')
-                };
-              });
-            resolve(records);
-          } else {
-            reject(new Error(`No SRV records found for ${srvName}: ${JSON.stringify(json)}`));
-          }
-        } catch (e) {
-          reject(new Error(`Failed to parse DoH response: ${e.message}`));
+async function resolveSrvViaDoH(srvName) {
+  // Múltiplos provedores DoH para redundância
+  const providers = [
+    { name: 'Google', url: `https://dns.google/resolve?name=${encodeURIComponent(srvName)}&type=SRV` },
+    { name: 'Cloudflare', url: `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(srvName)}&type=SRV&ct=application/dns-json` },
+    { name: 'Quad9', url: `https://dns.quad9.net:5053/dns-query?name=${encodeURIComponent(srvName)}&type=SRV&ct=application/dns-json` },
+  ];
+
+  for (const provider of providers) {
+    try {
+      console.log(`  🌐 Tentando DoH via ${provider.name}...`);
+      const { status, body } = await httpGet(provider.url);
+      console.log(`  📦 ${provider.name} respondeu (HTTP ${status}): ${body.substring(0, 300)}`);
+
+      const json = JSON.parse(body);
+
+      // Verificar se há respostas (Answer pode incluir CNAMEs, filtrar SRV type=33)
+      if (json.Answer && json.Answer.length > 0) {
+        const srvRecords = json.Answer
+          .filter(a => a.type === 33)
+          .map(a => {
+            const parts = a.data.split(' ');
+            return {
+              priority: parseInt(parts[0]),
+              weight: parseInt(parts[1]),
+              port: parseInt(parts[2]),
+              name: parts[3].replace(/\.$/, '')
+            };
+          });
+
+        if (srvRecords.length > 0) {
+          console.log(`  ✅ ${provider.name}: ${srvRecords.length} SRV records encontrados`);
+          return srvRecords;
         }
-      });
-    }).on('error', (err) => {
-      reject(new Error(`DoH request failed: ${err.message}`));
-    });
-  });
+
+        // Se só tem CNAMEs, logar e tentar próximo
+        console.log(`  ⚠️ ${provider.name}: ${json.Answer.length} records mas nenhum SRV (types: ${json.Answer.map(a => a.type).join(',')})`);
+      } else {
+        console.log(`  ⚠️ ${provider.name}: sem Answer (Status: ${json.Status})`);
+      }
+    } catch (err) {
+      console.log(`  ❌ ${provider.name} falhou: ${err.message}`);
+    }
+  }
+
+  return null; // Todos falharam
 }
 
 /**
- * Resolve DNS TXT via DNS-over-HTTPS (Google)
- * Retorna string com opções (ex: "authSource=admin&replicaSet=...")
+ * Resolve DNS TXT via DNS-over-HTTPS
  */
-function resolveTxtViaDoH(domain) {
-  return new Promise((resolve, reject) => {
-    const url = `https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=TXT`;
-    https.get(url, { timeout: 10000 }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          if (json.Answer && json.Answer.length > 0) {
-            const txt = json.Answer
-              .filter(a => a.type === 16) // TXT type
-              .map(a => a.data.replace(/"/g, ''))
-              .join('&');
-            resolve(txt);
-          } else {
-            resolve(''); // TXT is optional
-          }
-        } catch (e) {
-          resolve(''); // TXT is optional
-        }
-      });
-    }).on('error', () => {
-      resolve(''); // TXT is optional
-    });
-  });
+async function resolveTxtViaDoH(domain) {
+  const providers = [
+    `https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=TXT`,
+    `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(domain)}&type=TXT&ct=application/dns-json`,
+  ];
+
+  for (const url of providers) {
+    try {
+      const { body } = await httpGet(url);
+      const json = JSON.parse(body);
+      if (json.Answer && json.Answer.length > 0) {
+        return json.Answer
+          .filter(a => a.type === 16)
+          .map(a => a.data.replace(/"/g, ''))
+          .join('&');
+      }
+    } catch (e) { /* try next */ }
+  }
+  return '';
 }
 
 /**
- * Converte mongodb+srv:// para mongodb:// usando DNS-over-HTTPS
- * Ex: mongodb+srv://user:pass@cluster0.abc.mongodb.net/db?opts
- *  →  mongodb://user:pass@shard-00-00.abc.mongodb.net:27017,...,shard-00-02.abc.mongodb.net:27017/db?ssl=true&authSource=admin&replicaSet=...&opts
+ * Converte mongodb+srv:// para mongodb:// usando DoH + fallback hardcoded
  */
 async function resolveSrvUri(srvUri) {
   const match = srvUri.match(/^mongodb\+srv:\/\/([^@]+)@([^/?]+)(\/[^?]*)?(\?.*)?$/);
@@ -97,15 +114,38 @@ async function resolveSrvUri(srvUri) {
   const dbPath = match[3] || '/'; // /whatsapp
   const queryString = match[4] || ''; // ?retryWrites=true&...
 
-  console.log(`🔍 Resolvendo SRV via DNS-over-HTTPS para: ${hostname}`);
+  console.log(`🔍 Resolvendo SRV para: ${hostname}`);
 
-  // Resolve SRV records
-  const srvRecords = await resolveSrvViaDoH(`_mongodb._tcp.${hostname}`);
-  console.log(`✅ SRV resolvido: ${srvRecords.length} hosts encontrados`);
+  // 1. Tentar DoH
+  let srvRecords = await resolveSrvViaDoH(`_mongodb._tcp.${hostname}`);
 
-  // Resolve TXT records (has replicaSet and authSource)
-  const txtOptions = await resolveTxtViaDoH(hostname);
-  console.log(`📋 TXT options: ${txtOptions || '(none)'}`);
+  // 2. Fallback: padrão Atlas (cluster0-shard-00-XX.<subdomain>.mongodb.net)
+  if (!srvRecords || srvRecords.length === 0) {
+    // Extrair subdomain: "cluster0.cl02hcn.mongodb.net" → prefix="cluster0", sub="cl02hcn"
+    const hostParts = hostname.split('.');
+    const clusterName = hostParts[0]; // "cluster0"
+    const subdomain = hostParts.slice(1).join('.'); // "cl02hcn.mongodb.net"
+
+    console.log(`⚠️ DoH falhou — usando padrão Atlas: ${clusterName}-shard-00-XX.${subdomain}`);
+    srvRecords = [
+      { priority: 0, weight: 0, port: 27017, name: `${clusterName}-shard-00-00.${subdomain}` },
+      { priority: 0, weight: 0, port: 27017, name: `${clusterName}-shard-00-01.${subdomain}` },
+      { priority: 0, weight: 0, port: 27017, name: `${clusterName}-shard-00-02.${subdomain}` },
+    ];
+  }
+
+  // Resolve TXT (has replicaSet and authSource)
+  let txtOptions = await resolveTxtViaDoH(hostname);
+
+  // Fallback TXT: padrão Atlas M0
+  if (!txtOptions) {
+    // Para Atlas M0, o replicaSet geralmente é "atlas-XXXXX-shard-0"
+    // authSource é sempre "admin"
+    txtOptions = 'authSource=admin';
+    console.log('📋 TXT fallback: authSource=admin');
+  } else {
+    console.log(`📋 TXT: ${txtOptions}`);
+  }
 
   // Build host list
   const hostList = srvRecords
@@ -113,14 +153,12 @@ async function resolveSrvUri(srvUri) {
     .map(r => `${r.name}:${r.port}`)
     .join(',');
 
-  // Merge query params: TXT options + original query + ssl=true
+  // Merge query params
   const params = new URLSearchParams();
   params.set('ssl', 'true');
-  if (txtOptions) {
-    for (const pair of txtOptions.split('&')) {
-      const [k, v] = pair.split('=');
-      if (k && v) params.set(k, v);
-    }
+  for (const pair of txtOptions.split('&')) {
+    const [k, v] = pair.split('=');
+    if (k && v) params.set(k, v);
   }
   if (queryString) {
     const originalParams = new URLSearchParams(queryString.replace(/^\?/, ''));
@@ -130,7 +168,7 @@ async function resolveSrvUri(srvUri) {
   }
 
   const standardUri = `mongodb://${credentials}@${hostList}${dbPath}?${params.toString()}`;
-  console.log(`🔗 URI convertida: mongodb://${credentials.split(':')[0]}:***@${hostList}${dbPath}?${params.toString()}`);
+  console.log(`🔗 URI final: mongodb://${credentials.split(':')[0]}:***@${hostList}${dbPath}?${params.toString()}`);
 
   return standardUri;
 }
