@@ -7,11 +7,11 @@ const fs = require('fs');
 const path = require('path');
 
 // ═══════════════════════════════════════════════════════════════════
-// LIMITES DE MEMÓRIA — Evita sobrecarga no Koyeb
-// ═══════════════════════════════════════════════════════════════════h
-const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 999;
+// LIMITES DE MEMÓRIA — Sessões sob demanda para 20+ usuários
+// ═══════════════════════════════════════════════════════════════════
+const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 6; // Máx 6 Chromiums simultâneos (~1.2GB RAM)
 const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
-const IDLE_CLEANUP_MS = 10 * 60 * 1000;          // 10 minutos de inatividade
+const IDLE_HIBERNATE_MS = parseInt(process.env.IDLE_HIBERNATE_MS) || 5 * 60 * 1000; // 5 minutos idle → hiberna sessão
 const CLEANUP_INTERVAL_MS = 30 * 1000;           // verifica a cada 30 segundos
 const SESSION_INIT_TIMEOUT_MS = 120000;           // 2 minutos para Chromium iniciar
 const MESSAGE_SEND_TIMEOUT_MS = 30000;            // 30 segundos timeout por mensagem
@@ -78,28 +78,226 @@ class SessionManager {
   async restoreSavedSessions() {
     try {
       const savedSessions = await this.db.getConnectedSessions();
-      if (!savedSessions || savedSessions.length === 0) {
+      // Também busca sessões hibernadas
+      const hibernatedSessions = await this.db.all("SELECT * FROM sessions WHERE status = 'hibernated'");
+      const allSessions = [...(savedSessions || []), ...(hibernatedSessions || [])];
+
+      if (!allSessions || allSessions.length === 0) {
         console.log('📭 Nenhuma sessão salva para restaurar');
         return;
       }
 
-      console.log(`📦 ${savedSessions.length} sessão(ões) para restaurar...`);
+      console.log(`📦 ${allSessions.length} sessão(ões) encontradas. Restauração LAZY: marcando como hibernated (sem criar Chromium agora)`);
 
-      for (const session of savedSessions) {
+      // LAZY RESTORE: Marca todas como hibernated em vez de criar Chromium
+      // Isso evita 20+ Chromiums no startup = crash de memória
+      // Sessões serão "acordadas" sob demanda quando o usuário enviar mensagem
+      for (const session of allSessions) {
         try {
-          console.log(`🔄 Restaurando sessão ${session.id} (user ${session.user_id})...`);
-          // Re-cria a sessão com RemoteAuth — o MongoDB tem os dados de auth
-          await this.createSession(session.id, session.user_id);
-          console.log(`✅ Sessão ${session.id} restaurada com sucesso`);
+          // Preserva os dados na memória para wake rápido
+          this.sessions.set(session.id, {
+            id: session.id,
+            userId: session.user_id,
+            qrCode: null,
+            status: 'hibernated',
+            client: null,
+            info: session.phone_number ? { wid: session.phone_number, pushname: session.phone_name } : null,
+            lastSeen: Date.now(),
+            createdAt: Date.now()
+          });
+          this.sessionLastActivity.set(session.id, Date.now());
+
+          // Marca como hibernated no banco
+          if (session.status !== 'hibernated') {
+            await this.db.updateSessionStatus(session.id, 'hibernated');
+          }
+
+          console.log(`🛏️ Sessão ${session.id} marcada como hibernated (será acordada sob demanda)`);
         } catch (restoreError) {
-          console.error(`❌ Falha ao restaurar sessão ${session.id}:`, restoreError.message);
+          console.error(`❌ Falha ao processar sessão ${session.id}:`, restoreError.message);
           await this.db.updateSessionStatus(session.id, 'disconnected');
         }
       }
+
+      console.log(`✅ ${allSessions.length} sessões prontas para wake sob demanda. 0 Chromiums criados no startup.`);
     } catch (error) {
       console.error('❌ Erro ao restaurar sessões:', error.message);
       await this.markAllSessionsDisconnected();
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // HIBERNAÇÃO: Destrói Chromium mas mantém auth no MongoDB
+  // A sessão pode ser "acordada" sem escanear QR novamente
+  // ═══════════════════════════════════════════════════════════════════
+  async hibernateSession(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      console.log(`⚠️ [${sessionId}] Não encontrada na memória para hibernar`);
+      return false;
+    }
+
+    // Não hiberna se não está connected
+    if (session.status !== 'connected' && session.status !== 'authenticated') {
+      console.log(`⚠️ [${sessionId}] Status ${session.status} — não pode hibernar`);
+      return false;
+    }
+
+    console.log(`🛏️ [${sessionId}] Hibernando sessão (destruindo Chromium, auth persiste no MongoDB)...`);
+
+    // Destrói o processo Chromium
+    if (session.client) {
+      try {
+        await session.client.destroy();
+        console.log(`✅ [${sessionId}] Chromium destruído`);
+      } catch (e) {
+        console.warn(`⚠️ [${sessionId}] Erro ao destruir Chromium: ${e.message}`);
+      }
+    }
+
+    // Marca como hibernated na memória — mantém userId e info
+    session.client = null;
+    session.status = 'hibernated';
+    session.qrCode = null;
+    this.sessions.set(sessionId, session);
+
+    // Marca como hibernated no banco
+    await this.db.updateSessionStatus(sessionId, 'hibernated');
+
+    // Limpa arquivos do disco
+    this.cleanupSessionFiles(sessionId);
+
+    // Notifica frontend
+    this.io.to(`user_${session.userId}`).emit('session_hibernated', {
+      sessionId: sessionId,
+      info: session.info,
+      message: 'Sessão hibernada para economizar recursos. Será reativada automaticamente.'
+    });
+
+    console.log(`🛏️ [${sessionId}] Hibernada com sucesso. Chromium ativos: ${this.getActiveChromiumCount()}/${MAX_CONCURRENT_SESSIONS}`);
+    return true;
+  }
+
+  async wakeSession(sessionId) {
+    const session = this.sessions.get(sessionId);
+
+    // Se não tem na memória, tenta buscar do banco
+    let userId = session?.userId;
+    if (!userId) {
+      const dbSession = await this.db.getSession(sessionId);
+      if (!dbSession) {
+        throw new Error(`Sessão ${sessionId} não encontrada`);
+      }
+      userId = dbSession.user_id;
+    }
+
+    // Se já está ativa com Chromium, retorna
+    if (session && session.client && (session.status === 'connected' || session.status === 'authenticated')) {
+      console.log(`✅ [${sessionId}] Já está ativa, não precisa acordar`);
+      return session;
+    }
+
+    console.log(`⏰ [${sessionId}] Acordando sessão hibernada...`);
+
+    // Verifica se há espaço para mais um Chromium
+    const activeCount = this.getActiveChromiumCount();
+    if (activeCount >= MAX_CONCURRENT_SESSIONS) {
+      console.log(`⚠️ [${sessionId}] Limite de ${MAX_CONCURRENT_SESSIONS} atingido. Hibernando sessão mais ociosa...`);
+
+      // Encontra a sessão connected mais ociosa (que NÃO é a que estamos acordando)
+      const evicted = await this.evictOldestIdleSession(sessionId);
+      if (!evicted) {
+        throw new Error(`Limite de ${MAX_CONCURRENT_SESSIONS} sessões atingido e nenhuma pode ser hibernada. Tente novamente em alguns minutos.`);
+      }
+    }
+
+    // Remove sessão antiga da memória se existir
+    if (session) {
+      if (session.client) {
+        try { await session.client.destroy(); } catch (e) { /* ignora */ }
+      }
+      this.sessions.delete(sessionId);
+    }
+
+    // Remove registro antigo do banco e recria (necessário para createSession)
+    const dbSession = await this.db.getSession(sessionId);
+    if (dbSession) {
+      await this.db.deleteSession(sessionId);
+    }
+
+    // Cria sessão nova — RemoteAuth vai buscar auth do MongoDB (sem QR!)
+    console.log(`🤖 [${sessionId}] Criando novo Chromium com auth do MongoDB...`);
+    await this.db.createSession(sessionId, userId);
+
+    const sessionData = {
+      id: sessionId,
+      userId,
+      qrCode: null,
+      status: 'initializing',
+      client: null,
+      info: session?.info || null,
+      lastSeen: Date.now(),
+      createdAt: Date.now()
+    };
+
+    const client = await this.createWhatsAppClient(sessionId);
+    this.setupClientEvents(client, sessionData);
+
+    sessionData.client = client;
+    this.sessions.set(sessionId, sessionData);
+    this.sessionLastActivity.set(sessionId, Date.now());
+
+    console.log(`📊 Chromium ativos: ${this.getActiveChromiumCount()}/${MAX_CONCURRENT_SESSIONS}`);
+
+    // Inicializa e espera até conectar (max 60s)
+    try {
+      await Promise.race([
+        client.initialize(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('wake_timeout')), 60000))
+      ]);
+
+      // Espera um pouco para estabilizar
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      if (sessionData.status === 'connected' || sessionData.status === 'authenticated') {
+        console.log(`✅ [${sessionId}] Sessão acordada com sucesso!`);
+      } else {
+        console.log(`⏳ [${sessionId}] Sessão inicializada (status: ${sessionData.status}), aguardando conexão...`);
+      }
+    } catch (wakeError) {
+      console.error(`❌ [${sessionId}] Erro ao acordar: ${wakeError.message}`);
+      // Não deleta — pode ser tentado novamente
+      sessionData.status = 'failed';
+      await this.db.updateSessionStatus(sessionId, 'failed');
+    }
+
+    return sessionData;
+  }
+
+  // Encontra e hiberna a sessão connected mais ociosa (exceto excludeId)
+  async evictOldestIdleSession(excludeId = null) {
+    let oldestId = null;
+    let oldestTime = Infinity;
+
+    for (const [sid, lastTs] of this.sessionLastActivity.entries()) {
+      if (sid === excludeId) continue;
+      const sess = this.sessions.get(sid);
+      if (!sess || !sess.client) continue;
+      if (sess.status !== 'connected' && sess.status !== 'authenticated') continue;
+
+      if (lastTs < oldestTime) {
+        oldestTime = lastTs;
+        oldestId = sid;
+      }
+    }
+
+    if (oldestId) {
+      console.log(`🔄 Evicting sessão mais ociosa: ${oldestId} (idle por ${Math.round((Date.now() - oldestTime) / 1000)}s)`);
+      await this.hibernateSession(oldestId);
+      return true;
+    }
+
+    return false;
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -168,6 +366,11 @@ class SessionManager {
       if (existing.client && (existing.status === 'connected' || existing.status === 'qr_code' || existing.status === 'initializing')) {
         console.log(`⚠️ Sessão ${sessionId} já existe na memória com status ${existing.status}`);
         return existing;
+      }
+      // Se está hibernada e tem RemoteAuth, acorda em vez de criar nova
+      if (existing.status === 'hibernated' && this.useRemoteAuth) {
+        console.log(`⏰ Sessão ${sessionId} está hibernada, acordando...`);
+        return await this.wakeSession(sessionId);
       }
       // Se está em estado morto, limpa primeiro
       console.log(`🧹 Sessão ${sessionId} existe na memória mas está morta (${existing.status}), limpando...`);
@@ -990,10 +1193,35 @@ class SessionManager {
   }
 
   async sendMessage(sessionId, phoneNumber, message, mediaUrl = null) {
-    const session = this.sessions.get(sessionId);
+    let session = this.sessions.get(sessionId);
 
     if (!session) {
-      throw new Error('Sessão não encontrada');
+      // Tenta buscar do banco — pode estar hibernada
+      const dbSession = await this.db.getSession(sessionId);
+      if (dbSession && (dbSession.status === 'hibernated' || dbSession.status === 'connected')) {
+        console.log(`⏰ [${sessionId}] Sessão não na memória, tentando acordar...`);
+        session = await this.wakeSession(sessionId);
+      } else {
+        throw new Error('Sessão não encontrada');
+      }
+    }
+
+    // Auto-wake: se sessão está hibernada, acorda automaticamente
+    if (session.status === 'hibernated' || (!session.client && this.useRemoteAuth)) {
+      console.log(`⏰ [${sessionId}] Auto-wake: sessão hibernada, acordando para enviar mensagem...`);
+      session = await this.wakeSession(sessionId);
+
+      // Espera até ficar connected (max 30s)
+      let waited = 0;
+      while (session.status !== 'connected' && waited < 30000) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        waited += 2000;
+        session = this.sessions.get(sessionId) || session;
+      }
+
+      if (session.status !== 'connected') {
+        throw new Error(`Sessão foi acordada mas não conectou a tempo. Status: ${session.status}. Tente novamente.`);
+      }
     }
 
     if (session.status !== 'connected' && session.status !== 'authenticated') {
@@ -1295,8 +1523,11 @@ class SessionManager {
       if (dbSession) {
         return {
           id: sessionId,
-          status: 'disconnected',
-          message: 'Sessão existe no banco mas não está ativa. Clique em "Criar Sessão" para reconectar.'
+          status: dbSession.status === 'hibernated' ? 'hibernated' : 'disconnected',
+          message: dbSession.status === 'hibernated'
+            ? 'Sessão hibernada. Será reativada automaticamente ao enviar mensagem.'
+            : 'Sessão existe no banco mas não está ativa. Clique em "Criar Sessão" para reconectar.',
+          info: dbSession.phone_number ? { wid: dbSession.phone_number, pushname: dbSession.phone_name } : null
         };
       }
       throw new Error('Sessão não encontrada');
@@ -1325,9 +1556,12 @@ class SessionManager {
     const health = {
       totalSessions: this.sessions.size,
       connectedSessions: 0,
+      hibernatedSessions: 0,
       disconnectedSessions: 0,
+      activeChromiums: this.getActiveChromiumCount(),
       authStrategy: this.useRemoteAuth ? 'RemoteAuth (MongoDB)' : 'LocalAuth',
       maxConcurrent: MAX_CONCURRENT_SESSIONS,
+      idleHibernateMs: IDLE_HIBERNATE_MS,
       recentErrors: this.getRecentErrors(5),
       memory: {
         heapUsed: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
@@ -1341,6 +1575,8 @@ class SessionManager {
     this.sessions.forEach((session, id) => {
       if (session.status === 'connected' || session.status === 'authenticated') {
         health.connectedSessions++;
+      } else if (session.status === 'hibernated') {
+        health.hibernatedSessions++;
       } else {
         health.disconnectedSessions++;
       }
@@ -1499,16 +1735,17 @@ class SessionManager {
   // AUTO-CLEANUP INTELIGENTE:
   // - Sessões qr_code: remove após 5 minutos (QR expirou)
   // - Sessões failed/disconnected sem cliente: remove após 10 minutos
-  // - Sessões connected/authenticated: NUNCA remove automaticamente
+  // - Sessões connected/authenticated IDLE: HIBERNA após IDLE_HIBERNATE_MS
   // ═══════════════════════════════════════════════════════════════════
   startAutoCleanup() {
     console.log(`🔄 Auto-limpeza inteligente iniciada (verifica a cada ${CLEANUP_INTERVAL_MS / 1000}s)`);
     console.log(`   - QR Code timeout: ${QR_CODE_TIMEOUT_MS / 1000}s`);
-    console.log(`   - Idle cleanup: ${IDLE_CLEANUP_MS / 1000}s`);
+    console.log(`   - Idle hibernate: ${IDLE_HIBERNATE_MS / 1000}s`);
 
     setInterval(async () => {
       const now = Date.now();
       const toDestroy = [];
+      const toHibernate = [];
 
       for (const [sid, lastTs] of this.sessionLastActivity.entries()) {
         const sess = this.sessions.get(sid);
@@ -1517,8 +1754,17 @@ class SessionManager {
           continue;
         }
 
-        // NUNCA remove sessões connected ou authenticated
-        if (sess.status === 'connected' || sess.status === 'authenticated') {
+        // Sessões connected/authenticated IDLE → hiberna para liberar Chromium
+        if ((sess.status === 'connected' || sess.status === 'authenticated') && sess.client) {
+          const idleTime = now - lastTs;
+          if (idleTime > IDLE_HIBERNATE_MS) {
+            toHibernate.push({ sid, idleTime });
+          }
+          continue;
+        }
+
+        // Sessões hibernadas: mantém na memória, não toca
+        if (sess.status === 'hibernated') {
           continue;
         }
 
@@ -1534,13 +1780,24 @@ class SessionManager {
           continue;
         }
 
-        // Sessões mortas (failed, disconnected, etc): remove após IDLE_CLEANUP_MS
-        if (['failed', 'disconnected', 'auth_failure'].includes(sess.status) && (now - lastTs) > IDLE_CLEANUP_MS) {
+        // Sessões mortas (failed, disconnected, etc): remove após 10 minutos
+        if (['failed', 'disconnected', 'auth_failure'].includes(sess.status) && (now - lastTs) > 10 * 60 * 1000) {
           toDestroy.push({ sid, reason: `Inativa ${Math.round((now - lastTs) / 1000)}s (${sess.status})` });
           continue;
         }
       }
 
+      // Hiberna sessões idle (libera Chromium, mantém auth no MongoDB)
+      for (const { sid, idleTime } of toHibernate) {
+        console.log(`🛏️ Auto-hibernate: "${sid}" — idle por ${Math.round(idleTime / 1000)}s`);
+        try {
+          await this.hibernateSession(sid);
+        } catch (e) {
+          console.error(`Erro ao hibernar ${sid}:`, e.message);
+        }
+      }
+
+      // Limpa sessões mortas
       for (const { sid, reason } of toDestroy) {
         console.log(`🧹 Auto-limpeza: "${sid}" — ${reason}`);
         try {
@@ -1552,8 +1809,8 @@ class SessionManager {
         }
       }
 
-      if (toDestroy.length > 0) {
-        console.log(`✅ Auto-limpeza: ${toDestroy.length} sessão(ões) removidas. Chromium ativos: ${this.getActiveChromiumCount()}/${MAX_CONCURRENT_SESSIONS}`);
+      if (toHibernate.length > 0 || toDestroy.length > 0) {
+        console.log(`✅ Auto-cleanup: ${toHibernate.length} hibernada(s), ${toDestroy.length} removida(s). Chromium ativos: ${this.getActiveChromiumCount()}/${MAX_CONCURRENT_SESSIONS}`);
       }
     }, CLEANUP_INTERVAL_MS);
   }

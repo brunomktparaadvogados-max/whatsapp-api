@@ -1315,15 +1315,30 @@ setInterval(async () => {
   }
 
   if (rssMB >= MEMORY_EMERGENCY_MB) {
-    console.error(`🚨 EMERGÊNCIA DE MEMÓRIA: ${rssMB}MB RSS! Limpando sessões não-connected...`);
-    // Mata TODAS as sessões que NÃO estão connected
+    console.error(`🚨 EMERGÊNCIA DE MEMÓRIA: ${rssMB}MB RSS! Hibernando sessões idle e matando não-connected...`);
+
+    // 1. Primeiro hiberna sessões connected idle (preserva auth)
     const sessions = sessionManager.getAllSessions();
+    let hibernated = 0;
     for (const s of sessions) {
-      if (s.status !== 'connected') {
+      if (s.status === 'connected' || s.status === 'authenticated') {
+        try {
+          await sessionManager.hibernateSession(s.id);
+          hibernated++;
+          console.log(`🛏️ Sessão ${s.id} hibernada para emergência de memória`);
+        } catch (e) { /* ignora */ }
+      }
+    }
+
+    // 2. Depois mata sessões que não estão connected nem hibernated
+    for (const s of sessions) {
+      if (s.status !== 'connected' && s.status !== 'hibernated') {
         console.log(`💀 Matando sessão ${s.id} (status: ${s.status}) para liberar memória`);
         try { await sessionManager.cleanupSession(s.id); } catch (e) { /* ignora */ }
       }
     }
+    console.log(`✅ Emergência: ${hibernated} sessão(ões) hibernada(s)`);
+
     // Mata processos chromium órfãos
     try {
       const { execSync } = require('child_process');
@@ -1332,8 +1347,17 @@ setInterval(async () => {
     } catch (e) { /* ignora */ }
 
   } else if (rssMB >= MEMORY_CRITICAL_MB) {
-    console.warn(`⚠️ MEMÓRIA CRÍTICA: ${rssMB}MB RSS! Limpando sessões mortas...`);
+    console.warn(`⚠️ MEMÓRIA CRÍTICA: ${rssMB}MB RSS! Hibernando sessões mais ociosas...`);
     await sessionManager.forceCleanupDeadSessions();
+
+    // Hiberna a metade das sessões connected (as mais ociosas)
+    const activeCount = sessionManager.getActiveChromiumCount();
+    const toHibernate = Math.ceil(activeCount / 2);
+    for (let i = 0; i < toHibernate; i++) {
+      const evicted = await sessionManager.evictOldestIdleSession();
+      if (!evicted) break;
+    }
+
     // Limpa mensagens em memória antigas
     sessionManager.inMemoryMessages.clear();
     console.log('🧹 Cache de mensagens em memória limpo');
