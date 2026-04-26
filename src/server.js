@@ -1785,7 +1785,7 @@ server.listen(PORT, HOST, async () => {
   console.log(`========================================`);
   console.log(`📡 Servidor rodando em: http://${HOST}:${PORT}`);
   console.log(`🌍 Ambiente: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`💾 MongoDB (sessões persistentes): ${process.env.MONGODB_URI ? '✅ Configurado — sessões sobrevivem a deploys' : '⚠️ Não configurado — sessões perdem no deploy'}`);
+  console.log('💾 Sessões persistentes: ✅ PostgreSQL (Supabase) — sessões sobrevivem a deploys');
   console.log(`========================================\n`);
 
   await initializeDefaultSession();

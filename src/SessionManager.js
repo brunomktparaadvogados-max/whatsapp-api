@@ -1,177 +1,14 @@
 const { Client, LocalAuth, RemoteAuth } = require('whatsapp-web.js');
-const { MongoStore } = require('wwebjs-mongo');
-const mongoose = require('mongoose');
+const PostgresStore = require('./PostgresStore');
 const QRCode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
 
 // ═══════════════════════════════════════════════════════════════════
-// DNS FIX: Koyeb não resolve DNS SRV (mongodb+srv://)
-// Usa DNS-over-HTTPS (DoH) para resolver SRV e montar URI padrão
+// SESSÃO PERSISTENTE — PostgreSQL (Supabase) via PostgresStore
+// Elimina MongoDB: sem DNS SRV, sem IP whitelist, sem serviço extra
 // ═══════════════════════════════════════════════════════════════════
-
-/**
- * Faz HTTP(S) GET e retorna o body como string
- */
-function httpGet(url, timeoutMs = 10000) {
-  return new Promise((resolve, reject) => {
-    const mod = url.startsWith('https') ? https : require('http');
-    mod.get(url, { timeout: timeoutMs, headers: { 'Accept': 'application/dns-json, application/json' } }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => resolve({ status: res.statusCode, body: data }));
-    }).on('error', reject).on('timeout', function() { this.destroy(); reject(new Error('timeout')); });
-  });
-}
-
-/**
- * Resolve DNS SRV via DNS-over-HTTPS — tenta múltiplos provedores
- * Retorna array de { name, port, priority, weight }
- */
-async function resolveSrvViaDoH(srvName) {
-  // Múltiplos provedores DoH para redundância
-  const providers = [
-    { name: 'Google', url: `https://dns.google/resolve?name=${encodeURIComponent(srvName)}&type=SRV` },
-    { name: 'Cloudflare', url: `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(srvName)}&type=SRV&ct=application/dns-json` },
-    { name: 'Quad9', url: `https://dns.quad9.net:5053/dns-query?name=${encodeURIComponent(srvName)}&type=SRV&ct=application/dns-json` },
-  ];
-
-  for (const provider of providers) {
-    try {
-      console.log(`  🌐 Tentando DoH via ${provider.name}...`);
-      const { status, body } = await httpGet(provider.url);
-      console.log(`  📦 ${provider.name} respondeu (HTTP ${status}): ${body.substring(0, 300)}`);
-
-      const json = JSON.parse(body);
-
-      // Verificar se há respostas (Answer pode incluir CNAMEs, filtrar SRV type=33)
-      if (json.Answer && json.Answer.length > 0) {
-        const srvRecords = json.Answer
-          .filter(a => a.type === 33)
-          .map(a => {
-            const parts = a.data.split(' ');
-            return {
-              priority: parseInt(parts[0]),
-              weight: parseInt(parts[1]),
-              port: parseInt(parts[2]),
-              name: parts[3].replace(/\.$/, '')
-            };
-          });
-
-        if (srvRecords.length > 0) {
-          console.log(`  ✅ ${provider.name}: ${srvRecords.length} SRV records encontrados`);
-          return srvRecords;
-        }
-
-        // Se só tem CNAMEs, logar e tentar próximo
-        console.log(`  ⚠️ ${provider.name}: ${json.Answer.length} records mas nenhum SRV (types: ${json.Answer.map(a => a.type).join(',')})`);
-      } else {
-        console.log(`  ⚠️ ${provider.name}: sem Answer (Status: ${json.Status})`);
-      }
-    } catch (err) {
-      console.log(`  ❌ ${provider.name} falhou: ${err.message}`);
-    }
-  }
-
-  return null; // Todos falharam
-}
-
-/**
- * Resolve DNS TXT via DNS-over-HTTPS
- */
-async function resolveTxtViaDoH(domain) {
-  const providers = [
-    `https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=TXT`,
-    `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(domain)}&type=TXT&ct=application/dns-json`,
-  ];
-
-  for (const url of providers) {
-    try {
-      const { body } = await httpGet(url);
-      const json = JSON.parse(body);
-      if (json.Answer && json.Answer.length > 0) {
-        return json.Answer
-          .filter(a => a.type === 16)
-          .map(a => a.data.replace(/"/g, ''))
-          .join('&');
-      }
-    } catch (e) { /* try next */ }
-  }
-  return '';
-}
-
-/**
- * Converte mongodb+srv:// para mongodb:// usando DoH + fallback hardcoded
- */
-async function resolveSrvUri(srvUri) {
-  const match = srvUri.match(/^mongodb\+srv:\/\/([^@]+)@([^/?]+)(\/[^?]*)?(\?.*)?$/);
-  if (!match) throw new Error('Invalid mongodb+srv:// URI format');
-
-  const credentials = match[1]; // user:pass
-  const hostname = match[2];    // cluster0.cl02hcn.mongodb.net
-  const dbPath = match[3] || '/'; // /whatsapp
-  const queryString = match[4] || ''; // ?retryWrites=true&...
-
-  console.log(`🔍 Resolvendo SRV para: ${hostname}`);
-
-  // 1. Tentar DoH
-  let srvRecords = await resolveSrvViaDoH(`_mongodb._tcp.${hostname}`);
-
-  // 2. Fallback: padrão Atlas (cluster0-shard-00-XX.<subdomain>.mongodb.net)
-  if (!srvRecords || srvRecords.length === 0) {
-    // Extrair subdomain: "cluster0.cl02hcn.mongodb.net" → prefix="cluster0", sub="cl02hcn"
-    const hostParts = hostname.split('.');
-    const clusterName = hostParts[0]; // "cluster0"
-    const subdomain = hostParts.slice(1).join('.'); // "cl02hcn.mongodb.net"
-
-    console.log(`⚠️ DoH falhou — usando padrão Atlas: ${clusterName}-shard-00-XX.${subdomain}`);
-    srvRecords = [
-      { priority: 0, weight: 0, port: 27017, name: `${clusterName}-shard-00-00.${subdomain}` },
-      { priority: 0, weight: 0, port: 27017, name: `${clusterName}-shard-00-01.${subdomain}` },
-      { priority: 0, weight: 0, port: 27017, name: `${clusterName}-shard-00-02.${subdomain}` },
-    ];
-  }
-
-  // Resolve TXT (has replicaSet and authSource)
-  let txtOptions = await resolveTxtViaDoH(hostname);
-
-  // Fallback TXT: padrão Atlas M0
-  if (!txtOptions) {
-    // Para Atlas M0, o replicaSet geralmente é "atlas-XXXXX-shard-0"
-    // authSource é sempre "admin"
-    txtOptions = 'authSource=admin';
-    console.log('📋 TXT fallback: authSource=admin');
-  } else {
-    console.log(`📋 TXT: ${txtOptions}`);
-  }
-
-  // Build host list
-  const hostList = srvRecords
-    .sort((a, b) => a.priority - b.priority || b.weight - a.weight)
-    .map(r => `${r.name}:${r.port}`)
-    .join(',');
-
-  // Merge query params
-  const params = new URLSearchParams();
-  params.set('ssl', 'true');
-  for (const pair of txtOptions.split('&')) {
-    const [k, v] = pair.split('=');
-    if (k && v) params.set(k, v);
-  }
-  if (queryString) {
-    const originalParams = new URLSearchParams(queryString.replace(/^\?/, ''));
-    for (const [k, v] of originalParams) {
-      params.set(k, v);
-    }
-  }
-
-  const standardUri = `mongodb://${credentials}@${hostList}${dbPath}?${params.toString()}`;
-  console.log(`🔗 URI final: mongodb://${credentials.split(':')[0]}:***@${hostList}${dbPath}?${params.toString()}`);
-
-  return standardUri;
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // LIMITES DE MEMÓRIA — Sessões sob demanda para 20+ usuários
@@ -199,7 +36,7 @@ class SessionManager {
     this.sessionSendLock = new Map();       // Evita envio simultâneo na mesma sessão
     this.lastMessageTime = new Map();       // Controle de rate-limit por sessão
     this.recentErrors = [];                 // Log de erros recentes para diagnóstico
-    this.mongoStore = null;                 // MongoStore para RemoteAuth (persistência de sessão)
+    this.pgStore = null;                    // PostgresStore para RemoteAuth (persistência de sessão)
     this.useRemoteAuth = false;             // Flag: usar RemoteAuth ou LocalAuth
 
     this.init();
@@ -207,38 +44,18 @@ class SessionManager {
 
   async init() {
     // ═══════════════════════════════════════════════════════════════
-    // PERSISTÊNCIA DE SESSÃO — MongoDB para sobreviver a deploys
+    // PERSISTÊNCIA DE SESSÃO — PostgreSQL (Supabase) via PostgresStore
+    // Usa o mesmo banco PostgreSQL que já funciona, sem MongoDB
     // ═══════════════════════════════════════════════════════════════
-    let mongoUri = process.env.MONGODB_URI;
-    if (mongoUri) {
-      try {
-        // Se a URI usa mongodb+srv://, resolve via DNS-over-HTTPS (Koyeb não resolve SRV nativo)
-        if (mongoUri.startsWith('mongodb+srv://')) {
-          console.log('🔄 URI usa mongodb+srv:// — resolvendo via DNS-over-HTTPS...');
-          try {
-            mongoUri = await resolveSrvUri(mongoUri);
-          } catch (srvError) {
-            console.error('⚠️ Falha ao resolver SRV via DoH:', srvError.message);
-            console.log('🔄 Tentando conexão direta com mongodb+srv:// (pode falhar no Koyeb)...');
-          }
-        }
-
-        await mongoose.connect(mongoUri, {
-          family: 4,
-          serverSelectionTimeoutMS: 15000,
-          connectTimeoutMS: 15000
-        });
-        this.mongoStore = new MongoStore({ mongoose });
-        this.useRemoteAuth = true;
-        console.log('✅ MongoDB conectado — sessões WhatsApp serão persistidas entre deploys!');
-        console.log('🔒 RemoteAuth ativo: QR code só precisa ser escaneado 1 vez');
-      } catch (mongoError) {
-        console.error('⚠️ Falha ao conectar MongoDB, usando LocalAuth (sessões perdem no deploy):', mongoError.message);
-        this.useRemoteAuth = false;
-      }
-    } else {
-      console.log('⚠️ MONGODB_URI não configurado — usando LocalAuth (sessões perdem no deploy)');
-      console.log('💡 Configure MONGODB_URI no Koyeb para manter sessões entre deploys');
+    try {
+      this.pgStore = new PostgresStore({ pool: this.db.pool });
+      await this.pgStore.init();
+      this.useRemoteAuth = true;
+      console.log('✅ PostgresStore conectado — sessões WhatsApp persistidas no Supabase!');
+      console.log('🔒 RemoteAuth ativo: QR code só precisa ser escaneado 1 vez');
+    } catch (pgStoreError) {
+      console.error('⚠️ Falha ao inicializar PostgresStore, usando LocalAuth:', pgStoreError.message);
+      this.useRemoteAuth = false;
     }
 
     console.log('✅ Banco de dados principal: PostgreSQL (Supabase)');
@@ -246,7 +63,7 @@ class SessionManager {
 
     if (this.useRemoteAuth) {
       // Com RemoteAuth, tenta restaurar sessões automaticamente
-      console.log('🔄 Restaurando sessões salvas do MongoDB...');
+      console.log('🔄 Restaurando sessões salvas do PostgreSQL...');
       await this.restoreSavedSessions();
     } else {
       // Sem RemoteAuth, marca todas como desconectadas
@@ -309,7 +126,7 @@ class SessionManager {
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  // HIBERNAÇÃO: Destrói Chromium mas mantém auth no MongoDB
+  // HIBERNAÇÃO: Destrói Chromium mas mantém auth no PostgreSQL
   // A sessão pode ser "acordada" sem escanear QR novamente
   // ═══════════════════════════════════════════════════════════════════
   async hibernateSession(sessionId) {
@@ -325,7 +142,7 @@ class SessionManager {
       return false;
     }
 
-    console.log(`🛏️ [${sessionId}] Hibernando sessão (destruindo Chromium, auth persiste no MongoDB)...`);
+    console.log(`🛏️ [${sessionId}] Hibernando sessão (destruindo Chromium, auth persiste no PostgreSQL)...`);
 
     // Destrói o processo Chromium
     if (session.client) {
@@ -407,8 +224,8 @@ class SessionManager {
       await this.db.deleteSession(sessionId);
     }
 
-    // Cria sessão nova — RemoteAuth vai buscar auth do MongoDB (sem QR!)
-    console.log(`🤖 [${sessionId}] Criando novo Chromium com auth do MongoDB...`);
+    // Cria sessão nova — RemoteAuth vai buscar auth do PostgreSQL (sem QR!)
+    console.log(`🤖 [${sessionId}] Criando novo Chromium com auth do PostgreSQL...`);
     await this.db.createSession(sessionId, userId);
 
     const sessionData = {
@@ -741,11 +558,11 @@ class SessionManager {
         executablePath: actualExecPath,
         timeout: SESSION_INIT_TIMEOUT_MS
       },
-      authStrategy: this.useRemoteAuth && this.mongoStore
+      authStrategy: this.useRemoteAuth && this.pgStore
         ? new RemoteAuth({
             clientId: sessionId,
-            store: this.mongoStore,
-            backupSyncIntervalMs: 5 * 60 * 1000 // Salva sessão no MongoDB a cada 5 minutos
+            store: this.pgStore,
+            backupSyncIntervalMs: 5 * 60 * 1000 // Salva sessão no PostgreSQL a cada 5 minutos
           })
         : new LocalAuth({
             clientId: sessionId,
@@ -826,9 +643,9 @@ class SessionManager {
       });
     });
 
-    // RemoteAuth: sessão salva no MongoDB com sucesso
+    // RemoteAuth: sessão salva no PostgreSQL com sucesso
     client.on('remote_session_saved', () => {
-      console.log(`💾 [${sessionData.id}] Sessão salva no MongoDB — sobrevive a deploys!`);
+      console.log(`💾 [${sessionData.id}] Sessão salva no PostgreSQL — sobrevive a deploys!`);
     });
 
     client.on('ready', async () => {
@@ -1741,7 +1558,7 @@ class SessionManager {
       hibernatedSessions: 0,
       disconnectedSessions: 0,
       activeChromiums: this.getActiveChromiumCount(),
-      authStrategy: this.useRemoteAuth ? 'RemoteAuth (MongoDB)' : 'LocalAuth',
+      authStrategy: this.useRemoteAuth ? 'RemoteAuth (PostgreSQL)' : 'LocalAuth',
       maxConcurrent: MAX_CONCURRENT_SESSIONS,
       idleHibernateMs: IDLE_HIBERNATE_MS,
       recentErrors: this.getRecentErrors(5),
@@ -1969,7 +1786,7 @@ class SessionManager {
         }
       }
 
-      // Hiberna sessões idle (libera Chromium, mantém auth no MongoDB)
+      // Hiberna sessões idle (libera Chromium, mantém auth no PostgreSQL)
       for (const { sid, idleTime } of toHibernate) {
         console.log(`🛏️ Auto-hibernate: "${sid}" — idle por ${Math.round(idleTime / 1000)}s`);
         try {
