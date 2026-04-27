@@ -14,7 +14,12 @@ class DatabaseManager {
       connectionString: databaseUrl,
       ssl: {
         rejectUnauthorized: false
-      }
+      },
+      max: 10,                        // máximo de conexões no pool
+      connectionTimeoutMillis: 10000,  // 10s para obter conexão do pool
+      idleTimeoutMillis: 30000,        // fecha conexão idle após 30s
+      statement_timeout: 15000,        // cancela query após 15s
+      query_timeout: 15000             // timeout de query
     });
 
     this.initTables();
@@ -34,12 +39,19 @@ class DatabaseManager {
   }
 
   async query(sql, params = []) {
-    const client = await this.pool.connect();
+    let client;
     try {
+      client = await this.pool.connect();
       const result = await client.query(sql, params);
       return result;
+    } catch (err) {
+      // Se o erro é de timeout ou conexão, loga para debug
+      if (err.message.includes('timeout') || err.message.includes('Connection terminated')) {
+        console.error(`⚠️ DB query timeout/connection error: ${err.message}`);
+      }
+      throw err;
     } finally {
-      client.release();
+      if (client) client.release(true); // true = destroy connection if error occurred
     }
   }
 

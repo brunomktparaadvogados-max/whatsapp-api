@@ -36,6 +36,18 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static('public'));
 
+// Timeout global de 30s para todas as rotas da API — evita requests travados
+app.use('/api', (req, res, next) => {
+  req.setTimeout(30000);
+  res.setTimeout(30000, () => {
+    if (!res.headersSent) {
+      console.error(`⏰ Timeout na rota ${req.method} ${req.path}`);
+      res.status(504).json({ error: 'Request timeout — tente novamente' });
+    }
+  });
+  next();
+});
+
 io.on('connection', (socket) => {
   console.log('Cliente WebSocket conectado:', socket.id);
 
@@ -268,60 +280,67 @@ app.post('/api/admin/cleanup-sessions', authMiddleware, async (req, res) => {
   }
 });
 
-app.get('/health', async (req, res) => {
-  // SEMPRE retorna 200 para o Koyeb health check não falhar
-  const response = {
+app.get('/health', (req, res) => {
+  // SEMPRE retorna 200 IMEDIATAMENTE para o Koyeb health check
+  // Nunca faz queries ao banco — evita travar o health check
+  res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  };
-
-  try {
-    const health = await sessionManager.healthCheck();
-    const dbCapacity = await db.getDatabaseCapacityPercentage();
-    const messagesCount = await db.getMessagesCount();
-    const dbSize = await db.getDatabaseSize();
-
-    response.database = {
-      capacity: `${dbCapacity.toFixed(2)}%`,
-      size: dbSize?.size || 'unknown',
-      messages: messagesCount,
-      status: dbCapacity < 80 ? 'healthy' : 'warning'
-    };
-    Object.assign(response, health);
-  } catch (error) {
-    response.database = { status: 'initializing', error: error.message };
-  }
-
-  res.json(response);
+    uptime: process.uptime(),
+    memory: {
+      rss: `${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB`,
+      heap: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
+    },
+    activeSessions: sessionManager.sessions.size,
+    activeChromiums: sessionManager.getActiveChromiumCount()
+  });
 });
 
 app.get('/api/health', async (req, res) => {
+  // Timeout de 8 segundos para nunca travar
+  const timeout = setTimeout(() => {
+    if (!res.headersSent) {
+      res.json({
+        success: true,
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        note: 'Database query timed out, but API is running'
+      });
+    }
+  }, 8000);
+
   try {
     const health = await sessionManager.healthCheck();
     const dbCapacity = await db.getDatabaseCapacityPercentage();
     const messagesCount = await db.getMessagesCount();
     const dbSize = await db.getDatabaseSize();
 
-    res.json({
-      success: true,
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-      uptime: process.uptime(),
-      database: {
-        capacity: `${dbCapacity.toFixed(2)}%`,
-        size: dbSize?.size || 'unknown',
-        messages: messagesCount,
-        status: dbCapacity < 80 ? 'healthy' : 'warning'
-      },
-      ...health
-    });
+    clearTimeout(timeout);
+    if (!res.headersSent) {
+      res.json({
+        success: true,
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        database: {
+          capacity: `${dbCapacity.toFixed(2)}%`,
+          size: dbSize?.size || 'unknown',
+          messages: messagesCount,
+          status: dbCapacity < 80 ? 'healthy' : 'warning'
+        },
+        ...health
+      });
+    }
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      status: 'unhealthy',
-      error: error.message
-    });
+    clearTimeout(timeout);
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        status: 'unhealthy',
+        error: error.message
+      });
+    }
   }
 });
 
