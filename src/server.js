@@ -1297,9 +1297,9 @@ cron.schedule('*/5 * * * *', async () => {
 // Verifica a cada 2 minutos. Se RSS > 400MB, força limpeza agressiva.
 // ═══════════════════════════════════════════════════════════════════
 const MEMORY_CHECK_INTERVAL_MS = 2 * 60 * 1000; // 2 minutos
-const MEMORY_WARN_MB = 300;   // Alerta
-const MEMORY_CRITICAL_MB = 400; // Limpeza agressiva
-const MEMORY_EMERGENCY_MB = 500; // Mata sessões ociosas
+const MEMORY_WARN_MB = 500;    // Alerta (8GB instance)
+const MEMORY_CRITICAL_MB = 700; // Limpeza agressiva
+const MEMORY_EMERGENCY_MB = 900; // Reinicia processo (Koyeb auto-restart)
 
 setInterval(async () => {
   const mem = process.memoryUsage();
@@ -1315,36 +1315,22 @@ setInterval(async () => {
   }
 
   if (rssMB >= MEMORY_EMERGENCY_MB) {
-    console.error(`🚨 EMERGÊNCIA DE MEMÓRIA: ${rssMB}MB RSS! Desconectando sessões idle e matando não-connected...`);
+    console.error(`🚨 EMERGÊNCIA DE MEMÓRIA: ${rssMB}MB RSS! Reiniciando processo...`);
 
-    // 1. Primeiro desconecta sessões connected idle (libera Chromium)
-    const sessions = sessionManager.getAllSessions();
-    let disconnected = 0;
-    for (const s of sessions) {
-      if (s.status === 'connected' || s.status === 'authenticated') {
-        try {
-          await sessionManager.disconnectIdleSession(s.id);
-          disconnected++;
-          console.log(`🔌 Sessão ${s.id} desconectada para emergência de memória`);
-        } catch (e) { /* ignora */ }
-      }
-    }
+    // Marca todas as sessões como desconectadas no banco
+    try {
+      await sessionManager.markAllSessionsDisconnected();
+    } catch (e) { /* ignora */ }
 
-    // 2. Depois mata sessões mortas restantes
-    for (const s of sessions) {
-      if (s.status !== 'connected' && s.status !== 'disconnected') {
-        console.log(`💀 Matando sessão ${s.id} (status: ${s.status}) para liberar memória`);
-        try { await sessionManager.cleanupSession(s.id); } catch (e) { /* ignora */ }
-      }
-    }
-    console.log(`✅ Emergência: ${disconnected} sessão(ões) desconectada(s)`);
-
-    // Mata processos chromium órfãos
+    // Mata processos chromium órfãos antes de sair
     try {
       const { execSync } = require('child_process');
-      execSync('pkill -f "chromium.*--type=renderer" 2>/dev/null || true');
-      console.log('🧹 Processos chromium renderer órfãos eliminados');
+      execSync('pkill -f chromium 2>/dev/null || true');
     } catch (e) { /* ignora */ }
+
+    // Reinicia o processo — Koyeb faz auto-restart
+    console.log('🔄 Processo reiniciando via Koyeb auto-restart...');
+    process.exit(1);
 
   } else if (rssMB >= MEMORY_CRITICAL_MB) {
     console.warn(`⚠️ MEMÓRIA CRÍTICA: ${rssMB}MB RSS! Desconectando sessões mais ociosas...`);
@@ -1361,6 +1347,13 @@ setInterval(async () => {
     // Limpa mensagens em memória antigas
     sessionManager.inMemoryMessages.clear();
     console.log('🧹 Cache de mensagens em memória limpo');
+
+    // Mata chromium renderer órfãos para liberar RAM extra
+    try {
+      const { execSync } = require('child_process');
+      execSync('pkill -f "chromium.*--type=renderer" 2>/dev/null || true');
+      console.log('🧹 Processos chromium renderer órfãos eliminados');
+    } catch (e) { /* ignora */ }
 
   } else if (rssMB >= MEMORY_WARN_MB) {
     console.warn(`⚠️ Memória elevada: ${rssMB}MB RSS`);

@@ -15,7 +15,7 @@ const path = require('path');
 // ═══════════════════════════════════════════════════════════════════
 const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 6; // Máx 6 Chromiums simultâneos (~1.2GB RAM)
 const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
-const IDLE_DISCONNECT_MS = parseInt(process.env.IDLE_DISCONNECT_MS) || 60 * 60 * 1000; // 1 hora idle → desconecta sessão
+const IDLE_DISCONNECT_MS = parseInt(process.env.IDLE_DISCONNECT_MS) || 5 * 60 * 60 * 1000; // 5 horas idle → desconecta sessão
 const CLEANUP_INTERVAL_MS = 30 * 1000;           // verifica a cada 30 segundos
 const SESSION_INIT_TIMEOUT_MS = 120000;           // 2 minutos para Chromium iniciar
 const MESSAGE_SEND_TIMEOUT_MS = 30000;            // 30 segundos timeout por mensagem
@@ -234,6 +234,20 @@ class SessionManager {
     if (existingDbSession) {
       console.log(`🔄 Sessão ${sessionId} existe no banco com status '${existingDbSession.status}', recriando...`);
       await this.db.deleteSession(sessionId);
+    }
+
+    // Limpa dados de auth do RemoteAuth no PostgreSQL para evitar sessão stale
+    if (this.pgStore) {
+      try {
+        const authSessionId = `RemoteAuth-${sessionId}`;
+        const exists = await this.pgStore.sessionExists({ session: authSessionId });
+        if (exists) {
+          console.log(`🗑️ Removendo auth stale do PostgreSQL para ${authSessionId}`);
+          await this.pgStore.delete({ session: authSessionId });
+        }
+      } catch (e) {
+        console.warn(`⚠️ Erro ao limpar auth stale: ${e.message}`);
+      }
     }
 
     // Verifica limite de Chromium simultâneos
@@ -894,6 +908,17 @@ class SessionManager {
 
     await this.cleanupSession(sessionId);
     await this.db.deleteSession(sessionId);
+
+    // Limpa dados de auth do RemoteAuth no PostgreSQL
+    if (this.pgStore) {
+      try {
+        const authSessionId = `RemoteAuth-${sessionId}`;
+        await this.pgStore.delete({ session: authSessionId });
+        console.log(`🗑️ Auth data removido do PostgreSQL: ${authSessionId}`);
+      } catch (e) {
+        console.warn(`⚠️ Erro ao limpar auth do PostgreSQL: ${e.message}`);
+      }
+    }
 
     // Limpa mensagens em memória dessa sessão
     for (const key of this.inMemoryMessages.keys()) {
