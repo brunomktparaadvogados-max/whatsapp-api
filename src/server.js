@@ -1212,7 +1212,7 @@ app.post('/api/admin/cleanup-messages', authMiddleware, async (req, res) => {
 
 // REMOVIDO: health simplificado duplicado que sobrescrevia o detalhado (linha ~271)
 
-cron.schedule('* * * * *', async () => {
+cron.schedule('*/5 * * * *', async () => {  // A cada 5 min (era a cada 1 min)
   const pendingMessages = await db.getPendingScheduledMessages();
 
   for (const msg of pendingMessages) {
@@ -1256,8 +1256,8 @@ cron.schedule('0 * * * *', async () => {
 });
 
 
-cron.schedule('*/10 * * * *', async () => {
-  console.log('🧹 Executando limpeza automática de mensagens antigas (a cada 10 minutos)...');
+cron.schedule('0 * * * *', async () => {  // A cada 1 hora (era a cada 10 min)
+  console.log('🧹 Executando limpeza automática de mensagens antigas (a cada 1 hora)...');
   try {
     const deletedCount = await db.deleteOldMessages(20);
     const totalMessages = await db.getMessagesCount();
@@ -1291,8 +1291,8 @@ cron.schedule('0 */6 * * *', async () => {
   }
 });
 
-cron.schedule('*/5 * * * *', async () => {
-  console.log('🔍 Verificando saúde do sistema (a cada 5 minutos)...');
+cron.schedule('*/30 * * * *', async () => {  // A cada 30 min (era a cada 5 min)
+  console.log('🔍 Verificando saúde do sistema (a cada 30 minutos)...');
   try {
     const capacity = await db.getDatabaseCapacityPercentage();
     const sessions = sessionManager.getAllSessions();
@@ -1315,7 +1315,7 @@ cron.schedule('*/5 * * * *', async () => {
 // MONITORAMENTO DE MEMÓRIA — Previne OOM kills no Koyeb
 // Verifica a cada 2 minutos. Se RSS > 400MB, força limpeza agressiva.
 // ═══════════════════════════════════════════════════════════════════
-const MEMORY_CHECK_INTERVAL_MS = 2 * 60 * 1000; // 2 minutos
+const MEMORY_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
 const MEMORY_WARN_MB = 500;    // Alerta (8GB instance)
 const MEMORY_CRITICAL_MB = 700; // Limpeza agressiva
 const MEMORY_EMERGENCY_MB = 900; // Reinicia processo (Koyeb auto-restart)
@@ -1384,7 +1384,7 @@ setInterval(async () => {
 // Se uma sessão está "authenticated" por mais de 3 minutos sem virar
 // "connected", o Chromium provavelmente travou.
 // ═══════════════════════════════════════════════════════════════════
-const ZOMBIE_CHECK_INTERVAL_MS = 3 * 60 * 1000; // 3 minutos
+const ZOMBIE_CHECK_INTERVAL_MS = 10 * 60 * 1000; // 10 minutos (economiza queries)
 
 setInterval(async () => {
   const now = Date.now();
