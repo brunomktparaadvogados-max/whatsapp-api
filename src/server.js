@@ -36,10 +36,11 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static('public'));
 
-// Timeout global de 30s para todas as rotas da API — evita requests travados
+// Timeout global de 120s para rotas da API — evita requests travados
+// (rotas de envio de mensagem podem levar até 90s com retries)
 app.use('/api', (req, res, next) => {
-  req.setTimeout(30000);
-  res.setTimeout(30000, () => {
+  req.setTimeout(120000);
+  res.setTimeout(120000, () => {
     if (!res.headersSent) {
       console.error(`⏰ Timeout na rota ${req.method} ${req.path}`);
       res.status(504).json({ error: 'Request timeout — tente novamente' });
@@ -626,10 +627,14 @@ app.post('/api/sessions/:sessionId/messages', authMiddleware, async (req, res) =
     }
 
     const result = await sessionManager.sendMessage(sessionId, to, message);
-    res.json(result);
+    if (!res.headersSent) {
+      res.json({ success: true, message: 'Mensagem enviada com sucesso', data: result });
+    }
   } catch (error) {
     console.error(`Erro ao enviar mensagem para ${req.body.to} na sessão ${req.params.sessionId}:`, error);
-    res.status(400).json({ error: error.message });
+    if (!res.headersSent) {
+      res.status(400).json({ success: false, error: error.message });
+    }
   }
 });
 
@@ -719,13 +724,16 @@ app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) =>
     console.log(`✅ [SEND MESSAGE] Enviando mensagem via SessionManager...`);
     const result = await sessionManager.sendMessage(sessionId, to, message);
     console.log(`✅ [SEND MESSAGE] Mensagem enviada com sucesso!`);
-    res.json({
-      success: true,
-      message: 'Mensagem enviada com sucesso',
-      data: result
-    });
+    if (!res.headersSent) {
+      res.json({
+        success: true,
+        message: 'Mensagem enviada com sucesso',
+        data: result
+      });
+    }
   } catch (error) {
-    console.error(`❌ [SEND MESSAGE] Erro ao enviar mensagem:`, error);
+    console.error(`❌ [SEND MESSAGE] Erro ao enviar mensagem:`, error.message);
+    if (res.headersSent) return; // Timeout já respondeu
 
     const errorMsg = (error.message || '').toLowerCase();
     const isSessionDead = errorMsg.includes('perdeu conexão') ||
@@ -1624,16 +1632,18 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
     }
 
     const result = await sessionManager.sendMessage(targetSessionId, to, message);
-    res.json({
-      success: true,
-      message: 'Mensagem enviada com sucesso',
-      sessionId: targetSessionId,
-      data: result
-    });
+    if (!res.headersSent) {
+      res.json({
+        success: true,
+        message: 'Mensagem enviada com sucesso',
+        sessionId: targetSessionId,
+        data: result
+      });
+    }
   } catch (error) {
-    console.error(`Erro ao enviar mensagem:`, error);
+    console.error(`Erro ao enviar mensagem:`, error.message);
+    if (res.headersSent) return; // Timeout já respondeu
 
-    // Categoriza o erro para o frontend saber o que fazer
     const errorMsg = (error.message || '').toLowerCase();
     const isSessionDead = errorMsg.includes('perdeu conexão') ||
                           errorMsg.includes('caiu') ||
@@ -1643,10 +1653,6 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
                           errorMsg.includes('não disponível');
 
     const isRateLimit = errorMsg.includes('timeout') || errorMsg.includes('rate');
-
-    // Erro de sessão = 503 (Service Unavailable, temporário)
-    // Erro de rate limit = 429
-    // Erro de número/conteúdo = 400
     const statusCode = isSessionDead ? 503 : (isRateLimit ? 429 : 400);
     const action = isSessionDead ? 'reconnect_session' : (isRateLimit ? 'slow_down' : 'check_number');
 

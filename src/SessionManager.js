@@ -18,9 +18,9 @@ const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
 const IDLE_DISCONNECT_MS = parseInt(process.env.IDLE_DISCONNECT_MS) || 5 * 60 * 60 * 1000; // 5 horas idle → desconecta sessão
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;        // verifica a cada 2 minutos (economiza queries)
 const SESSION_INIT_TIMEOUT_MS = 120000;           // 2 minutos para Chromium iniciar
-const MESSAGE_SEND_TIMEOUT_MS = 30000;            // 30 segundos timeout por mensagem
+const MESSAGE_SEND_TIMEOUT_MS = 60000;            // 60 segundos timeout por mensagem (1 tentativa única)
 const MIN_MESSAGE_INTERVAL_MS = 1500;             // 1.5 segundos entre mensagens (anti-rate-limit)
-const MAX_SEND_RETRIES = 2;                       // tentativas de reenvio por mensagem
+const MAX_SEND_RETRIES = 0;                       // SEM retries — evita mensagens duplicadas
 
 class SessionManager {
   constructor(database, io) {
@@ -327,6 +327,13 @@ class SessionManager {
       await this.db.updateSessionStatus(sessionData.id, 'failed');
 
       console.log(`💾 Sessão ${sessionData.id} marcada como 'failed' no banco`);
+
+      // Notifica frontend que a inicialização falhou (evita "Inicializando..." eterno)
+      this.io.to(`user_${sessionData.userId}`).emit('session_error', {
+        sessionId: sessionData.id,
+        error: 'Falha ao inicializar sessão. Tente criar novamente.',
+        status: 'failed'
+      });
     }
   }
 
@@ -1188,176 +1195,57 @@ class SessionManager {
 
     console.log(`📞 [${sessionId}] Enviando para: ${phoneNumber} → ${normalizedPhone}`);
 
-    // Tenta enviar com retries
-    let lastError = null;
-    for (let attempt = 0; attempt <= MAX_SEND_RETRIES; attempt++) {
-      if (attempt > 0) {
-        console.log(`🔄 [${sessionId}] Retry ${attempt}/${MAX_SEND_RETRIES} para ${normalizedPhone}...`);
-        // Espera progressiva entre retries
-        await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+    // ═══════════════════════════════════════════════════════════════════
+    // ENVIO ÚNICO — SEM RETRIES (evita mensagens duplicadas)
+    // Uma única tentativa com timeout de 60s. Se falhar, retorna erro
+    // imediatamente para o chamador (ProspectFlow) tratar.
+    // ═══════════════════════════════════════════════════════════════════
+    try {
+      const sentMessage = await this.sendMessageWithTimeout(client, chatId, message, mediaUrl);
+      console.log(`✅ [${sessionId}] Mensagem enviada com sucesso! ID: ${sentMessage?.id?._serialized || 'N/A'}`);
 
-        // Verifica se a sessão ainda está viva antes de retry
-        const alive = await this.isSessionAlive(sessionId);
-        if (!alive) {
-          console.error(`💀 [${sessionId}] Sessão morta detectada durante retry. Marcando como disconnected.`);
-          session.status = 'disconnected';
-          await this.db.updateSessionStatus(sessionId, 'disconnected');
+      const messageData = {
+        id: sentMessage.id._serialized,
+        sessionId: sessionId,
+        contactPhone: normalizedPhone,
+        messageType: sentMessage.type,
+        body: message,
+        mediaUrl: mediaUrl,
+        mediaMimetype: null,
+        fromMe: true,
+        timestamp: sentMessage.timestamp,
+        status: 'sent'
+      };
 
-          // Emite evento para frontend
-          this.io.to(`user_${session.userId}`).emit('session_disconnected', {
-            sessionId: sessionId,
-            reason: 'CHROMIUM_CRASH'
-          });
+      await this.db.upsertContact(sessionId, normalizedPhone);
+      session.lastSeen = Date.now();
+      this.sessionLastActivity.set(sessionId, Date.now());
 
-          // Tenta reconectar em background
-          this.attemptFullReconnect(session);
+      return messageData;
+    } catch (error) {
+      this.logRecentError(sessionId, error);
+      console.error(`❌ [${sessionId}] Erro envio para ${normalizedPhone}:`, error.message);
 
-          throw new Error('Sessão WhatsApp perdeu conexão. Reconectando automaticamente...');
-        }
-      }
+      // Se é um erro fatal do Chromium, marca como desconectado e avisa frontend
+      if (this.isFatalSessionError(error)) {
+        console.error(`💀 [${sessionId}] Erro FATAL de Chromium: ${error.message}`);
+        session.status = 'disconnected';
+        await this.db.updateSessionStatus(sessionId, 'disconnected');
 
-      try {
-        // Tenta enviar para o número original
-        const sentMessage = await this.sendMessageWithTimeout(client, chatId, message, mediaUrl);
-        console.log(`✅ [${sessionId}] Mensagem enviada com sucesso! ID: ${sentMessage?.id?._serialized || 'N/A'}`);
-
-        const messageData = {
-          id: sentMessage.id._serialized,
+        this.io.to(`user_${session.userId}`).emit('session_disconnected', {
           sessionId: sessionId,
-          contactPhone: normalizedPhone,
-          messageType: sentMessage.type,
-          body: message,
-          mediaUrl: mediaUrl,
-          mediaMimetype: null,
-          fromMe: true,
-          timestamp: sentMessage.timestamp,
-          status: 'sent'
-        };
+          reason: 'CHROMIUM_CRASH'
+        });
 
-        await this.db.upsertContact(sessionId, normalizedPhone);
-        session.lastSeen = Date.now();
-        this.sessionLastActivity.set(sessionId, Date.now());
+        // Tenta reconectar em background (não bloqueia a resposta HTTP)
+        this.attemptFullReconnect(session);
 
-        return messageData;
-      } catch (error) {
-        lastError = error;
-        this.logRecentError(sessionId, error);
-        console.error(`❌ [${sessionId}] Erro envio (tentativa ${attempt + 1}):`, error.message);
-
-        // Se é um erro fatal do Chromium, tenta reconexão rápida inline
-        if (this.isFatalSessionError(error)) {
-          console.error(`💀 [${sessionId}] Erro FATAL de Chromium detectado: ${error.message}`);
-          console.log(`🔄 [${sessionId}] Tentando reconexão rápida inline...`);
-
-          try {
-            // Destrói cliente antigo
-            if (session.client) {
-              try { await session.client.destroy(); } catch (e) { /* ignora */ }
-            }
-
-            // Cria novo cliente e inicializa
-            const newClient = await this.createWhatsAppClient(sessionId);
-            this.setupClientEvents(newClient, session);
-            session.client = newClient;
-            session.status = 'initializing';
-            this.sessions.set(sessionId, session);
-
-            // Inicializa com timeout de 60s
-            await Promise.race([
-              newClient.initialize(),
-              new Promise((_, rej) => setTimeout(() => rej(new Error('reconnect_timeout')), 60000))
-            ]);
-
-            // Espera um pouco para stabilizar
-            await new Promise(resolve => setTimeout(resolve, 3000));
-
-            // Verifica se reconectou
-            if (session.status === 'connected' || session.status === 'authenticated') {
-              console.log(`✅ [${sessionId}] Reconexão rápida bem-sucedida! Reenviando mensagem...`);
-              this.reconnectAttempts.set(sessionId, 0); // Reset counter
-
-              // Tenta reenviar a mensagem
-              const sentMessage = await this.sendMessageWithTimeout(session.client, chatId, message, mediaUrl);
-              session.lastSeen = Date.now();
-              this.sessionLastActivity.set(sessionId, Date.now());
-              await this.db.upsertContact(sessionId, normalizedPhone);
-              return {
-                id: sentMessage.id._serialized,
-                sessionId, contactPhone: normalizedPhone,
-                messageType: sentMessage.type, body: message,
-                mediaUrl, mediaMimetype: null, fromMe: true,
-                timestamp: sentMessage.timestamp, status: 'sent'
-              };
-            }
-          } catch (reconnectError) {
-            console.error(`❌ [${sessionId}] Reconexão rápida falhou: ${reconnectError.message}`);
-          }
-
-          // Reconexão rápida falhou — marca como desconectado
-          session.status = 'disconnected';
-          await this.db.updateSessionStatus(sessionId, 'disconnected');
-
-          this.io.to(`user_${session.userId}`).emit('session_disconnected', {
-            sessionId: sessionId,
-            reason: 'CHROMIUM_CRASH'
-          });
-
-          // Tenta reconectar em background como fallback
-          this.attemptFullReconnect(session);
-
-          throw new Error('Sessão WhatsApp caiu. Reconectando automaticamente, tente novamente em 1 minuto.');
-        }
+        throw new Error('Sessão WhatsApp caiu. Reconectando automaticamente, tente novamente em 1 minuto.');
       }
+
+      // NÃO faz retry — lança o erro direto para o chamador
+      throw error;
     }
-
-    // Se chegou aqui, todas as tentativas falharam. Tenta variação de 9º dígito.
-    if (normalizedPhone.length === 13 && normalizedPhone.startsWith('55')) {
-      try {
-        console.log(`🔄 Tentando sem 9º dígito...`);
-        const phoneWithout9 = normalizedPhone.substring(0, 4) + normalizedPhone.substring(5);
-        const chatIdWithout9 = `${phoneWithout9}@c.us`;
-        const sentMessage = await this.sendMessageWithTimeout(client, chatIdWithout9, message, mediaUrl);
-
-        await this.db.upsertContact(sessionId, phoneWithout9);
-        session.lastSeen = Date.now();
-        this.sessionLastActivity.set(sessionId, Date.now());
-
-        return {
-          id: sentMessage.id._serialized,
-          sessionId, contactPhone: phoneWithout9,
-          messageType: sentMessage.type, body: message,
-          mediaUrl, mediaMimetype: null, fromMe: true,
-          timestamp: sentMessage.timestamp, status: 'sent'
-        };
-      } catch (retryError) {
-        // Ignora, vai lançar o lastError
-      }
-    }
-
-    if (normalizedPhone.length === 12 && normalizedPhone.startsWith('55')) {
-      try {
-        console.log(`🔄 Tentando com 9º dígito...`);
-        const phoneWith9 = normalizedPhone.substring(0, 4) + '9' + normalizedPhone.substring(4);
-        const chatIdWith9 = `${phoneWith9}@c.us`;
-        const sentMessage = await this.sendMessageWithTimeout(client, chatIdWith9, message, mediaUrl);
-
-        await this.db.upsertContact(sessionId, phoneWith9);
-        session.lastSeen = Date.now();
-        this.sessionLastActivity.set(sessionId, Date.now());
-
-        return {
-          id: sentMessage.id._serialized,
-          sessionId, contactPhone: phoneWith9,
-          messageType: sentMessage.type, body: message,
-          mediaUrl, mediaMimetype: null, fromMe: true,
-          timestamp: sentMessage.timestamp, status: 'sent'
-        };
-      } catch (retryError) {
-        // Ignora, vai lançar o lastError
-      }
-    }
-
-    throw lastError;
   }
 
   async getQRCode(sessionId) {
