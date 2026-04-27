@@ -757,7 +757,7 @@
                     <p><strong>Status:</strong> ${getStatusText(session.status)}</p>
                 `;
 
-                if (session.status === 'not_created' || session.status === 'not_found') {
+                if (session.status === 'not_created' || session.status === 'not_found' || session.status === 'failed' || session.status === 'disconnected' || session.status === 'auth_failure') {
                     document.getElementById('createSessionSection').style.display = 'block';
                     document.getElementById('qrCodeSection').style.display = 'none';
                     document.getElementById('connectedSection').style.display = 'none';
@@ -786,7 +786,8 @@
                     }
                 }
 
-                if (session.status === 'qr_code' || session.status === 'initializing') {
+                // Auto-poll enquanto sessão está em transição
+                if (session.status === 'qr_code' || session.status === 'initializing' || session.status === 'authenticated') {
                     setTimeout(checkSessionStatus, 3000);
                 }
 
@@ -802,9 +803,11 @@
                 'not_found': '❌ Não encontrada',
                 'initializing': '🔄 Inicializando...',
                 'qr_code': '📱 Aguardando QR Code',
-                'authenticated': '✅ Autenticado',
+                'authenticated': '🔄 Autenticado, conectando...',
                 'connected': '✅ Conectado',
-                'failed': '❌ Falhou'
+                'disconnected': '🔴 Desconectado',
+                'failed': '❌ Falhou — crie novamente',
+                'auth_failure': '❌ Falha na autenticação'
             };
             return statusMap[status] || status;
         }

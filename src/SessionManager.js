@@ -520,6 +520,24 @@ class SessionManager {
         sessionId: sessionData.id,
         info: sessionData.info
       });
+
+      // Safety net: se 'ready' não disparar em 90s após autenticação,
+      // marca como failed para o frontend não ficar preso em "Autenticado"
+      setTimeout(async () => {
+        const currentSession = this.sessions.get(sessionData.id);
+        if (currentSession && currentSession.status === 'authenticated') {
+          console.warn(`⚠️ [${sessionData.id}] Sessão autenticada há 90s sem ficar 'ready'. Marcando como failed.`);
+          currentSession.status = 'failed';
+          await this.db.updateSessionStatus(sessionData.id, 'failed');
+          this.io.to(`user_${sessionData.userId}`).emit('session_error', {
+            sessionId: sessionData.id,
+            error: 'WhatsApp autenticou mas não conectou. Delete e crie a sessão novamente.',
+            status: 'failed'
+          });
+          // Limpa o Chromium travado
+          await this.cleanupSession(sessionData.id);
+        }
+      }, 90000);
     });
 
     // RemoteAuth: sessão salva no PostgreSQL com sucesso
