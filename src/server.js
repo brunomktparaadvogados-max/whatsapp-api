@@ -1315,29 +1315,29 @@ setInterval(async () => {
   }
 
   if (rssMB >= MEMORY_EMERGENCY_MB) {
-    console.error(`🚨 EMERGÊNCIA DE MEMÓRIA: ${rssMB}MB RSS! Hibernando sessões idle e matando não-connected...`);
+    console.error(`🚨 EMERGÊNCIA DE MEMÓRIA: ${rssMB}MB RSS! Desconectando sessões idle e matando não-connected...`);
 
-    // 1. Primeiro hiberna sessões connected idle (preserva auth)
+    // 1. Primeiro desconecta sessões connected idle (libera Chromium)
     const sessions = sessionManager.getAllSessions();
-    let hibernated = 0;
+    let disconnected = 0;
     for (const s of sessions) {
       if (s.status === 'connected' || s.status === 'authenticated') {
         try {
-          await sessionManager.hibernateSession(s.id);
-          hibernated++;
-          console.log(`🛏️ Sessão ${s.id} hibernada para emergência de memória`);
+          await sessionManager.disconnectIdleSession(s.id);
+          disconnected++;
+          console.log(`🔌 Sessão ${s.id} desconectada para emergência de memória`);
         } catch (e) { /* ignora */ }
       }
     }
 
-    // 2. Depois mata sessões que não estão connected nem hibernated
+    // 2. Depois mata sessões mortas restantes
     for (const s of sessions) {
-      if (s.status !== 'connected' && s.status !== 'hibernated') {
+      if (s.status !== 'connected' && s.status !== 'disconnected') {
         console.log(`💀 Matando sessão ${s.id} (status: ${s.status}) para liberar memória`);
         try { await sessionManager.cleanupSession(s.id); } catch (e) { /* ignora */ }
       }
     }
-    console.log(`✅ Emergência: ${hibernated} sessão(ões) hibernada(s)`);
+    console.log(`✅ Emergência: ${disconnected} sessão(ões) desconectada(s)`);
 
     // Mata processos chromium órfãos
     try {
@@ -1347,13 +1347,13 @@ setInterval(async () => {
     } catch (e) { /* ignora */ }
 
   } else if (rssMB >= MEMORY_CRITICAL_MB) {
-    console.warn(`⚠️ MEMÓRIA CRÍTICA: ${rssMB}MB RSS! Hibernando sessões mais ociosas...`);
+    console.warn(`⚠️ MEMÓRIA CRÍTICA: ${rssMB}MB RSS! Desconectando sessões mais ociosas...`);
     await sessionManager.forceCleanupDeadSessions();
 
-    // Hiberna a metade das sessões connected (as mais ociosas)
+    // Desconecta a metade das sessões connected (as mais ociosas)
     const activeCount = sessionManager.getActiveChromiumCount();
-    const toHibernate = Math.ceil(activeCount / 2);
-    for (let i = 0; i < toHibernate; i++) {
+    const toDisconnect = Math.ceil(activeCount / 2);
+    for (let i = 0; i < toDisconnect; i++) {
       const evicted = await sessionManager.evictOldestIdleSession();
       if (!evicted) break;
     }
