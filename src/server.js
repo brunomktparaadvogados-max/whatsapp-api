@@ -37,7 +37,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.static('public'));
 
 // Timeout global de 120s para rotas da API — evita requests travados
-// (rotas de envio de mensagem podem levar até 90s com retries)
+// (envio de mensagem tem timeout de 60s + margem para getState e rate-limit)
 app.use('/api', (req, res, next) => {
   req.setTimeout(120000);
   res.setTimeout(120000, () => {
@@ -781,9 +781,13 @@ app.post('/api/sessions/:sessionId/messages/media', authMiddleware, async (req, 
     }
 
     const result = await sessionManager.sendMedia(sessionId, to, mediaUrl, caption);
-    res.json(result);
+    if (!res.headersSent) {
+      res.json({ success: true, data: result });
+    }
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    if (!res.headersSent) {
+      res.status(400).json({ success: false, error: error.message });
+    }
   }
 });
 
@@ -1253,31 +1257,20 @@ async function initializeDefaultSession() {
   }
 }
 
-cron.schedule('0 * * * *', async () => {
-  console.log('🧹 Executando limpeza de sessões inativas...');
+cron.schedule('0 * * * *', async () => {  // A cada 1 hora — limpeza unificada
+  console.log('🧹 Executando limpeza horária (sessões + mensagens)...');
   try {
+    // 1. Limpa sessões inativas da memória
     const cleaned = await sessionManager.cleanupInactiveSessions();
-    console.log(`✅ ${cleaned} sessões inativas foram limpas`);
-  } catch (error) {
-    console.error('❌ Erro na limpeza de sessões:', error);
-  }
-});
+    if (cleaned > 0) console.log(`   - ${cleaned} sessões inativas removidas`);
 
-
-cron.schedule('0 * * * *', async () => {  // A cada 1 hora (era a cada 10 min)
-  console.log('🧹 Executando limpeza automática de mensagens antigas (a cada 1 hora)...');
-  try {
+    // 2. Limpa mensagens antigas do banco
     const deletedCount = await db.deleteOldMessages(20);
     const totalMessages = await db.getMessagesCount();
-    const dbSize = await db.getDatabaseSize();
     const capacity = await db.getDatabaseCapacityPercentage();
 
-    console.log(`✅ Limpeza concluída:`);
     console.log(`   - ${deletedCount} mensagens antigas removidas (>20min)`);
-    console.log(`   - ${totalMessages} mensagens restantes`);
-    if (dbSize) {
-      console.log(`   - Tamanho do banco: ${dbSize.size} (${capacity.toFixed(2)}%)`);
-    }
+    console.log(`   - ${totalMessages} mensagens restantes | Banco: ${capacity.toFixed(1)}%`);
 
     if (capacity >= 50) {
       console.log(`⚠️ Capacidade crítica! Executando limpeza adicional...`);
@@ -1285,7 +1278,7 @@ cron.schedule('0 * * * *', async () => {  // A cada 1 hora (era a cada 10 min)
       console.log(`   - ${cleanedByCapacity} mensagens adicionais removidas`);
     }
   } catch (error) {
-    console.error('❌ Erro na limpeza de mensagens:', error.message);
+    console.error('❌ Erro na limpeza horária:', error.message);
   }
 });
 

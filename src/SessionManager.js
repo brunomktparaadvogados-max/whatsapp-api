@@ -708,12 +708,15 @@ class SessionManager {
             notifyName: message._data?.notifyName || message._data?.pushname || null
           };
 
+          const webhookController = new AbortController();
+          const webhookTimeout = setTimeout(() => webhookController.abort(), 5000);
           const webhookResponse = await fetch(webhookUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(webhookPayload),
-            timeout: 5000
+            signal: webhookController.signal
           });
+          clearTimeout(webhookTimeout);
 
           const webhookBody = await webhookResponse.text();
           if (!webhookResponse.ok) {
@@ -788,12 +791,15 @@ class SessionManager {
               whatsappLid: outLid
             };
 
+            const wc = new AbortController();
+            const wt = setTimeout(() => wc.abort(), 5000);
             await fetch(webhookUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(webhookPayload),
-              timeout: 5000
+              signal: wc.signal
             });
+            clearTimeout(wt);
           } catch (error) {
             console.error(`❌ Erro webhook:`, error.message);
           }
@@ -832,6 +838,13 @@ class SessionManager {
       console.log(`❌ [${sessionId}] Máximo de ${this.maxReconnectAttempts} reconexões atingido. Sessão precisa ser recriada manualmente.`);
       await this.cleanupSession(sessionId);
       await this.db.updateSessionStatus(sessionId, 'failed');
+
+      // Notifica frontend que todas as tentativas falharam
+      this.io.to(`user_${sessionData.userId}`).emit('session_error', {
+        sessionId: sessionId,
+        error: 'Reconexão falhou após várias tentativas. Delete e crie a sessão novamente.',
+        status: 'failed'
+      });
       return;
     }
 
@@ -1135,11 +1148,11 @@ class SessionManager {
       console.log(`📊 [${sessionId}] Estado real do WhatsApp: ${state}`);
 
       if (state !== 'CONNECTED') {
-        // Se não está CONNECTED, espera até 30s
+        // Se não está CONNECTED, espera até 15s (máximo — preserva timeout para envio)
         console.log(`⏳ [${sessionId}] WhatsApp não está CONNECTED (estado: ${state}). Aguardando...`);
         let waited = 0;
         const waitInterval = 3000;
-        const maxWait = 30000;
+        const maxWait = 15000;
         while (waited < maxWait) {
           await new Promise(resolve => setTimeout(resolve, waitInterval));
           waited += waitInterval;
@@ -1415,17 +1428,14 @@ class SessionManager {
       throw new Error(`Cliente não está conectado. Status atual: ${session.status}`);
     }
 
-    const { MessageMedia } = require('whatsapp-web.js');
-    const chatId = to.includes('@c.us') ? to : `${to}@c.us`;
+    const normalizedPhone = this.normalizePhoneNumber(to);
+    const chatId = normalizedPhone.includes('@c.us') ? normalizedPhone : `${normalizedPhone}@c.us`;
 
-    let media;
-    if (mediaUrl.startsWith('http')) {
-      media = await MessageMedia.fromUrl(mediaUrl);
-    } else {
-      media = MessageMedia.fromFilePath(mediaUrl);
-    }
+    // Usa o mesmo timeout do sendMessage para consistência
+    const result = await this.sendMessageWithTimeout(session.client, chatId, caption, mediaUrl);
 
-    const result = await session.client.sendMessage(chatId, media, { caption });
+    session.lastSeen = Date.now();
+    this.sessionLastActivity.set(sessionId, Date.now());
 
     return {
       success: true,

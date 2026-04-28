@@ -40,18 +40,20 @@ class DatabaseManager {
 
   async query(sql, params = []) {
     let client;
+    let hasError = false;
     try {
       client = await this.pool.connect();
       const result = await client.query(sql, params);
       return result;
     } catch (err) {
+      hasError = true;
       // Se o erro é de timeout ou conexão, loga para debug
       if (err.message.includes('timeout') || err.message.includes('Connection terminated')) {
         console.error(`⚠️ DB query timeout/connection error: ${err.message}`);
       }
       throw err;
     } finally {
-      if (client) client.release(true); // true = destroy connection if error occurred
+      if (client) client.release(hasError); // true = destroy connection ONLY on error
     }
   }
 
