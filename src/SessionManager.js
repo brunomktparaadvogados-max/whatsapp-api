@@ -553,11 +553,13 @@ class SessionManager {
           '--mute-audio',
           '--no-default-browser-check',
           '--disable-software-rasterizer',
-          '--disable-features=TranslateUI',
+          '--disable-features=TranslateUI,IsolateOrigins,site-per-process',
+          '--disable-site-isolation-trials',      // Evita "detached frame" errors
           '--disable-ipc-flooding-protection',
           '--disable-renderer-backgrounding',
           '--disable-backgrounding-occluded-windows',
           '--disable-component-update',
+          '--renderer-process-limit=1',            // 1 renderer por Chromium (economiza RAM)
           '--js-flags=--max-old-space-size=256',
           '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         ],
@@ -760,31 +762,51 @@ class SessionManager {
       sessionData.lastSeen = Date.now();
       this.sessionLastActivity.set(sessionData.id, Date.now());
 
-      // Ignorar apenas status@broadcast (atualizações de status)
-      if (message.from.includes('status@broadcast')) {
-        return;
-      }
+      // ═══════════════════════════════════════════════════════════════
+      // FILTROS: Ignora mensagens que não devem criar contatos/webhooks
+      // ═══════════════════════════════════════════════════════════════
+      // 1. Status broadcasts
+      if (message.from.includes('status@broadcast')) return;
+      // 2. Grupos
+      if (message.from.includes('@g.us')) return;
+      // 3. Mensagens do próprio sistema (fromMe)
+      if (message.fromMe) return; // message_create cuida das enviadas
 
       // Resolver telefone: suporta @c.us e @lid (Linked ID do WhatsApp)
       let contactPhone = message.from.replace('@c.us', '').replace('@lid', '');
       let whatsappLid = null;
 
       if (message.from.includes('@lid')) {
-        whatsappLid = message.from; // Preserva o LID completo para matching
+        whatsappLid = message.from;
         try {
           const contact = await message.getContact();
           if (contact && contact.number) {
             contactPhone = contact.number;
             console.log(`🔗 LID resolvido: ${message.from} → ${contactPhone}`);
           } else {
-            console.log(`⚠️ LID sem número: ${message.from}, usando ID como fallback`);
+            // LID NÃO resolvido — NÃO salva como contato (número fantasma)
+            console.log(`👻 LID sem número real: ${message.from} — IGNORANDO (não cria contato)`);
+            return;
           }
         } catch (lidError) {
-          console.warn(`⚠️ Erro ao resolver LID ${message.from}: ${lidError.message}`);
+          console.warn(`⚠️ Erro ao resolver LID ${message.from}: ${lidError.message} — IGNORANDO`);
+          return;
         }
       }
 
-      console.log(`📩 Msg recebida - Session: ${sessionData.id}, From: ${contactPhone}${whatsappLid ? ` (LID: ${whatsappLid})` : ''}`);
+      // 4. Valida se é telefone real (10-13 dígitos brasileiros)
+      if (!this.isValidPhoneNumber(contactPhone)) {
+        console.log(`👻 Telefone inválido ignorado: ${contactPhone} (${contactPhone.length} dígitos)`);
+        return;
+      }
+
+      // 5. Ignora mensagem do próprio número (evita auto-contato)
+      if (this.isSelfNumber(sessionData.id, contactPhone)) {
+        console.log(`🔄 Auto-mensagem ignorada: ${contactPhone} é o próprio número conectado`);
+        return;
+      }
+
+      console.log(`📩 Msg recebida - Session: ${sessionData.id}, From: ${contactPhone}`);
 
       const messageData = {
         id: message.id._serialized,
@@ -794,21 +816,10 @@ class SessionManager {
         body: message.body,
         mediaUrl: null,
         mediaMimetype: null,
-        fromMe: message.fromMe,
+        fromMe: false,
         timestamp: message.timestamp,
-        status: 'received',
-        whatsappLid
+        status: 'received'
       };
-
-      if (message.hasMedia) {
-        try {
-          const media = await message.downloadMedia();
-          messageData.mediaUrl = `data:${media.mimetype};base64,${media.data}`;
-          messageData.mediaMimetype = media.mimetype;
-        } catch (error) {
-          console.error('Erro ao baixar mídia:', error.message);
-        }
-      }
 
       // Armazena em memória (máx 50 por conversa para economizar RAM)
       const sessionKey = `${sessionData.id}_${contactPhone}`;
@@ -828,122 +839,93 @@ class SessionManager {
         message: messageData
       });
 
-      // Webhook
+      // Webhook — só envia para mensagens RECEBIDAS de números válidos
       const webhookUrl = await this.db.getSessionWebhook(sessionData.id);
       if (webhookUrl) {
         try {
           const webhookPayload = {
             phone: contactPhone,
             message: messageData.body || '',
-            fromMe: message.fromMe,
+            fromMe: false,
             timestamp: messageData.timestamp,
             messageId: messageData.id,
             sessionId: sessionData.id,
             userId: sessionData.userId,
             messageType: messageData.messageType,
-            mediaUrl: messageData.mediaUrl,
-            mediaMimetype: messageData.mediaMimetype,
-            whatsappLid: whatsappLid, // Linked ID para matching no wa-webhook
             notifyName: message._data?.notifyName || message._data?.pushname || null
           };
 
           const webhookController = new AbortController();
           const webhookTimeout = setTimeout(() => webhookController.abort(), 5000);
-          const webhookResponse = await fetch(webhookUrl, {
+          await fetch(webhookUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(webhookPayload),
             signal: webhookController.signal
           });
           clearTimeout(webhookTimeout);
-
-          const webhookBody = await webhookResponse.text();
-          if (!webhookResponse.ok) {
-            console.error(`❌ Webhook falhou: ${webhookResponse.status} - ${webhookBody}`);
-          } else {
-            console.log(`✅ Webhook OK: ${webhookBody.substring(0, 200)}`);
-          }
         } catch (error) {
           console.error(`❌ Erro webhook:`, error.message);
         }
       }
 
-      if (!message.fromMe) {
-        await this.processAutoReplies(sessionData.id, message);
-      }
+      await this.processAutoReplies(sessionData.id, message);
     });
 
     client.on('message_create', async (message) => {
-      if (message.fromMe) {
-        // Suporte a @c.us e @lid
-        let contactPhone = message.to.replace('@c.us', '').replace('@lid', '');
-        let outLid = null;
+      if (!message.fromMe) return; // Só processa mensagens enviadas
 
-        if (message.to.includes('@lid')) {
-          outLid = message.to;
-          try {
-            const contact = await message.getContact();
-            if (contact && contact.number) {
-              contactPhone = contact.number;
-            }
-          } catch (e) {
-            console.warn(`⚠️ Erro ao resolver LID outgoing: ${e.message}`);
+      sessionData.lastSeen = Date.now();
+      this.sessionLastActivity.set(sessionData.id, Date.now());
+
+      // Ignora grupos e broadcasts
+      if (message.to.includes('@g.us') || message.to.includes('status@broadcast')) return;
+
+      // Resolver telefone
+      let contactPhone = message.to.replace('@c.us', '').replace('@lid', '');
+
+      if (message.to.includes('@lid')) {
+        try {
+          const contact = await message.getContact();
+          if (contact && contact.number) {
+            contactPhone = contact.number;
+          } else {
+            // LID não resolvido — ignora (não cria contato fantasma)
+            return;
           }
-        }
-
-        sessionData.lastSeen = Date.now();
-        this.sessionLastActivity.set(sessionData.id, Date.now());
-
-        const messageData = {
-          id: message.id._serialized,
-          sessionId: sessionData.id,
-          contactPhone,
-          messageType: message.type,
-          body: message.body,
-          mediaUrl: null,
-          mediaMimetype: null,
-          fromMe: true,
-          timestamp: message.timestamp,
-          status: 'sent',
-          whatsappLid: outLid
-        };
-
-        await this.db.upsertContact(sessionData.id, contactPhone);
-
-        this.io.to(`user_${sessionData.userId}`).emit('message_sent', {
-          sessionId: sessionData.id,
-          message: messageData
-        });
-
-        // Webhook
-        const webhookUrl = await this.db.getSessionWebhook(sessionData.id);
-        if (webhookUrl) {
-          try {
-            const webhookPayload = {
-              phone: contactPhone,
-              message: messageData.body || '',
-              fromMe: true,
-              timestamp: messageData.timestamp,
-              messageId: messageData.id,
-              sessionId: sessionData.id,
-              userId: sessionData.userId,
-              whatsappLid: outLid
-            };
-
-            const wc = new AbortController();
-            const wt = setTimeout(() => wc.abort(), 5000);
-            await fetch(webhookUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(webhookPayload),
-              signal: wc.signal
-            });
-            clearTimeout(wt);
-          } catch (error) {
-            console.error(`❌ Erro webhook:`, error.message);
-          }
+        } catch (e) {
+          return; // Erro ao resolver — ignora silenciosamente
         }
       }
+
+      // Valida telefone
+      if (!this.isValidPhoneNumber(contactPhone)) return;
+      // Ignora auto-mensagem
+      if (this.isSelfNumber(sessionData.id, contactPhone)) return;
+
+      const messageData = {
+        id: message.id._serialized,
+        sessionId: sessionData.id,
+        contactPhone,
+        messageType: message.type,
+        body: message.body,
+        mediaUrl: null,
+        mediaMimetype: null,
+        fromMe: true,
+        timestamp: message.timestamp,
+        status: 'sent'
+      };
+
+      await this.db.upsertContact(sessionData.id, contactPhone);
+
+      this.io.to(`user_${sessionData.userId}`).emit('message_sent', {
+        sessionId: sessionData.id,
+        message: messageData
+      });
+
+      // NÃO envia webhook para message_create — o sendMessage já
+      // retorna sucesso via HTTP para o ProspectFlow. Enviar webhook
+      // aqui causaria contagem dupla de mensagens enviadas.
     });
 
     client.on('message_ack', async (message, ack) => {
@@ -1133,6 +1115,31 @@ class SessionManager {
     console.log(`✅ Sessão ${sessionId} deletada completamente`);
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  // VALIDAÇÃO DE TELEFONE — Filtra LIDs, números inválidos e fantasmas
+  // Telefone brasileiro válido: 55 + DDD(2) + número(8-9) = 12 ou 13 dígitos
+  // ═══════════════════════════════════════════════════════════════════
+  isValidPhoneNumber(phone) {
+    if (!phone) return false;
+    const digits = phone.replace(/\D/g, '');
+    // Telefone brasileiro com 55: 12-13 dígitos
+    // Sem 55: 10-11 dígitos
+    if (digits.startsWith('55')) {
+      return digits.length >= 12 && digits.length <= 13;
+    }
+    return digits.length >= 10 && digits.length <= 11;
+  }
+
+  // Verifica se o telefone é do próprio usuário conectado (evita auto-mensagem)
+  isSelfNumber(sessionId, phone) {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.info || !session.info.wid) return false;
+    const selfNumber = session.info.wid.user || session.info.wid._serialized?.replace('@c.us', '');
+    if (!selfNumber) return false;
+    const cleanPhone = phone.replace(/\D/g, '');
+    return cleanPhone.includes(selfNumber) || selfNumber.includes(cleanPhone);
+  }
+
   normalizePhoneNumber(phoneNumber) {
     let normalized = phoneNumber.replace(/\D/g, '');
 
@@ -1197,6 +1204,8 @@ class SessionManager {
       'getStatus',
       'No LID for user',
       'getIsMyContact',
+      'detached Frame',                // Puppeteer frame bug (não fatal com --disable-site-isolation)
+      'Attempted to use detached',     // Variação do mesmo bug
     ];
     return ignorablePatterns.some(p => msg.includes(p));
   }
@@ -1214,6 +1223,8 @@ class SessionManager {
     }
 
     // Erros que REALMENTE indicam que o Chromium morreu
+    // NOTA: "frame was detached" removido — com --disable-site-isolation-trials
+    // é prevenido, e quando ocorre não é necessariamente fatal
     const fatalPatterns = [
       'execution context was destroyed',
       'session closed',
@@ -1222,7 +1233,6 @@ class SessionManager {
       'page crashed',
       'browser disconnected',
       'navigation failed',
-      'frame was detached',
       'cannot find context',
       'websocket is not open',
       'econnrefused',
