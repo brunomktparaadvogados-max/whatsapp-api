@@ -36,11 +36,11 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static('public'));
 
-// Timeout global de 120s para rotas da API — evita requests travados
-// (envio de mensagem tem timeout de 60s + margem para getState e rate-limit)
+// Timeout global de 180s para rotas da API — evita requests travados
+// (auto-reconexão pode levar até 90s + envio 60s + getState 15s = 165s)
 app.use('/api', (req, res, next) => {
-  req.setTimeout(120000);
-  res.setTimeout(120000, () => {
+  req.setTimeout(180000);
+  res.setTimeout(180000, () => {
     if (!res.headersSent) {
       console.error(`⏰ Timeout na rota ${req.method} ${req.path}`);
       res.status(504).json({ error: 'Request timeout — tente novamente' });

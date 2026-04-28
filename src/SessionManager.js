@@ -13,7 +13,7 @@ const path = require('path');
 // ═══════════════════════════════════════════════════════════════════
 // LIMITES DE MEMÓRIA — Sessões sob demanda para 20+ usuários
 // ═══════════════════════════════════════════════════════════════════
-const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 6; // Máx 6 Chromiums simultâneos (~1.2GB RAM)
+const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 10; // 10 Chromiums (~2.5GB RAM — cabe em 8GB)
 const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
 const IDLE_DISCONNECT_MS = parseInt(process.env.IDLE_DISCONNECT_MS) || 5 * 60 * 60 * 1000; // 5 horas idle → desconecta sessão
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;        // verifica a cada 2 minutos (economiza queries)
@@ -21,6 +21,7 @@ const SESSION_INIT_TIMEOUT_MS = 120000;           // 2 minutos para Chromium ini
 const MESSAGE_SEND_TIMEOUT_MS = 60000;            // 60 segundos timeout por mensagem (1 tentativa única)
 const MIN_MESSAGE_INTERVAL_MS = 1500;             // 1.5 segundos entre mensagens (anti-rate-limit)
 const MAX_SEND_RETRIES = 0;                       // SEM retries — evita mensagens duplicadas
+const AUTO_RECONNECT_TIMEOUT_MS = 90000;          // 90s máx para auto-reconexão no envio
 
 class SessionManager {
   constructor(database, io) {
@@ -38,6 +39,8 @@ class SessionManager {
     this.recentErrors = [];                 // Log de erros recentes para diagnóstico
     this.pgStore = null;                    // PostgresStore para RemoteAuth (persistência de sessão)
     this.useRemoteAuth = false;             // Flag: usar RemoteAuth ou LocalAuth
+    this.reconnectingSet = new Set();       // Sessões em processo de auto-reconexão
+    this.reconnectPromises = new Map();     // Promises de reconexão em andamento
 
     this.init();
   }
@@ -236,17 +239,19 @@ class SessionManager {
       await this.db.deleteSession(sessionId);
     }
 
-    // Limpa dados de auth do RemoteAuth no PostgreSQL para evitar sessão stale
+    // RemoteAuth: NÃO deleta dados de auth — permite reconexão sem QR code
+    // Dados só são deletados em: deleteSession (explícito) ou auth_failure
     if (this.pgStore) {
       try {
         const authSessionId = `RemoteAuth-${sessionId}`;
-        const exists = await this.pgStore.sessionExists({ session: authSessionId });
-        if (exists) {
-          console.log(`🗑️ Removendo auth stale do PostgreSQL para ${authSessionId}`);
-          await this.pgStore.delete({ session: authSessionId });
+        const hasAuth = await this.pgStore.sessionExists({ session: authSessionId });
+        if (hasAuth) {
+          console.log(`🔑 [${sessionId}] RemoteAuth encontrado no PostgreSQL — reconexão sem QR!`);
+        } else {
+          console.log(`📱 [${sessionId}] Sem RemoteAuth — QR code será necessário`);
         }
       } catch (e) {
-        console.warn(`⚠️ Erro ao limpar auth stale: ${e.message}`);
+        console.warn(`⚠️ Erro ao verificar auth: ${e.message}`);
       }
     }
 
@@ -321,6 +326,18 @@ class SessionManager {
       this.reconnectAttempts.delete(sessionData.id);
     } catch (error) {
       console.error(`❌ Erro ao inicializar cliente ${sessionData.id}:`, error.message);
+
+      // Se timeout com RemoteAuth, auth data pode estar corrompido
+      if (error.message.includes('Timeout') && this.pgStore) {
+        try {
+          const authSessionId = `RemoteAuth-${sessionData.id}`;
+          const hasAuth = await this.pgStore.sessionExists({ session: authSessionId });
+          if (hasAuth) {
+            await this.pgStore.delete({ session: authSessionId });
+            console.log(`🗑️ [${sessionData.id}] RemoteAuth deletado após timeout — próximo login pedirá QR`);
+          }
+        } catch (e) { /* ignora */ }
+      }
 
       // Limpa recursos sem deletar do banco (permite tentar de novo)
       await this.cleanupSession(sessionData.id);
@@ -582,12 +599,24 @@ class SessionManager {
 
       await this.db.updateSessionStatus(sessionData.id, 'auth_failure');
 
+      // Auth falhou — RemoteAuth data está corrompido, deletar para forçar novo QR
+      if (this.pgStore) {
+        try {
+          const authSessionId = `RemoteAuth-${sessionData.id}`;
+          await this.pgStore.delete({ session: authSessionId });
+          console.log(`🗑️ [${sessionData.id}] RemoteAuth corrompido deletado — próximo login pedirá QR`);
+        } catch (e) {
+          console.warn(`⚠️ Erro ao limpar RemoteAuth corrompido: ${e.message}`);
+        }
+      }
+
       // Limpa recursos de Chromium mas mantém registro no banco
       await this.cleanupSession(sessionData.id);
 
       this.io.to(`user_${sessionData.userId}`).emit('session_error', {
         sessionId: sessionData.id,
-        error: 'Falha na autenticação. Tente reconectar.'
+        error: 'Falha na autenticação. Delete a sessão e crie novamente.',
+        status: 'auth_failure'
       });
     });
 
@@ -1093,6 +1122,108 @@ class SessionManager {
     this.lastMessageTime.set(sessionId, Date.now());
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  // AUTO-RECONEXÃO PARA ENVIO: Reconecta sessão usando RemoteAuth
+  // Se RemoteAuth existe, reconecta sem QR. Se não, retorna null.
+  // Garante que só 1 reconexão por sessão aconteça ao mesmo tempo.
+  // ═══════════════════════════════════════════════════════════════════
+  async autoReconnectForSend(sessionId) {
+    // Se já está reconectando, espera a reconexão existente
+    if (this.reconnectingSet.has(sessionId)) {
+      console.log(`⏳ [${sessionId}] Reconexão já em andamento, aguardando...`);
+      return await this.waitForSessionReady(sessionId, AUTO_RECONNECT_TIMEOUT_MS);
+    }
+
+    // Verificar se sessão existe no banco
+    const dbSession = await this.db.getSession(sessionId);
+    if (!dbSession) {
+      console.log(`❌ [${sessionId}] Sessão não existe no banco`);
+      return null;
+    }
+
+    // Verificar se RemoteAuth tem dados salvos
+    if (!this.pgStore || !this.useRemoteAuth) {
+      console.log(`❌ [${sessionId}] RemoteAuth não disponível — QR necessário`);
+      return null;
+    }
+
+    const authSessionId = `RemoteAuth-${sessionId}`;
+    let hasAuth = false;
+    try {
+      hasAuth = await this.pgStore.sessionExists({ session: authSessionId });
+    } catch (e) {
+      console.warn(`⚠️ Erro ao verificar RemoteAuth: ${e.message}`);
+    }
+
+    if (!hasAuth) {
+      console.log(`❌ [${sessionId}] Sem RemoteAuth salvo — QR necessário`);
+      return null;
+    }
+
+    // Marcar como reconectando (evita múltiplas reconexões paralelas)
+    this.reconnectingSet.add(sessionId);
+    console.log(`🔄 [${sessionId}] Iniciando auto-reconexão via RemoteAuth...`);
+
+    try {
+      // Verificar espaço para Chromium
+      let activeCount = this.getActiveChromiumCount();
+      if (activeCount >= MAX_CONCURRENT_SESSIONS) {
+        console.log(`⚠️ [${sessionId}] Limite atingido (${activeCount}/${MAX_CONCURRENT_SESSIONS}). Evicting sessão ociosa...`);
+        const evicted = await this.evictOldestIdleSession(sessionId);
+        if (!evicted) {
+          await this.forceCleanupDeadSessions();
+        }
+        activeCount = this.getActiveChromiumCount();
+        if (activeCount >= MAX_CONCURRENT_SESSIONS) {
+          console.error(`❌ [${sessionId}] Sem espaço para reconexão`);
+          return null;
+        }
+      }
+
+      // Criar sessão (RemoteAuth vai restaurar sem QR)
+      await this.createSession(sessionId, dbSession.user_id);
+
+      // Aguardar sessão ficar pronta (max 90s)
+      const readySession = await this.waitForSessionReady(sessionId, AUTO_RECONNECT_TIMEOUT_MS);
+
+      if (readySession) {
+        console.log(`✅ [${sessionId}] Auto-reconexão bem-sucedida! Sessão pronta para enviar.`);
+      } else {
+        console.error(`❌ [${sessionId}] Auto-reconexão falhou — timeout ou erro`);
+      }
+
+      return readySession;
+    } catch (error) {
+      console.error(`❌ [${sessionId}] Erro na auto-reconexão: ${error.message}`);
+      return null;
+    } finally {
+      this.reconnectingSet.delete(sessionId);
+    }
+  }
+
+  // Espera uma sessão ficar pronta (connected/authenticated) ou falhar
+  async waitForSessionReady(sessionId, maxWaitMs) {
+    const startTime = Date.now();
+    const pollInterval = 2000; // checa a cada 2s
+
+    while (Date.now() - startTime < maxWaitMs) {
+      const session = this.sessions.get(sessionId);
+      if (session) {
+        if (session.status === 'connected' || session.status === 'authenticated') {
+          return session;
+        }
+        // Estados terminais — não vai recuperar
+        if (session.status === 'failed' || session.status === 'auth_failure') {
+          return null;
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
+    }
+
+    console.warn(`⏰ [${sessionId}] Timeout aguardando sessão ficar pronta (${maxWaitMs / 1000}s)`);
+    return null;
+  }
+
   // Envia uma mensagem com timeout
   async sendMessageWithTimeout(client, chatId, message, mediaUrl, timeoutMs = MESSAGE_SEND_TIMEOUT_MS) {
     const sendPromise = (async () => {
@@ -1115,22 +1246,20 @@ class SessionManager {
   async sendMessage(sessionId, phoneNumber, message, mediaUrl = null) {
     let session = this.sessions.get(sessionId);
 
-    if (!session) {
-      // Sessão não está na memória — precisa criar nova sessão
-      throw new Error('Sessão não encontrada. Crie uma nova sessão e escaneie o QR code.');
-    }
+    // ═══════════════════════════════════════════════════════════════════
+    // AUTO-RECONEXÃO: Se sessão desconectada, tenta reconectar via RemoteAuth
+    // Isso permite que ProspectFlow envie sem o usuário ter que escanear QR
+    // ═══════════════════════════════════════════════════════════════════
+    const needsReconnect = !session ||
+                           !session.client ||
+                           (session.status !== 'connected' && session.status !== 'authenticated');
 
-    // Se sessão existe mas não tem client ativo, precisa reconectar
-    if (!session.client) {
-      throw new Error('Sessão desconectada. Crie uma nova sessão e escaneie o QR code.');
-    }
-
-    if (session.status !== 'connected' && session.status !== 'authenticated') {
-      throw new Error(`Sessão não está conectada. Status atual: ${session.status}`);
-    }
-
-    if (!session.client) {
-      throw new Error('Cliente WhatsApp não disponível. Reconecte a sessão.');
+    if (needsReconnect) {
+      console.log(`🔄 [${sessionId}] Sessão não está pronta (status: ${session?.status || 'não na memória'}). Tentando auto-reconexão...`);
+      session = await this.autoReconnectForSend(sessionId);
+      if (!session) {
+        throw new Error('Sessão desconectada e reconexão automática falhou. Escaneie o QR code novamente.');
+      }
     }
 
     const client = session.client;
