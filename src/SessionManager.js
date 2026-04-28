@@ -1638,7 +1638,7 @@ class SessionManager {
   // AUTO-CLEANUP INTELIGENTE:
   // - Sessões qr_code: remove após 5 minutos (QR expirou)
   // - Sessões failed/disconnected sem cliente: remove após 10 minutos
-  // - Sessões connected/authenticated IDLE: DESCONECTA após IDLE_DISCONNECT_MS (1h)
+  // - Sessões connected/authenticated IDLE: DESCONECTA após IDLE_DISCONNECT_MS (5h)
   // ═══════════════════════════════════════════════════════════════════
   startAutoCleanup() {
     console.log(`🔄 Auto-limpeza inteligente iniciada (verifica a cada ${CLEANUP_INTERVAL_MS / 1000}s)`);

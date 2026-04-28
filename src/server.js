@@ -1317,9 +1317,11 @@ cron.schedule('*/30 * * * *', async () => {  // A cada 30 min (era a cada 5 min)
 // Verifica a cada 2 minutos. Se RSS > 400MB, força limpeza agressiva.
 // ═══════════════════════════════════════════════════════════════════
 const MEMORY_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
-const MEMORY_WARN_MB = 500;    // Alerta (8GB instance)
-const MEMORY_CRITICAL_MB = 700; // Limpeza agressiva
-const MEMORY_EMERGENCY_MB = 900; // Reinicia processo (Koyeb auto-restart)
+// Thresholds calibrados para 8GB Koyeb com até 10 Chromiums (~250MB cada = 2.5GB)
+// Node.js RSS inclui memória compartilhada dos Chromiums, por isso os valores são altos
+const MEMORY_WARN_MB = 3000;     // 3GB — alerta (normal com 10 Chromiums)
+const MEMORY_CRITICAL_MB = 5000; // 5GB — desconecta sessões ociosas
+const MEMORY_EMERGENCY_MB = 6500; // 6.5GB — reinicia (deixa 1.5GB pro OS)
 
 setInterval(async () => {
   const mem = process.memoryUsage();
@@ -1353,26 +1355,35 @@ setInterval(async () => {
     process.exit(1);
 
   } else if (rssMB >= MEMORY_CRITICAL_MB) {
-    console.warn(`⚠️ MEMÓRIA CRÍTICA: ${rssMB}MB RSS! Desconectando sessões mais ociosas...`);
+    console.warn(`⚠️ MEMÓRIA CRÍTICA: ${rssMB}MB RSS! Limpando sessões mortas e ociosas...`);
+
+    // 1. Limpa sessões mortas (failed, disconnected sem client)
     await sessionManager.forceCleanupDeadSessions();
 
-    // Desconecta a metade das sessões connected (as mais ociosas)
-    const activeCount = sessionManager.getActiveChromiumCount();
-    const toDisconnect = Math.ceil(activeCount / 2);
-    for (let i = 0; i < toDisconnect; i++) {
-      const evicted = await sessionManager.evictOldestIdleSession();
-      if (!evicted) break;
+    // 2. Desconecta APENAS sessões ociosas há mais de 1 hora (não todas)
+    const now = Date.now();
+    const oneHour = 60 * 60 * 1000;
+    let evictedCount = 0;
+    for (const [sid, lastTs] of sessionManager.sessionLastActivity.entries()) {
+      if ((now - lastTs) > oneHour) {
+        const sess = sessionManager.getSession(sid);
+        if (sess && sess.client && (sess.status === 'connected' || sess.status === 'authenticated')) {
+          console.log(`🔌 Evicting por memória: ${sid} (idle ${Math.round((now - lastTs) / 60000)}min)`);
+          await sessionManager.disconnectIdleSession(sid);
+          evictedCount++;
+        }
+      }
     }
+    console.log(`🧹 ${evictedCount} sessões ociosas desconectadas por pressão de memória`);
 
-    // Limpa mensagens em memória antigas
+    // 3. Limpa cache de mensagens em memória
     sessionManager.inMemoryMessages.clear();
     console.log('🧹 Cache de mensagens em memória limpo');
 
-    // Mata chromium renderer órfãos para liberar RAM extra
+    // 4. Mata chromium renderer órfãos para liberar RAM extra
     try {
       const { execSync } = require('child_process');
       execSync('pkill -f "chromium.*--type=renderer" 2>/dev/null || true');
-      console.log('🧹 Processos chromium renderer órfãos eliminados');
     } catch (e) { /* ignora */ }
 
   } else if (rssMB >= MEMORY_WARN_MB) {
@@ -1381,51 +1392,43 @@ setInterval(async () => {
 }, MEMORY_CHECK_INTERVAL_MS);
 
 // ═══════════════════════════════════════════════════════════════════
-// VERIFICAÇÃO DE SESSÕES ZUMBIS — Mata sessões "authenticated" presas
-// Se uma sessão está "authenticated" por mais de 3 minutos sem virar
-// "connected", o Chromium provavelmente travou.
+// VERIFICAÇÃO DE SESSÕES ZUMBIS — Apenas sessões REALMENTE presas
+// Roda a cada 15 min. NÃO faz getState em sessões connected saudáveis
+// (getState pode dar timeout se Chromium estiver ocupado, matando sessão boa)
 // ═══════════════════════════════════════════════════════════════════
-const ZOMBIE_CHECK_INTERVAL_MS = 10 * 60 * 1000; // 10 minutos (economiza queries)
+const ZOMBIE_CHECK_INTERVAL_MS = 15 * 60 * 1000; // 15 minutos
 
 setInterval(async () => {
   const now = Date.now();
   const allSessions = sessionManager.getAllSessions();
 
   for (const s of allSessions) {
-    // Caso 1: Sessão presa em "authenticated" por mais de 3 minutos
-    if (s.status === 'authenticated' && s.lastSeen && (now - s.lastSeen) > 3 * 60 * 1000) {
-      console.warn(`🧟 Sessão zumbi detectada: ${s.id} — presa em "authenticated" por ${Math.round((now - s.lastSeen) / 1000)}s`);
-      try {
-        const alive = await sessionManager.isSessionAlive(s.id);
-        if (!alive) {
-          console.log(`💀 Sessão ${s.id} confirmada como morta. Limpando...`);
-          await sessionManager.cleanupSession(s.id);
-          await db.updateSessionStatus(s.id, 'disconnected');
-        }
-      } catch (e) {
-        console.error(`❌ Erro ao limpar sessão zumbi ${s.id}:`, e.message);
-      }
+    // Caso 1: Sessão presa em "authenticated" por mais de 5 minutos
+    // (o safety net de 90s no event handler já cuida da maioria, isso é fallback)
+    if (s.status === 'authenticated' && s.lastSeen && (now - s.lastSeen) > 5 * 60 * 1000) {
+      console.warn(`🧟 Sessão zumbi: ${s.id} — "authenticated" por ${Math.round((now - s.lastSeen) / 1000)}s`);
+      await sessionManager.cleanupSession(s.id);
+      await db.updateSessionStatus(s.id, 'disconnected');
     }
 
-    // Caso 2: Sessão "connected" mas Chromium morto (getState timeout)
-    // Isso acontece quando o Chromium trava silenciosamente
-    if (s.status === 'connected') {
+    // Caso 2: Sessão "connected" mas SEM ATIVIDADE por mais de 30 min
+    // Só verifica getState se já está inativa há muito tempo — não mata sessões ativas
+    if (s.status === 'connected' && s.lastSeen && (now - s.lastSeen) > 30 * 60 * 1000) {
       try {
         const alive = await sessionManager.isSessionAlive(s.id);
         if (!alive) {
-          console.warn(`🧟 Sessão ${s.id} mostra "connected" mas Chromium está morto!`);
-          console.log(`🔄 Limpando sessão morta ${s.id} e marcando como disconnected...`);
+          console.warn(`🧟 Sessão ${s.id} — "connected" mas Chromium morto (inativa ${Math.round((now - s.lastSeen) / 60000)}min)`);
           await sessionManager.cleanupSession(s.id);
           await db.updateSessionStatus(s.id, 'disconnected');
 
-          // Notifica o frontend que a sessão caiu
           io.to(`user_${s.userId}`).emit('session_disconnected', {
             sessionId: s.id,
             reason: 'CHROMIUM_DEAD'
           });
         }
       } catch (e) {
-        console.error(`❌ Erro ao verificar sessão connected ${s.id}:`, e.message);
+        // Erro ao verificar NÃO mata a sessão — pode ser temporário
+        console.warn(`⚠️ Erro ao verificar sessão ${s.id}: ${e.message} (mantendo ativa)`);
       }
     }
   }
