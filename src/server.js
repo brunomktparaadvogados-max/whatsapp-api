@@ -305,8 +305,30 @@ app.get('/health', (req, res) => {
       heap: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
     },
     activeSessions: sessionManager.sessions.size,
-    activeChromiums: sessionManager.getActiveChromiumCount()
+    activeChromiums: sessionManager.getActiveChromiumCount(),
+    remoteAuth: sessionManager.useRemoteAuth
   });
+});
+
+// Diagnóstico do RemoteAuth — lista sessões salvas no PostgreSQL
+app.get('/api/remote-auth-status', async (req, res) => {
+  try {
+    if (!sessionManager.pgStore) {
+      return res.json({ remoteAuth: false, message: 'PostgresStore não inicializado' });
+    }
+    const sessions = await sessionManager.pgStore.listSessions();
+    res.json({
+      remoteAuth: true,
+      savedSessions: sessions.length,
+      sessions: sessions.map(s => ({
+        id: s.session_id,
+        sizeMB: (s.data_size / 1024 / 1024).toFixed(2),
+        updatedAt: s.updated_at
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/health', async (req, res) => {

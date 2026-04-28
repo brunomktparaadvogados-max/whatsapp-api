@@ -57,6 +57,31 @@ class SessionManager {
       this.useRemoteAuth = true;
       console.log('✅ PostgresStore conectado — sessões WhatsApp persistidas no Supabase!');
       console.log('🔒 RemoteAuth ativo: QR code só precisa ser escaneado 1 vez');
+
+      // Limpa sessões antigas que podem ter sido salvas com path completo (bug anterior)
+      try {
+        const savedSessions = await this.pgStore.listSessions();
+        console.log(`📦 Sessões RemoteAuth no PostgreSQL: ${savedSessions.length}`);
+        for (const s of savedSessions) {
+          console.log(`   - ${s.session_id} (${(s.data_size / 1024 / 1024).toFixed(2)}MB, atualizado: ${s.updated_at})`);
+          // Remove entradas com path completo (bug: save usava path, sessionExists usava nome)
+          if (s.session_id.includes('/')) {
+            const correctId = path.basename(s.session_id);
+            console.log(`   🔧 Migrando session_id com path: "${s.session_id}" → "${correctId}"`);
+            await this.db.pool.query(
+              `UPDATE whatsapp_auth_sessions SET session_id = $1, updated_at = NOW() WHERE session_id = $2 AND NOT EXISTS (SELECT 1 FROM whatsapp_auth_sessions WHERE session_id = $1)`,
+              [correctId, s.session_id]
+            );
+            // Se já existia com o nome correto, deleta a duplicata com path
+            await this.db.pool.query(
+              `DELETE FROM whatsapp_auth_sessions WHERE session_id = $1`,
+              [s.session_id]
+            );
+          }
+        }
+      } catch (listErr) {
+        console.warn('⚠️ Erro ao listar sessões RemoteAuth:', listErr.message);
+      }
     } catch (pgStoreError) {
       console.error('⚠️ Falha ao inicializar PostgresStore, usando LocalAuth:', pgStoreError.message);
       this.useRemoteAuth = false;
@@ -570,7 +595,7 @@ class SessionManager {
         ? new RemoteAuth({
             clientId: sessionId,
             store: this.pgStore,
-            backupSyncIntervalMs: 5 * 60 * 1000 // Salva sessão no PostgreSQL a cada 5 minutos
+            backupSyncIntervalMs: 2 * 60 * 1000 // Salva sessão no PostgreSQL a cada 2 minutos
           })
         : new LocalAuth({
             clientId: sessionId,
@@ -670,8 +695,11 @@ class SessionManager {
     });
 
     // RemoteAuth: sessão salva no PostgreSQL com sucesso
+    // (evento só dispara na PRIMEIRA vez; backups periódicos são silenciosos)
     client.on('remote_session_saved', () => {
       console.log(`💾 [${sessionData.id}] Sessão salva no PostgreSQL — sobrevive a deploys!`);
+      sessionData.lastSeen = Date.now();
+      this.sessionLastActivity.set(sessionData.id, Date.now());
     });
 
     client.on('ready', async () => {
@@ -753,10 +781,7 @@ class SessionManager {
       }
     });
 
-    client.on('remote_session_saved', () => {
-      sessionData.lastSeen = Date.now();
-      this.sessionLastActivity.set(sessionData.id, Date.now());
-    });
+    // (remote_session_saved já registrado acima — não duplicar)
 
     client.on('message', async (message) => {
       sessionData.lastSeen = Date.now();
