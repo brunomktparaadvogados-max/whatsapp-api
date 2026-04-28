@@ -187,6 +187,18 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
         qrCode: session.qrCode,
         info: session.info
       };
+    } else {
+      // Sessão não está em memória — verifica no banco de dados
+      // Isso cobre o caso onde a sessão foi desconectada e removida da memória
+      const dbSession = await db.getSession(sessionId);
+      if (dbSession) {
+        sessionInfo = {
+          sessionId: dbSession.id,
+          status: dbSession.status || 'disconnected',
+          qrCode: null,
+          info: null
+        };
+      }
     }
 
     res.json({
@@ -452,7 +464,11 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
         console.log(`✅ Sessão ${targetSessionId} criada`);
       } catch (error) {
         console.error(`❌ Erro ao criar sessão ${targetSessionId}:`, error.message);
-        // Emite erro via Socket.IO para o frontend saber
+        // Marca como 'failed' no banco para que o polling do frontend detecte
+        try {
+          await db.updateSessionStatus(targetSessionId, 'failed');
+        } catch (_) { /* ignora */ }
+        // Emite erro via Socket.IO (caso frontend suporte no futuro)
         io.to(`user_${targetUserId}`).emit('session_error', {
           sessionId: targetSessionId,
           error: error.message

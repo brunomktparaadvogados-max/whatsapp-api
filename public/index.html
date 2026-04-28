@@ -761,6 +761,10 @@
                     document.getElementById('createSessionSection').style.display = 'block';
                     document.getElementById('qrCodeSection').style.display = 'none';
                     document.getElementById('connectedSection').style.display = 'none';
+                    // Se acabou de criar e está transitando, aguardar um pouco
+                    if (window._waitingForSession) {
+                        window._waitingForSession = false; // Para de esperar quando status final chega
+                    }
                 } else if (session.status === 'qr_code' || session.status === 'initializing') {
                     document.getElementById('createSessionSection').style.display = 'none';
                     document.getElementById('qrCodeSection').style.display = 'block';
@@ -771,12 +775,15 @@
                             <img src="${session.qrCode}" alt="QR Code" style="max-width: 300px; border: 2px solid #667eea; border-radius: 10px;">
                         `;
                     } else {
-                        setTimeout(checkSessionStatus, 2000);
+                        document.getElementById('qrCodeContainer').innerHTML = `
+                            <p>⏳ Preparando QR Code... Aguarde.</p>
+                        `;
                     }
                 } else if (session.status === 'connected' || session.status === 'authenticated') {
                     document.getElementById('createSessionSection').style.display = 'none';
                     document.getElementById('qrCodeSection').style.display = 'none';
                     document.getElementById('connectedSection').style.display = 'block';
+                    window._waitingForSession = false;
 
                     if (session.info) {
                         document.getElementById('phoneInfo').innerHTML = `
@@ -814,6 +821,10 @@
 
         async function createMySession() {
             try {
+                // Desabilita botão para evitar cliques múltiplos
+                const btn = event?.target;
+                if (btn) { btn.disabled = true; btn.textContent = '⏳ Criando...'; }
+
                 const response = await fetch(`${API_URL}/api/sessions`, {
                     method: 'POST',
                     headers: {
@@ -825,13 +836,21 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    alert('✅ Sessão criada! Aguarde o QR Code...');
+                    // Não usa alert (bloqueia o polling). Atualiza UI diretamente.
+                    document.getElementById('createSessionSection').style.display = 'none';
+                    document.getElementById('qrCodeSection').style.display = 'block';
+                    document.getElementById('qrCodeContainer').innerHTML = '<p>⏳ Preparando sessão... Aguarde o QR Code.</p>';
+                    window._waitingForSession = true;
+                    // Inicia polling imediato
                     setTimeout(checkSessionStatus, 2000);
                 } else {
                     alert('❌ Erro: ' + data.error);
+                    if (btn) { btn.disabled = false; btn.textContent = '📱 Criar Sessão WhatsApp'; }
                 }
             } catch (error) {
                 alert('❌ Erro ao criar sessão: ' + error.message);
+                const btn = event?.target;
+                if (btn) { btn.disabled = false; btn.textContent = '📱 Criar Sessão WhatsApp'; }
             }
         }
 

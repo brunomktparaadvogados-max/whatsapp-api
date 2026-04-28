@@ -41,6 +41,7 @@ class SessionManager {
     this.useRemoteAuth = false;             // Flag: usar RemoteAuth ou LocalAuth
     this.reconnectingSet = new Set();       // Sessões em processo de auto-reconexão
     this.reconnectPromises = new Map();     // Promises de reconexão em andamento
+    this.reconnectCancelled = new Set();   // Sessões que tiveram reconnect cancelado
 
     this.init();
   }
@@ -78,9 +79,111 @@ class SessionManager {
   }
 
   async restoreSavedSessions() {
-    // No startup, marca todas as sessões como desconectadas
-    // Não há Chromium rodando, então sessões precisam ser recriadas com QR
-    await this.markAllSessionsDisconnected();
+    // ═══════════════════════════════════════════════════════════════════
+    // RESTAURAÇÃO REAL COM RemoteAuth:
+    // 1. Limpa sessões inválidas do banco
+    // 2. Identifica quais sessões têm RemoteAuth salvo no PostgreSQL
+    // 3. Restaura até MAX_CONCURRENT_SESSIONS sessões automaticamente
+    // 4. Sessões excedentes ficam como 'disconnected' mas COM RemoteAuth
+    //    → quando ProspectFlow tentar enviar, autoReconnectForSend restaura
+    // ═══════════════════════════════════════════════════════════════════
+    try {
+      const dbSessions = await this.db.getAllSessionsFromDB();
+      console.log(`📊 Total de sessões no banco: ${dbSessions.length}`);
+
+      // Limpa sessões inválidas
+      const validSessions = [];
+      for (const session of dbSessions) {
+        const sid = session.id;
+        if (!sid || !sid.startsWith('user_') || sid === 'T' || sid === 'test' || sid === 'default') {
+          console.log(`🗑️ Removendo sessão inválida: ${sid}`);
+          await this.db.deleteSession(sid);
+          continue;
+        }
+        validSessions.push(session);
+      }
+
+      // Identifica sessões com RemoteAuth salvo
+      const sessionsWithAuth = [];
+      for (const session of validSessions) {
+        try {
+          const authId = `RemoteAuth-${session.id}`;
+          const hasAuth = await this.pgStore.sessionExists({ session: authId });
+          if (hasAuth) {
+            sessionsWithAuth.push(session);
+          } else {
+            // Sem RemoteAuth — marca como disconnected, vai precisar de QR
+            await this.db.updateSessionStatus(session.id, 'disconnected');
+          }
+        } catch (e) {
+          await this.db.updateSessionStatus(session.id, 'disconnected');
+        }
+      }
+
+      console.log(`🔑 ${sessionsWithAuth.length} sessões com RemoteAuth encontradas`);
+
+      if (sessionsWithAuth.length === 0) {
+        console.log(`💡 Nenhuma sessão para restaurar. Usuários precisarão escanear QR.`);
+        return;
+      }
+
+      // Restaura até MAX_CONCURRENT_SESSIONS sessões, sequencialmente
+      // (sequencial para não estourar CPU/RAM com N Chromiums iniciando ao mesmo tempo)
+      const toRestore = sessionsWithAuth.slice(0, MAX_CONCURRENT_SESSIONS);
+      const remaining = sessionsWithAuth.slice(MAX_CONCURRENT_SESSIONS);
+
+      // Sessões que excedem o limite ficam disconnected (auto-reconexão sob demanda)
+      for (const s of remaining) {
+        await this.db.updateSessionStatus(s.id, 'disconnected');
+        console.log(`⏸️ ${s.id}: RemoteAuth salvo mas slot cheio — reconexão sob demanda`);
+      }
+
+      console.log(`🚀 Restaurando ${toRestore.length} sessões sequencialmente...`);
+
+      let restored = 0;
+      for (const session of toRestore) {
+        try {
+          console.log(`🔄 [${restored + 1}/${toRestore.length}] Restaurando ${session.id}...`);
+          await this.db.updateSessionStatus(session.id, 'initializing');
+
+          const sessionData = {
+            id: session.id,
+            userId: session.user_id,
+            qrCode: null,
+            status: 'initializing',
+            client: null,
+            info: null,
+            lastSeen: Date.now(),
+            createdAt: Date.now()
+          };
+
+          const client = await this.createWhatsAppClient(session.id);
+          this.setupClientEvents(client, sessionData);
+          sessionData.client = client;
+          this.sessions.set(session.id, sessionData);
+          this.sessionLastActivity.set(session.id, Date.now());
+
+          // Inicializa com timeout — NÃO bloqueia as próximas sessões
+          this.initializeClientInBackground(client, sessionData);
+          restored++;
+
+          // Intervalo entre restaurações para não sobrecarregar CPU
+          if (restored < toRestore.length) {
+            await new Promise(r => setTimeout(r, 3000));
+          }
+        } catch (error) {
+          console.error(`❌ Erro ao restaurar ${session.id}: ${error.message}`);
+          await this.db.updateSessionStatus(session.id, 'disconnected');
+        }
+      }
+
+      console.log(`✅ ${restored} sessões enviadas para restauração via RemoteAuth`);
+      console.log(`💡 Sessões aparecerão como "connected" em 30-120s sem precisar de QR`);
+    } catch (error) {
+      console.error('❌ Erro ao restaurar sessões:', error.message);
+      // Fallback: marca tudo como desconectado
+      await this.markAllSessionsDisconnected();
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -220,6 +323,9 @@ class SessionManager {
   async createSession(sessionId, userId) {
     console.log(`🆕 Criando nova sessão: ${sessionId}`);
 
+    // CANCELA qualquer reconnect pendente para esta sessão (evita race condition)
+    this.cancelReconnect(sessionId);
+
     // Se a sessão já existe na memória E tem cliente ativo, retorna ela
     if (this.sessions.has(sessionId)) {
       const existing = this.sessions.get(sessionId);
@@ -232,20 +338,21 @@ class SessionManager {
       await this.cleanupSession(sessionId);
     }
 
-    // Se existe no banco mas não na memória, DELETE o registro antigo
+    // Se existe no banco, ATUALIZA o status (NÃO deleta — preserva contatos/mensagens/auto_replies)
     const existingDbSession = await this.db.getSession(sessionId);
     if (existingDbSession) {
-      console.log(`🔄 Sessão ${sessionId} existe no banco com status '${existingDbSession.status}', recriando...`);
-      await this.db.deleteSession(sessionId);
+      console.log(`🔄 Sessão ${sessionId} existe no banco com status '${existingDbSession.status}', reutilizando registro...`);
+      await this.db.updateSessionStatus(sessionId, 'initializing');
     }
 
     // RemoteAuth: NÃO deleta dados de auth — permite reconexão sem QR code
     // Dados só são deletados em: deleteSession (explícito) ou auth_failure
+    let hasRemoteAuth = false;
     if (this.pgStore) {
       try {
         const authSessionId = `RemoteAuth-${sessionId}`;
-        const hasAuth = await this.pgStore.sessionExists({ session: authSessionId });
-        if (hasAuth) {
+        hasRemoteAuth = await this.pgStore.sessionExists({ session: authSessionId });
+        if (hasRemoteAuth) {
           console.log(`🔑 [${sessionId}] RemoteAuth encontrado no PostgreSQL — reconexão sem QR!`);
         } else {
           console.log(`📱 [${sessionId}] Sem RemoteAuth — QR code será necessário`);
@@ -273,8 +380,11 @@ class SessionManager {
       }
     }
 
-    console.log(`💾 Criando sessão ${sessionId} no banco de dados...`);
-    await this.db.createSession(sessionId, userId);
+    // Cria registro no banco apenas se não existia
+    if (!existingDbSession) {
+      console.log(`💾 Criando sessão ${sessionId} no banco de dados...`);
+      await this.db.createSession(sessionId, userId);
+    }
 
     const sessionData = {
       id: sessionId,
@@ -849,6 +959,15 @@ class SessionManager {
     });
   }
 
+  // Cancela qualquer reconnect pendente para uma sessão
+  cancelReconnect(sessionId) {
+    if (this.reconnectAttempts.has(sessionId)) {
+      console.log(`🚫 [${sessionId}] Cancelando reconnect pendente (createSession chamado)`);
+      this.reconnectCancelled.add(sessionId);
+      this.reconnectAttempts.delete(sessionId);
+    }
+  }
+
   async attemptReconnect(sessionData) {
     // Redireciona para o novo método robusto
     await this.attemptFullReconnect(sessionData);
@@ -883,6 +1002,21 @@ class SessionManager {
     console.log(`🔄 [${sessionId}] Reconexão completa ${attempts + 1}/${this.maxReconnectAttempts} em ${delay / 1000}s...`);
 
     setTimeout(async () => {
+      // VERIFICA SE O RECONNECT FOI CANCELADO (por createSession manual)
+      if (this.reconnectCancelled.has(sessionId)) {
+        console.log(`🚫 [${sessionId}] Reconnect cancelado — createSession já está tratando`);
+        this.reconnectCancelled.delete(sessionId);
+        return;
+      }
+
+      // Verifica se a sessão atual na memória é a MESMA que estamos tentando reconectar
+      // Se createSession criou uma nova sessão, o objeto sessionData não é mais o atual
+      const currentSession = this.sessions.get(sessionId);
+      if (currentSession && currentSession !== sessionData && currentSession.status !== 'disconnected') {
+        console.log(`🚫 [${sessionId}] Sessão já foi recriada (status: ${currentSession.status}), abortando reconnect antigo`);
+        return;
+      }
+
       try {
         // 1. Destrói o cliente antigo completamente
         if (sessionData.client) {
@@ -918,8 +1052,10 @@ class SessionManager {
       } catch (error) {
         console.error(`❌ [${sessionId}] Falha na reconexão completa:`, error.message);
         this.logRecentError(sessionId, error);
-        // Tenta novamente
-        await this.attemptFullReconnect(sessionData);
+        // Tenta novamente (se não foi cancelado)
+        if (!this.reconnectCancelled.has(sessionId)) {
+          await this.attemptFullReconnect(sessionData);
+        }
       }
     }, delay);
   }
