@@ -1401,86 +1401,14 @@ class SessionManager {
     const client = session.client;
 
     // ═══════════════════════════════════════════════════════════════════
-    // VERIFICAÇÃO REAL: Checa se o WhatsApp Web está REALMENTE conectado
-    // O status "authenticated" NÃO garante que mensagens serão entregues.
-    // Precisamos que client.getState() retorne "CONNECTED".
+    // VERIFICAÇÃO LEVE: Confia no status em memória.
+    // NÃO chama getState() a cada mensagem — isso sobrecarrega o Chromium
+    // durante disparos em lote e causa timeouts que derrubam a sessão.
+    // getState() só é chamado pelo zombie checker a cada 15 minutos.
     // ═══════════════════════════════════════════════════════════════════
-    try {
-      const state = await Promise.race([
-        client.getState(),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('getState_timeout')), 10000))
-      ]);
-      console.log(`📊 [${sessionId}] Estado real do WhatsApp: ${state}`);
-
-      if (state !== 'CONNECTED') {
-        // Se não está CONNECTED, espera até 15s (máximo — preserva timeout para envio)
-        console.log(`⏳ [${sessionId}] WhatsApp não está CONNECTED (estado: ${state}). Aguardando...`);
-        let waited = 0;
-        const waitInterval = 3000;
-        const maxWait = 15000;
-        while (waited < maxWait) {
-          await new Promise(resolve => setTimeout(resolve, waitInterval));
-          waited += waitInterval;
-          try {
-            const newState = await Promise.race([
-              client.getState(),
-              new Promise((_, rej) => setTimeout(() => rej(new Error('getState_timeout')), 8000))
-            ]);
-            console.log(`📊 [${sessionId}] Estado após ${waited / 1000}s: ${newState}`);
-            if (newState === 'CONNECTED') {
-              session.status = 'connected';
-              break;
-            }
-          } catch (e) {
-            if (!this.isIgnorableWhatsAppError(e)) {
-              console.error(`❌ [${sessionId}] Erro ao verificar estado: ${e.message}`);
-              break;
-            }
-          }
-        }
-
-        // Verifica uma última vez
-        const finalState = await Promise.race([
-          client.getState(),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('getState_timeout')), 8000))
-        ]).catch(() => null);
-
-        if (finalState !== 'CONNECTED') {
-          console.error(`❌ [${sessionId}] WhatsApp NÃO está CONNECTED após espera. Estado: ${finalState}`);
-          throw new Error(`WhatsApp não está pronto para enviar. Estado: ${finalState}. Reconecte a sessão.`);
-        }
-        session.status = 'connected';
-      }
-    } catch (stateError) {
-      if (this.isIgnorableWhatsAppError(stateError)) {
-        console.warn(`⚠️ [${sessionId}] Erro ignorável ao verificar estado, prosseguindo...`);
-      } else if (stateError.message.includes('não está pronto') || stateError.message.includes('não está CONNECTED')) {
-        throw stateError;
-      } else {
-        console.error(`❌ [${sessionId}] Não foi possível verificar estado do WhatsApp: ${stateError.message}`);
-        this.logRecentError(sessionId, stateError);
-
-        // Se getState deu timeout, o Chromium provavelmente morreu.
-        // Tenta reconectar automaticamente em background e avisa o frontend.
-        if (stateError.message.includes('getState_timeout') || stateError.message.includes('timeout')) {
-          console.log(`🔄 [${sessionId}] Chromium morto detectado no envio. Iniciando reconexão automática...`);
-          session.status = 'disconnected';
-          await this.db.updateSessionStatus(sessionId, 'disconnected');
-
-          // Emite evento para frontend saber que precisa reconectar
-          this.io.to(`user_${session.userId}`).emit('session_disconnected', {
-            sessionId: sessionId,
-            reason: 'CHROMIUM_DEAD'
-          });
-
-          // Tenta reconectar em background
-          this.attemptFullReconnect(session);
-
-          throw new Error('Sessão WhatsApp perdeu conexão. Reconexão automática em andamento. Aguarde 1 minuto e tente novamente.');
-        }
-
-        throw new Error('Sessão WhatsApp instável. Reconecte a sessão.');
-      }
+    if (session.status !== 'connected' && session.status !== 'authenticated') {
+      console.error(`❌ [${sessionId}] Status em memória: ${session.status} — não pode enviar`);
+      throw new Error(`Sessão não está conectada. Status: ${session.status}. Reconecte o WhatsApp.`);
     }
 
     const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
@@ -1522,7 +1450,9 @@ class SessionManager {
       this.logRecentError(sessionId, error);
       console.error(`❌ [${sessionId}] Erro envio para ${normalizedPhone}:`, error.message);
 
-      // Se é um erro fatal do Chromium, marca como desconectado e avisa frontend
+      // Se é um erro fatal do Chromium, marca como desconectado
+      // MAS não chama attemptFullReconnect aqui — o próximo envio via
+      // autoReconnectForSend cuida disso de forma mais segura
       if (this.isFatalSessionError(error)) {
         console.error(`💀 [${sessionId}] Erro FATAL de Chromium: ${error.message}`);
         session.status = 'disconnected';
@@ -1533,10 +1463,7 @@ class SessionManager {
           reason: 'CHROMIUM_CRASH'
         });
 
-        // Tenta reconectar em background (não bloqueia a resposta HTTP)
-        this.attemptFullReconnect(session);
-
-        throw new Error('Sessão WhatsApp caiu. Reconectando automaticamente, tente novamente em 1 minuto.');
+        throw new Error('Sessão WhatsApp caiu. Tente novamente em 1 minuto (reconexão automática).');
       }
 
       // NÃO faz retry — lança o erro direto para o chamador

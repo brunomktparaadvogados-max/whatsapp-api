@@ -1396,11 +1396,8 @@ setInterval(async () => {
     sessionManager.inMemoryMessages.clear();
     console.log('🧹 Cache de mensagens em memória limpo');
 
-    // 4. Mata chromium renderer órfãos para liberar RAM extra
-    try {
-      const { execSync } = require('child_process');
-      execSync('pkill -f "chromium.*--type=renderer" 2>/dev/null || true');
-    } catch (e) { /* ignora */ }
+    // 4. NÃO mata renderers — são processos filhos de sessões ativas
+    // pkill mataria Chromiums de sessões conectadas, derrubando todas
 
   } else if (rssMB >= MEMORY_WARN_MB) {
     console.warn(`⚠️ Memória elevada: ${rssMB}MB RSS`);
