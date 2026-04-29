@@ -152,10 +152,12 @@ class SessionManager {
         return;
       }
 
-      // Restaura até MAX_CONCURRENT_SESSIONS sessões, sequencialmente
+      // Restaura até (MAX_CONCURRENT_SESSIONS - 2) sessões, sequencialmente
+      // RESERVA 2 slots para novos usuários que precisam escanear QR code
       // (sequencial para não estourar CPU/RAM com N Chromiums iniciando ao mesmo tempo)
-      const toRestore = sessionsWithAuth.slice(0, MAX_CONCURRENT_SESSIONS);
-      const remaining = sessionsWithAuth.slice(MAX_CONCURRENT_SESSIONS);
+      const restoreLimit = Math.max(MAX_CONCURRENT_SESSIONS - 2, 1);
+      const toRestore = sessionsWithAuth.slice(0, restoreLimit);
+      const remaining = sessionsWithAuth.slice(restoreLimit);
 
       // Sessões que excedem o limite ficam disconnected (auto-reconexão sob demanda)
       for (const s of remaining) {
@@ -392,14 +394,28 @@ class SessionManager {
     if (activeCount >= MAX_CONCURRENT_SESSIONS) {
       console.warn(`⚠️ Limite de ${MAX_CONCURRENT_SESSIONS} sessões Chromium atingido (${activeCount} ativas)`);
 
-      // 1. Tenta desconectar a sessão mais ociosa para liberar slot
+      // 1. Tenta desconectar a sessão connected mais ociosa para liberar slot
       const evicted = await this.evictOldestIdleSession(sessionId);
       if (!evicted) {
-        // 2. Tenta limpar sessões mortas
+        // 2. Tenta limpar sessões mortas (failed, disconnected, etc)
         await this.forceCleanupDeadSessions();
       }
 
-      const newCount = this.getActiveChromiumCount();
+      // 3. Se ainda cheio, força cleanup de sessões QR que ninguém escaneou
+      let newCount = this.getActiveChromiumCount();
+      if (newCount >= MAX_CONCURRENT_SESSIONS) {
+        for (const [sid, sess] of this.sessions.entries()) {
+          if (sid === sessionId) continue;
+          if (sess.status === 'qr_code' || (sess.status === 'initializing' && sess.client)) {
+            console.log(`🔄 Forçando cleanup de sessão ${sid} (status: ${sess.status}) para liberar slot`);
+            await this.cleanupSession(sid);
+            await this.db.updateSessionStatus(sid, 'disconnected');
+            break;
+          }
+        }
+      }
+
+      newCount = this.getActiveChromiumCount();
       if (newCount >= MAX_CONCURRENT_SESSIONS) {
         throw new Error(`Limite de sessões simultâneas atingido (${MAX_CONCURRENT_SESSIONS}). Tente novamente em alguns minutos.`);
       }

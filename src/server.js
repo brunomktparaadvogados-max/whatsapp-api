@@ -518,6 +518,7 @@ app.get('/api/sessions', authMiddleware, async (req, res) => {
       return {
         ...session,
         status: liveSession ? liveSession.status : session.status,
+        qrCode: liveSession ? liveSession.qrCode : null,
         info: liveSession ? liveSession.info : null
       };
     });
