@@ -478,16 +478,11 @@ class SessionManager {
     } catch (error) {
       console.error(`❌ Erro ao inicializar cliente ${sessionData.id}:`, error.message);
 
-      // Se timeout com RemoteAuth, auth data pode estar corrompido
-      if (error.message.includes('Timeout') && this.pgStore) {
-        try {
-          const authSessionId = `RemoteAuth-${sessionData.id}`;
-          const hasAuth = await this.pgStore.sessionExists({ session: authSessionId });
-          if (hasAuth) {
-            await this.pgStore.delete({ session: authSessionId });
-            console.log(`🗑️ [${sessionData.id}] RemoteAuth deletado após timeout — próximo login pedirá QR`);
-          }
-        } catch (e) { /* ignora */ }
+      // Timeout NÃO deleta RemoteAuth — é condição temporária (CPU sobrecarregada),
+      // NÃO corrupção de dados. Deletar forçaria todos a escanear QR de novo.
+      // RemoteAuth só é deletado em: auth_failure (credenciais inválidas) ou deleteSession (explícito).
+      if (error.message.includes('Timeout')) {
+        console.warn(`⚠️ [${sessionData.id}] Timeout na inicialização — RemoteAuth PRESERVADO para próxima tentativa`);
       }
 
       // Limpa recursos sem deletar do banco (permite tentar de novo)
