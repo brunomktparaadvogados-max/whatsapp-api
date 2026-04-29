@@ -252,7 +252,7 @@ class DatabaseManager {
 
   async saveMessage(messageData) {
     try {
-      return await this.run(`
+      await this.run(`
         INSERT INTO messages (id, session_id, contact_phone, message_type, body, media_url, media_mimetype, from_me, timestamp, status)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT (id) DO UPDATE SET
@@ -263,6 +263,24 @@ class DatabaseManager {
           messageData.body, messageData.mediaUrl, messageData.mediaMimetype,
           messageData.fromMe, messageData.timestamp, messageData.status]
       );
+
+      // Limpa mensagens antigas deste contato — mantém apenas as últimas 3 recebidas
+      // Chat CRM funciona em tempo real, não precisa de histórico completo
+      try {
+        await this.run(`
+          DELETE FROM messages
+          WHERE session_id = $1 AND contact_phone = $2
+            AND id NOT IN (
+              SELECT id FROM messages
+              WHERE session_id = $1 AND contact_phone = $2
+              ORDER BY timestamp DESC
+              LIMIT 3
+            )
+        `, [messageData.sessionId, messageData.contactPhone]);
+      } catch (cleanupErr) {
+        // Falha na limpeza não deve impedir o fluxo
+        console.error('⚠️ Erro ao limpar mensagens antigas:', cleanupErr.message);
+      }
     } catch (error) {
       console.error('❌ Erro ao salvar mensagem:', error.message);
       throw error;
