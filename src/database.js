@@ -15,11 +15,11 @@ class DatabaseManager {
       ssl: {
         rejectUnauthorized: false
       },
-      max: 10,                        // máximo de conexões no pool
-      connectionTimeoutMillis: 10000,  // 10s para obter conexão do pool
-      idleTimeoutMillis: 30000,        // fecha conexão idle após 30s
-      statement_timeout: 15000,        // cancela query após 15s
-      query_timeout: 15000             // timeout de query
+      max: 5,                          // máximo de conexões no pool (reduzido para não esgotar Supabase Free/Nano)
+      connectionTimeoutMillis: 30000,  // 30s para obter conexão do pool (mais tolerante)
+      idleTimeoutMillis: 60000,        // fecha conexão idle após 60s
+      statement_timeout: 30000,        // cancela query após 30s (blobs RemoteAuth são grandes)
+      query_timeout: 30000             // timeout de query
     });
 
     this.initTables();
@@ -298,25 +298,16 @@ class DatabaseManager {
   }
 
   async upsertContact(sessionId, phoneNumber, name = null, profilePic = null) {
-    const existing = await this.get(
-      'SELECT id FROM contacts WHERE session_id = $1 AND phone_number = $2',
-      [sessionId, phoneNumber]
-    );
-
-    if (existing) {
-      return await this.run(`
-        UPDATE contacts SET
-          name = COALESCE($1, name),
-          profile_pic = COALESCE($2, profile_pic),
-          last_message_at = CURRENT_TIMESTAMP
-        WHERE session_id = $3 AND phone_number = $4
-      `, [name, profilePic, sessionId, phoneNumber]);
-    } else {
-      return await this.run(`
-        INSERT INTO contacts (session_id, phone_number, name, profile_pic, last_message_at)
-        VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
-      `, [sessionId, phoneNumber, name, profilePic]);
-    }
+    // INSERT ON CONFLICT — atômico, sem race condition, 1 query em vez de 2
+    return await this.run(`
+      INSERT INTO contacts (session_id, phone_number, name, profile_pic, last_message_at)
+      VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+      ON CONFLICT (session_id, phone_number)
+      DO UPDATE SET
+        name = COALESCE(EXCLUDED.name, contacts.name),
+        profile_pic = COALESCE(EXCLUDED.profile_pic, contacts.profile_pic),
+        last_message_at = CURRENT_TIMESTAMP
+    `, [sessionId, phoneNumber, name, profilePic]);
   }
 
   async createAutoReply(sessionId, triggerType, triggerValue, responseMessage) {

@@ -595,7 +595,7 @@ class SessionManager {
         ? new RemoteAuth({
             clientId: sessionId,
             store: this.pgStore,
-            backupSyncIntervalMs: 2 * 60 * 1000 // Salva sessão no PostgreSQL a cada 2 minutos
+            backupSyncIntervalMs: 10 * 60 * 1000 // Salva sessão no PostgreSQL a cada 10 minutos (reduz carga no Supabase)
           })
         : new LocalAuth({
             clientId: sessionId,

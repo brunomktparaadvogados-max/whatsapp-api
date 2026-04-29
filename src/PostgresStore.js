@@ -30,6 +30,8 @@ class PostgresStore {
     if (!pool) throw new Error('A valid pg Pool instance is required for PostgresStore.');
     this.pool = pool;
     this._initialized = false;
+    this._lastSaveTime = new Map();  // Throttle: evita saves muito frequentes
+    this._minSaveInterval = 5 * 60 * 1000; // Mínimo 5 minutos entre saves da mesma sessão
   }
 
   /**
@@ -101,6 +103,14 @@ class PostgresStore {
     const sessionId = this._normalizeSessionId(options.session);
 
     try {
+      // THROTTLE: Evita saves muito frequentes da mesma sessão
+      const lastSave = this._lastSaveTime.get(sessionId);
+      const now = Date.now();
+      if (lastSave && (now - lastSave) < this._minSaveInterval) {
+        // Silenciosamente pula — o próximo ciclo salvará
+        return;
+      }
+
       if (!fs.existsSync(zipPath)) {
         console.error(`❌ PostgresStore.save: zip não encontrado em "${zipPath}"`);
         return; // NÃO lançar — setInterval sem try/catch
@@ -122,6 +132,7 @@ class PostgresStore {
         [sessionId, data]
       );
 
+      this._lastSaveTime.set(sessionId, now);
       console.log(`💾 PostgresStore: sessão "${sessionId}" salva (${sizeMB}MB)`);
     } catch (err) {
       // CRÍTICO: NÃO relançar! RemoteAuth chama save() em setInterval sem try/catch.
