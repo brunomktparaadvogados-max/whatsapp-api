@@ -1846,19 +1846,32 @@ server.listen(PORT, HOST, async () => {
 
 process.on('SIGTERM', async () => {
   console.log('⚠️ SIGTERM recebido. Encerrando gracefully...');
+  console.log('💾 PRESERVANDO RemoteAuth no PostgreSQL — sessões reconectarão no próximo start');
 
+  // IMPORTANTE: NÃO chamar deleteSession() aqui!
+  // deleteSession() apaga o RemoteAuth do PostgreSQL, forçando todos a escanear QR novamente.
+  // Devemos apenas destruir os processos Chromium e deixar os dados de auth intactos.
   const sessions = sessionManager.getAllSessions();
   for (const session of sessions) {
     try {
-      console.log(`🔌 Desconectando sessão: ${session.id}`);
-      await sessionManager.deleteSession(session.id);
+      const liveSession = sessionManager.getSession(session.id);
+      if (liveSession && liveSession.client) {
+        console.log(`🔌 Destruindo Chromium: ${session.id} (auth preservado)`);
+        try {
+          await liveSession.client.destroy();
+        } catch (e) {
+          // Ignora erros de destroy — o processo vai morrer de qualquer forma
+        }
+      }
+      // Marca como disconnected no banco (NÃO deleta)
+      await db.updateSessionStatus(session.id, 'disconnected');
     } catch (error) {
-      console.error(`❌ Erro ao desconectar ${session.id}:`, error.message);
+      console.error(`❌ Erro ao encerrar ${session.id}:`, error.message);
     }
   }
 
   server.close(() => {
-    console.log('✅ Servidor encerrado');
+    console.log('✅ Servidor encerrado — RemoteAuth preservado para todas as sessões');
     process.exit(0);
   });
 });
