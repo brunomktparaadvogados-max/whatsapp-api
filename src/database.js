@@ -15,7 +15,7 @@ class DatabaseManager {
       ssl: {
         rejectUnauthorized: false
       },
-      max: 5,                          // máximo de conexões no pool (reduzido para não esgotar Supabase Free/Nano)
+      max: 8,                          // máximo de conexões no pool (Supabase Pro suporta mais)
       connectionTimeoutMillis: 30000,  // 30s para obter conexão do pool (mais tolerante)
       idleTimeoutMillis: 60000,        // fecha conexão idle após 60s
       statement_timeout: 30000,        // cancela query após 30s (blobs RemoteAuth são grandes)

@@ -652,7 +652,8 @@ class SessionManager {
       sessionData.qrCode = await QRCode.toDataURL(qr);
       sessionData.status = 'qr_code';
       sessionData.lastSeen = Date.now();
-      this.sessionLastActivity.set(sessionData.id, Date.now());
+      // NÃO atualizar sessionLastActivity aqui — cada QR gerado renovava o timer
+      // e o timeout de 5 minutos nunca disparava, causando loop infinito de QR
 
       await this.db.updateSessionStatus(sessionData.id, 'qr_code');
 
