@@ -22,7 +22,9 @@ class DatabaseManager {
       query_timeout: 30000             // timeout de query
     });
 
-    this.initTables();
+    this._consecutiveErrors = 0;
+    this._isRecoveringPool = false;
+    this._initWithRetry();
     this.runInitialCleanup();
   }
 
@@ -38,22 +40,93 @@ class DatabaseManager {
     }, 5000);
   }
 
-  async query(sql, params = []) {
-    let client;
-    let hasError = false;
-    try {
-      client = await this.pool.connect();
-      const result = await client.query(sql, params);
-      return result;
-    } catch (err) {
-      hasError = true;
-      // Se o erro é de timeout ou conexão, loga para debug
-      if (err.message.includes('timeout') || err.message.includes('Connection terminated')) {
-        console.error(`⚠️ DB query timeout/connection error: ${err.message}`);
+  async query(sql, params = [], retries = 3) {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      let client;
+      let hasError = false;
+      try {
+        client = await this.pool.connect();
+        const result = await client.query(sql, params);
+        // Reset error counter on success
+        this._consecutiveErrors = 0;
+        return result;
+      } catch (err) {
+        hasError = true;
+        const isTransient = err.message.includes('timeout') ||
+                           err.message.includes('Connection terminated') ||
+                           err.message.includes('connection unexpectedly') ||
+                           err.message.includes('ECONNREFUSED') ||
+                           err.message.includes('ECONNRESET') ||
+                           err.code === '57P01' || // admin_shutdown
+                           err.code === '57P03';   // cannot_connect_now
+
+        if (isTransient && attempt < retries) {
+          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000); // 1s, 2s, 4s... max 10s
+          console.warn(`⚠️ DB erro transiente (tentativa ${attempt}/${retries}): ${err.message} — retry em ${delay}ms`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+
+        // Track consecutive errors for pool recovery
+        this._consecutiveErrors = (this._consecutiveErrors || 0) + 1;
+        if (this._consecutiveErrors >= 10 && !this._isRecoveringPool) {
+          this._recoverPool();
+        }
+
+        if (isTransient) {
+          console.error(`⚠️ DB query falhou após ${retries} tentativas: ${err.message}`);
+        }
+        throw err;
+      } finally {
+        if (client) client.release(hasError);
       }
-      throw err;
+    }
+  }
+
+  async _recoverPool() {
+    if (this._isRecoveringPool) return;
+    this._isRecoveringPool = true;
+    console.warn('🔄 Pool de conexões com muitos erros consecutivos — recriando pool...');
+
+    try {
+      const oldPool = this.pool;
+
+      // Create new pool
+      const databaseUrl = process.env.DATABASE_URL || process.env.SUPABASE_URL;
+      this.pool = new Pool({
+        connectionString: databaseUrl,
+        ssl: { rejectUnauthorized: false },
+        max: 8,
+        connectionTimeoutMillis: 30000,
+        idleTimeoutMillis: 60000,
+        statement_timeout: 30000,
+        query_timeout: 30000
+      });
+
+      // Drain old pool gracefully
+      try { await oldPool.end(); } catch (e) { /* ignore */ }
+
+      this._consecutiveErrors = 0;
+      console.log('✅ Pool de conexões recriado com sucesso');
+    } catch (err) {
+      console.error('❌ Falha ao recriar pool:', err.message);
     } finally {
-      if (client) client.release(hasError); // true = destroy connection ONLY on error
+      this._isRecoveringPool = false;
+    }
+  }
+
+  async _initWithRetry(attempt = 1) {
+    try {
+      await this.initTables();
+    } catch (err) {
+      const maxAttempts = 5;
+      if (attempt < maxAttempts) {
+        const delay = Math.min(10000 * attempt, 60000);
+        console.warn(`⚠️ initTables falhou (tentativa ${attempt}/${maxAttempts}): ${err.message} — retry em ${delay/1000}s`);
+        setTimeout(() => this._initWithRetry(attempt + 1), delay);
+      } else {
+        console.error(`❌ initTables falhou após ${maxAttempts} tentativas. API funcionará mas tabelas podem não existir.`);
+      }
     }
   }
 
