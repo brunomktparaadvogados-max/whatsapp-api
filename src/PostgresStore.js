@@ -31,7 +31,8 @@ class PostgresStore {
     this.pool = pool;
     this._initialized = false;
     this._lastSaveTime = new Map();  // Throttle: evita saves muito frequentes
-    this._minSaveInterval = 5 * 60 * 1000; // Mínimo 5 minutos entre saves da mesma sessão
+    this._minSaveInterval = 30 * 60 * 1000; // Mínimo 30 minutos entre saves (reduz carga no Supabase durante disparos)
+    this._maxSaveBytes = 15 * 1024 * 1024;  // Máximo 15MB por sessão — blobs maiores são cache acumulado
   }
 
   /**
@@ -121,6 +122,16 @@ class PostgresStore {
 
       if (data.length === 0) {
         console.error(`❌ PostgresStore.save: zip vazio para "${sessionId}"`);
+        return;
+      }
+
+      // LIMITE DE TAMANHO: Blobs > 15MB são cache acumulado que sobrecarrega o Supabase.
+      // O banco Micro (1GB RAM) não suporta muitos blobs grandes — cada save de 78MB
+      // consome RAM do banco e bloqueia conexões. Sessões normais têm 2-5MB.
+      if (data.length > this._maxSaveBytes) {
+        const maxMB = (this._maxSaveBytes / 1024 / 1024).toFixed(0);
+        console.warn(`⚠️ PostgresStore.save: "${sessionId}" tem ${sizeMB}MB (máx ${maxMB}MB) — pulando save para proteger o banco`);
+        this._lastSaveTime.set(sessionId, now); // Evita retry imediato
         return;
       }
 
