@@ -24,6 +24,7 @@ class DatabaseManager {
 
     this._consecutiveErrors = 0;
     this._isRecoveringPool = false;
+    this._poolChangeListeners = [];  // Listeners notificados quando o pool é recriado
     this._initWithRetry();
     this.runInitialCleanup();
   }
@@ -83,6 +84,14 @@ class DatabaseManager {
     }
   }
 
+  /**
+   * Registra listener para ser notificado quando o pool é recriado.
+   * Usado pelo SessionManager para atualizar a referência do PostgresStore.
+   */
+  onPoolChange(listener) {
+    this._poolChangeListeners.push(listener);
+  }
+
   async _recoverPool() {
     if (this._isRecoveringPool) return;
     this._isRecoveringPool = true;
@@ -103,8 +112,21 @@ class DatabaseManager {
         query_timeout: 30000
       });
 
-      // Drain old pool gracefully
-      try { await oldPool.end(); } catch (e) { /* ignore */ }
+      // Notifica todos os listeners (PostgresStore, etc.) ANTES de encerrar o pool antigo
+      for (const listener of this._poolChangeListeners) {
+        try {
+          listener(this.pool);
+        } catch (e) {
+          console.error('⚠️ Erro ao notificar listener de pool change:', e.message);
+        }
+      }
+
+      // NÃO chamar oldPool.end() — o PostgresStore ou outros consumidores
+      // podem ter queries in-flight no pool antigo. Deixar as conexões
+      // expirarem pelo idleTimeoutMillis (60s) naturalmente.
+      // Chamar end() causa "Cannot use a pool after calling end on the pool"
+      // em qualquer consumidor que ainda referencie o pool antigo.
+      oldPool.removeAllListeners();  // Evita event leaks do pool antigo
 
       this._consecutiveErrors = 0;
       console.log('✅ Pool de conexões recriado com sucesso');

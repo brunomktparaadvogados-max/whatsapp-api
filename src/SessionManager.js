@@ -59,6 +59,14 @@ class SessionManager {
       console.log('✅ PostgresStore conectado — sessões WhatsApp persistidas no Supabase!');
       console.log('🔒 RemoteAuth ativo: QR code só precisa ser escaneado 1 vez');
 
+      // Registra listener para atualizar referência do pool no PostgresStore
+      // quando o DatabaseManager recriar o pool após erros consecutivos
+      this.db.onPoolChange((newPool) => {
+        console.log('🔄 Atualizando pool do PostgresStore após recuperação...');
+        this.pgStore.pool = newPool;
+        console.log('✅ PostgresStore agora usa o novo pool');
+      });
+
       // Limpa sessões antigas que podem ter sido salvas com path completo (bug anterior)
       try {
         const savedSessions = await this.pgStore.listSessions();
@@ -641,7 +649,8 @@ class SessionManager {
       disableAutoSeen: true,
       webVersionCache: {
         type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/nicedayzhu/wwebjs-chrome-data/master/stable/2.3000.json'
+        remotePath: 'https://raw.githubusercontent.com/nicedayzhu/wwebjs-chrome-data/master/stable/2.3000.json',
+        strict: false  // Não falha se o cache remoto estiver offline
       }
     };
 
