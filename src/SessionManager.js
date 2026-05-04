@@ -13,7 +13,8 @@ const path = require('path');
 // ═══════════════════════════════════════════════════════════════════
 // LIMITES DE MEMÓRIA — Sessões sob demanda para 20+ usuários
 // ═══════════════════════════════════════════════════════════════════
-const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 10; // 10 Chromiums (~2.5GB RAM — cabe em 8GB)
+const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 20; // 20 Chromiums (~1.6GB RAM com flags otimizados)
+const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 1800;                         // Recusa novas sessões se RSS > 1.8GB
 const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
 const IDLE_DISCONNECT_MS = parseInt(process.env.IDLE_DISCONNECT_MS) || 5 * 60 * 60 * 1000; // 5 horas idle → desconecta sessão
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;        // verifica a cada 2 minutos (economiza queries)
@@ -389,6 +390,19 @@ class SessionManager {
       }
     }
 
+    // Guard de memória: recusa novas sessões se RSS exceder limite
+    const memUsage = process.memoryUsage();
+    const rssMB = Math.round(memUsage.rss / 1024 / 1024);
+    if (rssMB > MAX_RSS_MB) {
+      console.error(`🚫 Memória RSS (${rssMB}MB) excede limite (${MAX_RSS_MB}MB) — forçando GC e limpeza`);
+      if (global.gc) global.gc();
+      await this.forceCleanupDeadSessions();
+      const newRss = Math.round(process.memoryUsage().rss / 1024 / 1024);
+      if (newRss > MAX_RSS_MB) {
+        throw new Error(`Servidor com memória crítica (${newRss}MB). Aguarde alguns minutos e tente novamente.`);
+      }
+    }
+
     // Verifica limite de Chromium simultâneos
     const activeCount = this.getActiveChromiumCount();
     if (activeCount >= MAX_CONCURRENT_SESSIONS) {
@@ -596,7 +610,17 @@ class SessionManager {
           '--disable-backgrounding-occluded-windows',
           '--disable-component-update',
           '--renderer-process-limit=1',            // 1 renderer por Chromium (economiza RAM)
-          '--js-flags=--max-old-space-size=256',
+          '--js-flags=--max-old-space-size=128',   // 128MB max JS heap (era 256, economiza ~50% RAM/sessão)
+          '--disable-canvas-aa',                    // Desativa antialiasing canvas (economiza RAM)
+          '--disable-2d-canvas-clip-aa',
+          '--disable-gl-drawing-for-tests',
+          '--autoplay-policy=user-gesture-required',
+          '--disable-domain-reliability',
+          '--aggressive-cache-discard',             // Descarta cache agressivamente
+          '--disable-cache',                        // Sem cache de disco (headless não precisa)
+          '--disable-application-cache',
+          '--media-cache-size=1',                   // Cache de mídia mínimo
+          '--disk-cache-size=1',                    // Cache de disco mínimo
           '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         ],
         executablePath: actualExecPath,
@@ -614,7 +638,11 @@ class SessionManager {
           }),
       markOnlineAvailable: false,
       syncFullHistory: false,
-      disableAutoSeen: true
+      disableAutoSeen: true,
+      webVersionCache: {
+        type: 'remote',
+        remotePath: 'https://raw.githubusercontent.com/nicedayzhu/wwebjs-chrome-data/master/stable/2.3000.json'
+      }
     };
 
     return new Client(clientConfig);
@@ -1819,6 +1847,19 @@ class SessionManager {
 
       if (toDisconnect.length > 0 || toDestroy.length > 0) {
         console.log(`✅ Auto-cleanup: ${toDisconnect.length} desconectada(s), ${toDestroy.length} removida(s). Chromium ativos: ${this.getActiveChromiumCount()}/${MAX_CONCURRENT_SESSIONS}`);
+      }
+
+      // Monitoramento de memória — GC preventivo e alerta
+      const mem = process.memoryUsage();
+      const rssMB = Math.round(mem.rss / 1024 / 1024);
+      const heapMB = Math.round(mem.heapUsed / 1024 / 1024);
+      if (rssMB > MAX_RSS_MB * 0.8) {
+        console.warn(`🟡 Memória — Heap: ${heapMB}MB | RSS: ${rssMB}MB (>${Math.round(MAX_RSS_MB * 0.8)}MB threshold)`);
+        if (global.gc) {
+          global.gc();
+          const afterGC = Math.round(process.memoryUsage().rss / 1024 / 1024);
+          console.log(`🔃 GC executado — Heap: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB | RSS: ${afterGC}MB`);
+        }
       }
     }, CLEANUP_INTERVAL_MS);
   }
