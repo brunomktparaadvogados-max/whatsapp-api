@@ -43,6 +43,8 @@ class SessionManager {
     this.reconnectingSet = new Set();       // Sessões em processo de auto-reconexão
     this.reconnectPromises = new Map();     // Promises de reconexão em andamento
     this.reconnectCancelled = new Set();   // Sessões que tiveram reconnect cancelado
+    this._contactCache = new Map();          // Cache de contatos: "session_phone" → timestamp (evita upsert repetido)
+    this._contactCacheTTL = 10 * 60 * 1000; // 10 min TTL — mesmo contato não faz upsert de novo por 10 min
 
     this.init();
   }
@@ -558,6 +560,39 @@ class SessionManager {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // CACHE DE CONTATOS — Reduz queries durante disparos em massa
+  // Mesmo contato não faz upsert repetido por _contactCacheTTL (10min)
+  // Reduz de ~2000 queries para ~200 durante disparo de 10 usuários
+  // ═══════════════════════════════════════════════════════════════
+  async cachedUpsertContact(sessionId, phone, name = null) {
+    const cacheKey = `${sessionId}_${phone}`;
+    const lastUpsert = this._contactCache.get(cacheKey);
+    const now = Date.now();
+
+    // Se já fez upsert recentemente, pula
+    if (lastUpsert && (now - lastUpsert) < this._contactCacheTTL) {
+      return; // Cache hit — economiza 1 query no banco
+    }
+
+    // Cache miss — faz upsert e atualiza cache
+    try {
+      await this.db.upsertContact(sessionId, phone, name);
+      this._contactCache.set(cacheKey, now);
+
+      // Limpa cache antigo periodicamente (evita memory leak)
+      if (this._contactCache.size > 5000) {
+        const cutoff = now - this._contactCacheTTL;
+        for (const [k, ts] of this._contactCache.entries()) {
+          if (ts < cutoff) this._contactCache.delete(k);
+        }
+      }
+    } catch (err) {
+      // Falha no upsert NÃO deve bloquear envio de mensagem
+      console.warn(`⚠️ upsertContact falhou para ${phone}: ${err.message}`);
+    }
+  }
+
   async forceCleanupDeadSessions() {
     const toClean = [];
     this.sessions.forEach((session, id) => {
@@ -906,7 +941,7 @@ class SessionManager {
         messages.shift();
       }
 
-      await this.db.upsertContact(sessionData.id, contactPhone, message._data.notifyName);
+      await this.cachedUpsertContact(sessionData.id, contactPhone, message._data.notifyName);
 
       this.io.to(`user_${sessionData.userId}`).emit('new_message', {
         sessionId: sessionData.id,
@@ -990,7 +1025,7 @@ class SessionManager {
         status: 'sent'
       };
 
-      await this.db.upsertContact(sessionData.id, contactPhone);
+      await this.cachedUpsertContact(sessionData.id, contactPhone);
 
       this.io.to(`user_${sessionData.userId}`).emit('message_sent', {
         sessionId: sessionData.id,
@@ -1547,7 +1582,7 @@ class SessionManager {
         status: 'sent'
       };
 
-      await this.db.upsertContact(sessionId, normalizedPhone);
+      await this.cachedUpsertContact(sessionId, normalizedPhone);
       session.lastSeen = Date.now();
       this.sessionLastActivity.set(sessionId, Date.now());
 

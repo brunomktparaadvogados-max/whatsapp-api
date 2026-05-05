@@ -141,13 +141,21 @@ class PostgresStore {
         return;
       }
 
-      await this.pool.query(
-        `INSERT INTO whatsapp_auth_sessions (session_id, data, updated_at)
-         VALUES ($1, $2, NOW())
-         ON CONFLICT (session_id)
-         DO UPDATE SET data = $2, updated_at = NOW()`,
-        [sessionId, data]
-      );
+      // SET statement_timeout maior para blobs (são queries pesadas de 2-10MB)
+      // O pool global tem 15s, mas blobs precisam de mais tempo
+      const client = await this.pool.connect();
+      try {
+        await client.query('SET statement_timeout = 45000'); // 45s para blobs
+        await client.query(
+          `INSERT INTO whatsapp_auth_sessions (session_id, data, updated_at)
+           VALUES ($1, $2, NOW())
+           ON CONFLICT (session_id)
+           DO UPDATE SET data = $2, updated_at = NOW()`,
+          [sessionId, data]
+        );
+      } finally {
+        client.release();
+      }
 
       this._lastSaveTime.set(sessionId, now);
       console.log(`💾 PostgresStore: sessão "${sessionId}" salva (${sizeMB}MB)`);
@@ -170,10 +178,18 @@ class PostgresStore {
     await this.init();
     const sessionId = this._normalizeSessionId(options.session);
     try {
-      const result = await this.pool.query(
-        'SELECT data FROM whatsapp_auth_sessions WHERE session_id = $1',
-        [sessionId]
-      );
+      // SET statement_timeout maior para extract de blobs (podem ser 5-10MB)
+      const client = await this.pool.connect();
+      let result;
+      try {
+        await client.query('SET statement_timeout = 45000'); // 45s para blobs
+        result = await client.query(
+          'SELECT data FROM whatsapp_auth_sessions WHERE session_id = $1',
+          [sessionId]
+        );
+      } finally {
+        client.release();
+      }
 
       if (result.rows.length > 0 && result.rows[0].data) {
         // Garantir que o diretório pai existe

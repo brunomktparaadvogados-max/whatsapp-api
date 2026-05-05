@@ -15,11 +15,11 @@ class DatabaseManager {
       ssl: {
         rejectUnauthorized: false
       },
-      max: 8,                          // máximo de conexões no pool (Supabase Pro suporta mais)
-      connectionTimeoutMillis: 30000,  // 30s para obter conexão do pool (mais tolerante)
-      idleTimeoutMillis: 60000,        // fecha conexão idle após 60s
-      statement_timeout: 30000,        // cancela query após 30s (blobs RemoteAuth são grandes)
-      query_timeout: 30000             // timeout de query
+      max: 5,                          // 5 conexões max — Supabase Micro (1GB RAM) se engasga com mais
+      connectionTimeoutMillis: 15000,  // 15s para obter conexão (falha rápido em vez de travar)
+      idleTimeoutMillis: 30000,        // fecha conexão idle após 30s (libera para outros)
+      statement_timeout: 15000,        // cancela query após 15s (queries normais <1s, blobs via PostgresStore)
+      query_timeout: 15000             // timeout de query
     });
 
     this._consecutiveErrors = 0;
@@ -105,11 +105,11 @@ class DatabaseManager {
       this.pool = new Pool({
         connectionString: databaseUrl,
         ssl: { rejectUnauthorized: false },
-        max: 8,
-        connectionTimeoutMillis: 30000,
-        idleTimeoutMillis: 60000,
-        statement_timeout: 30000,
-        query_timeout: 30000
+        max: 5,
+        connectionTimeoutMillis: 15000,
+        idleTimeoutMillis: 30000,
+        statement_timeout: 15000,
+        query_timeout: 15000
       });
 
       // Notifica todos os listeners (PostgresStore, etc.) ANTES de encerrar o pool antigo
