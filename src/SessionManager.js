@@ -1566,10 +1566,10 @@ class SessionManager {
     // retenta UMA vez. Isso evita que o ProspectFlow mostre erros
     // "amadores" ao usuário quando a sessão tem um glitch temporário.
     // ═══════════════════════════════════════════════════════════════════
-    const attemptSend = async (currentClient, isRetry = false) => {
+    const attemptSend = async (currentClient, isRetry = false, isLidRetry = false) => {
       try {
         const sentMessage = await this.sendMessageWithTimeout(currentClient, chatId, message, mediaUrl);
-        console.log(`✅ [${sessionId}] Mensagem enviada com sucesso${isRetry ? ' (após reconexão)' : ''}! ID: ${sentMessage?.id?._serialized || 'N/A'}`);
+        console.log(`✅ [${sessionId}] Mensagem enviada com sucesso${isRetry ? ' (após reconexão)' : isLidRetry ? ' (após retry LID)' : ''}! ID: ${sentMessage?.id?._serialized || 'N/A'}`);
 
         const messageData = {
           id: sentMessage.id._serialized,
@@ -1591,7 +1591,57 @@ class SessionManager {
         return messageData;
       } catch (error) {
         this.logRecentError(sessionId, error);
-        console.error(`❌ [${sessionId}] Erro envio para ${normalizedPhone}${isRetry ? ' (retry)' : ''}:`, error.message);
+        const errMsg = error.message || '';
+        console.error(`❌ [${sessionId}] Erro envio para ${normalizedPhone}${isRetry ? ' (retry)' : isLidRetry ? ' (retry LID)' : ''}:`, errMsg);
+
+        // ═══════════════════════════════════════════════════════════════
+        // TRATAMENTO "No LID for user" — Bug conhecido do whatsapp-web.js
+        // O WhatsApp Web às vezes não resolve o LID interno de um contato.
+        // É transiente na maioria dos casos. Solução:
+        // 1. Validar número com getNumberId() (confirma que existe no WhatsApp)
+        // 2. Aguardar 3s (cache interno do WA Web se atualiza)
+        // 3. Reenviar com o chatId validado
+        // Se getNumberId() retorna null → número não existe no WhatsApp
+        // ═══════════════════════════════════════════════════════════════
+        if (errMsg.includes('No LID for user') && !isLidRetry) {
+          console.warn(`🔄 [${sessionId}] "No LID for user" para ${normalizedPhone} — validando número e retentando...`);
+          try {
+            // Valida se o número realmente existe no WhatsApp
+            const numberId = await currentClient.getNumberId(normalizedPhone);
+            if (!numberId) {
+              console.warn(`📵 [${sessionId}] Número ${normalizedPhone} NÃO existe no WhatsApp (getNumberId=null)`);
+              throw new Error(`Número ${normalizedPhone} não está registrado no WhatsApp.`);
+            }
+            // Número válido — aguarda 3s para cache LID se resolver e retenta
+            console.log(`✅ [${sessionId}] Número ${normalizedPhone} confirmado no WhatsApp (${numberId._serialized}). Aguardando 3s e retentando...`);
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            // Usa o chatId retornado pelo getNumberId (pode ser diferente do original)
+            const validatedChatId = numberId._serialized;
+            const sentMessage = await this.sendMessageWithTimeout(currentClient, validatedChatId, message, mediaUrl);
+            console.log(`✅ [${sessionId}] Mensagem enviada com sucesso (após retry LID)! ID: ${sentMessage?.id?._serialized || 'N/A'}`);
+
+            const messageData = {
+              id: sentMessage.id._serialized,
+              sessionId: sessionId,
+              contactPhone: normalizedPhone,
+              messageType: sentMessage.type,
+              body: message,
+              mediaUrl: mediaUrl,
+              mediaMimetype: null,
+              fromMe: true,
+              timestamp: sentMessage.timestamp,
+              status: 'sent'
+            };
+
+            await this.cachedUpsertContact(sessionId, normalizedPhone);
+            session.lastSeen = Date.now();
+            this.sessionLastActivity.set(sessionId, Date.now());
+            return messageData;
+          } catch (lidRetryErr) {
+            console.error(`❌ [${sessionId}] Retry LID falhou para ${normalizedPhone}: ${lidRetryErr.message}`);
+            throw lidRetryErr;
+          }
+        }
 
         // Se é um erro fatal do Chromium E ainda não tentamos reconectar
         if (this.isFatalSessionError(error) && !isRetry) {
