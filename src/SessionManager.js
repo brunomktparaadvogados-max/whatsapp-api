@@ -1561,55 +1561,70 @@ class SessionManager {
     console.log(`📞 [${sessionId}] Enviando para: ${phoneNumber} → ${normalizedPhone}`);
 
     // ═══════════════════════════════════════════════════════════════════
-    // ENVIO ÚNICO — SEM RETRIES (evita mensagens duplicadas)
-    // Uma única tentativa com timeout de 60s. Se falhar, retorna erro
-    // imediatamente para o chamador (ProspectFlow) tratar.
+    // ENVIO RESILIENTE — 1 tentativa + auto-reconexão + retry se fatal
+    // Se o Chromium crash durante envio, reconecta automaticamente e
+    // retenta UMA vez. Isso evita que o ProspectFlow mostre erros
+    // "amadores" ao usuário quando a sessão tem um glitch temporário.
     // ═══════════════════════════════════════════════════════════════════
-    try {
-      const sentMessage = await this.sendMessageWithTimeout(client, chatId, message, mediaUrl);
-      console.log(`✅ [${sessionId}] Mensagem enviada com sucesso! ID: ${sentMessage?.id?._serialized || 'N/A'}`);
+    const attemptSend = async (currentClient, isRetry = false) => {
+      try {
+        const sentMessage = await this.sendMessageWithTimeout(currentClient, chatId, message, mediaUrl);
+        console.log(`✅ [${sessionId}] Mensagem enviada com sucesso${isRetry ? ' (após reconexão)' : ''}! ID: ${sentMessage?.id?._serialized || 'N/A'}`);
 
-      const messageData = {
-        id: sentMessage.id._serialized,
-        sessionId: sessionId,
-        contactPhone: normalizedPhone,
-        messageType: sentMessage.type,
-        body: message,
-        mediaUrl: mediaUrl,
-        mediaMimetype: null,
-        fromMe: true,
-        timestamp: sentMessage.timestamp,
-        status: 'sent'
-      };
-
-      await this.cachedUpsertContact(sessionId, normalizedPhone);
-      session.lastSeen = Date.now();
-      this.sessionLastActivity.set(sessionId, Date.now());
-
-      return messageData;
-    } catch (error) {
-      this.logRecentError(sessionId, error);
-      console.error(`❌ [${sessionId}] Erro envio para ${normalizedPhone}:`, error.message);
-
-      // Se é um erro fatal do Chromium, marca como desconectado
-      // MAS não chama attemptFullReconnect aqui — o próximo envio via
-      // autoReconnectForSend cuida disso de forma mais segura
-      if (this.isFatalSessionError(error)) {
-        console.error(`💀 [${sessionId}] Erro FATAL de Chromium: ${error.message}`);
-        session.status = 'disconnected';
-        await this.db.updateSessionStatus(sessionId, 'disconnected');
-
-        this.io.to(`user_${session.userId}`).emit('session_disconnected', {
+        const messageData = {
+          id: sentMessage.id._serialized,
           sessionId: sessionId,
-          reason: 'CHROMIUM_CRASH'
-        });
+          contactPhone: normalizedPhone,
+          messageType: sentMessage.type,
+          body: message,
+          mediaUrl: mediaUrl,
+          mediaMimetype: null,
+          fromMe: true,
+          timestamp: sentMessage.timestamp,
+          status: 'sent'
+        };
 
-        throw new Error('Sessão WhatsApp caiu. Tente novamente em 1 minuto (reconexão automática).');
+        await this.cachedUpsertContact(sessionId, normalizedPhone);
+        session.lastSeen = Date.now();
+        this.sessionLastActivity.set(sessionId, Date.now());
+
+        return messageData;
+      } catch (error) {
+        this.logRecentError(sessionId, error);
+        console.error(`❌ [${sessionId}] Erro envio para ${normalizedPhone}${isRetry ? ' (retry)' : ''}:`, error.message);
+
+        // Se é um erro fatal do Chromium E ainda não tentamos reconectar
+        if (this.isFatalSessionError(error) && !isRetry) {
+          console.warn(`💀 [${sessionId}] Erro FATAL de Chromium — tentando reconexão transparente...`);
+          session.status = 'disconnected';
+          await this.db.updateSessionStatus(sessionId, 'disconnected');
+
+          // Tenta reconexão automática ANTES de desistir
+          try {
+            const reconSession = await this.autoReconnectForSend(sessionId);
+            if (reconSession && reconSession.client) {
+              console.log(`🔄 [${sessionId}] Reconexão OK — reenviando mensagem...`);
+              session = reconSession; // Atualiza referência local
+              return await attemptSend(reconSession.client, true); // Retry com novo client
+            }
+          } catch (reconErr) {
+            console.error(`❌ [${sessionId}] Reconexão falhou: ${reconErr.message}`);
+          }
+
+          // Se reconexão falhou, aí sim notifica o frontend
+          this.io.to(`user_${session.userId}`).emit('session_disconnected', {
+            sessionId: sessionId,
+            reason: 'CHROMIUM_CRASH'
+          });
+          throw new Error('Sessão WhatsApp desconectou durante envio. Reconexão automática em andamento. Aguarde 1 minuto e tente novamente. O contato não foi marcado como número inválido.');
+        }
+
+        // Se é retry e falhou de novo, ou erro não-fatal — lança direto
+        throw error;
       }
+    };
 
-      // NÃO faz retry — lança o erro direto para o chamador
-      throw error;
-    }
+    return await attemptSend(client);
   }
 
   async getQRCode(sessionId) {
