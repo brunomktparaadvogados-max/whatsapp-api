@@ -203,24 +203,24 @@ class HealthGuard {
       const isConnected = session && (session.status === 'connected' || session.status === 'authenticated');
 
       if (isConnected) {
-        // Sessão conectada — não deleta blob, mas força um save limpo
-        // (o próximo backup criará um blob menor com dados frescos)
-        console.log(`🛡️ [HealthGuard] ${sessionId} (${sizeMB}MB) está conectada — será salva com dados limpos no próximo ciclo`);
-
-        // Deleta e deixa o RemoteAuth recriar com dados frescos
-        await this.db.pool.query(
-          'DELETE FROM whatsapp_auth_sessions WHERE session_id = $1',
-          [sessionId]
-        );
-        console.log(`🗑️ [HealthGuard] Blob oversized ${sessionId} deletado — RemoteAuth recriará com dados limpos`);
-        this._stats.blobsCleaned++;
+        // ═══════════════════════════════════════════════════════════════
+        // SESSÃO CONECTADA — NUNCA DELETAR BLOB!
+        // ═══════════════════════════════════════════════════════════════
+        // Se deletarmos e o servidor crashar antes do RemoteAuth recriar,
+        // a sessão é perdida para sempre. Apenas logamos o alerta.
+        // O limite de 15MB no PostgresStore.save() já impede que fique pior.
+        // Quando a sessão desconectar limpa e reconectar, o blob será menor.
+        console.warn(`⚠️ [HealthGuard] ${sessionId} (${sizeMB}MB) oversized MAS CONECTADA — NÃO deletar (proteção anti-perda)`);
+        console.warn(`   → O limite de 15MB no save() impede crescimento. Blob será renovado no próximo ciclo limpo.`);
+        // NÃO incrementa blobsCleaned — blob foi preservado intencionalmente
+        return;
       } else {
         // Sessão desconectada — deleta blob (usuário fará novo QR)
         await this.db.pool.query(
           'DELETE FROM whatsapp_auth_sessions WHERE session_id = $1',
           [sessionId]
         );
-        console.log(`🗑️ [HealthGuard] Blob oversized ${sessionId} (${sizeMB}MB) deletado — novo QR será necessário`);
+        console.log(`🗑️ [HealthGuard] Blob oversized ${sessionId} (${sizeMB}MB) deletado (sessão desconectada — novo QR será necessário)`);
         this._stats.blobsCleaned++;
       }
     } catch (err) {

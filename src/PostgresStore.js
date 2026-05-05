@@ -31,6 +31,7 @@ class PostgresStore {
     this.pool = pool;
     this._initialized = false;
     this._lastSaveTime = new Map();  // Throttle: evita saves muito frequentes
+    this._savedSessions = new Set(); // Sessões que JÁ foram salvas pelo menos 1x (proteção contra perda)
     this._minSaveInterval = 30 * 60 * 1000; // Mínimo 30 minutos entre saves (reduz carga no Supabase durante disparos)
     this._maxSaveBytes = 15 * 1024 * 1024;  // Máximo 15MB por sessão — blobs maiores são cache acumulado
   }
@@ -59,6 +60,18 @@ class PostgresStore {
         )
       `);
       this._initialized = true;
+
+      // Carrega lista de sessões que JÁ existem no banco para saber quais já foram salvas
+      try {
+        const existing = await this.pool.query('SELECT session_id FROM whatsapp_auth_sessions');
+        for (const row of existing.rows) {
+          this._savedSessions.add(row.session_id);
+        }
+        console.log(`✅ PostgresStore: ${this._savedSessions.size} sessões existentes carregadas no rastreamento`);
+      } catch (loadErr) {
+        console.warn(`⚠️ PostgresStore: não conseguiu carregar sessões existentes: ${loadErr.message}`);
+      }
+
       console.log('✅ PostgresStore: tabela whatsapp_auth_sessions pronta');
     } catch (err) {
       console.error('❌ PostgresStore: falha ao criar tabela:', err.message);
@@ -104,18 +117,32 @@ class PostgresStore {
     const sessionId = this._normalizeSessionId(options.session);
 
     try {
-      // HEALTHGUARD: Verifica se saves devem ser pausados (banco sobrecarregado / disparos)
-      if (global.__healthGuard && global.__healthGuard.shouldBlockSave()) {
-        // Silenciosamente pula — HealthGuard detectou que o banco precisa respirar
-        return;
-      }
-
-      // THROTTLE: Evita saves muito frequentes da mesma sessão
-      const lastSave = this._lastSaveTime.get(sessionId);
       const now = Date.now();
-      if (lastSave && (now - lastSave) < this._minSaveInterval) {
-        // Silenciosamente pula — o próximo ciclo salvará
-        return;
+      const isFirstSave = !this._savedSessions.has(sessionId);
+
+      // ═══════════════════════════════════════════════════════════════
+      // REGRA DE OURO: O PRIMEIRO SAVE DE UMA SESSÃO NUNCA É BLOQUEADO
+      // ═══════════════════════════════════════════════════════════════
+      // Se o usuário acabou de escanear QR e o RemoteAuth tenta salvar pela
+      // primeira vez, SEMPRE permitir — é o save que garante que a sessão
+      // sobrevive a restarts. Sem isso, se o servidor cair antes do 1º save,
+      // a sessão é perdida e o usuário precisa escanear QR novamente.
+
+      if (!isFirstSave) {
+        // HEALTHGUARD: Verifica se saves devem ser pausados (banco sobrecarregado / disparos)
+        // Só bloqueia saves SUBSEQUENTES — o primeiro save sempre passa
+        if (global.__healthGuard && global.__healthGuard.shouldBlockSave()) {
+          return;
+        }
+
+        // THROTTLE: Evita saves muito frequentes da mesma sessão
+        // Só aplica throttle após o primeiro save — o primeiro é urgente
+        const lastSave = this._lastSaveTime.get(sessionId);
+        if (lastSave && (now - lastSave) < this._minSaveInterval) {
+          return;
+        }
+      } else {
+        console.log(`🔰 PostgresStore: PRIMEIRO SAVE para "${sessionId}" — prioridade máxima (bypass throttle/healthguard)`);
       }
 
       if (!fs.existsSync(zipPath)) {
@@ -158,7 +185,8 @@ class PostgresStore {
       }
 
       this._lastSaveTime.set(sessionId, now);
-      console.log(`💾 PostgresStore: sessão "${sessionId}" salva (${sizeMB}MB)`);
+      this._savedSessions.add(sessionId);  // Marca: essa sessão já foi salva pelo menos 1x
+      console.log(`💾 PostgresStore: sessão "${sessionId}" salva (${sizeMB}MB)${isFirstSave ? ' ★ PRIMEIRO SAVE — sessão protegida!' : ''}`);
     } catch (err) {
       // CRÍTICO: NÃO relançar! RemoteAuth chama save() em setInterval sem try/catch.
       // Qualquer throw aqui vira unhandled promise rejection → crash do Node.js.
