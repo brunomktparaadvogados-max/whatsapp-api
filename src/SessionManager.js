@@ -1498,6 +1498,28 @@ class SessionManager {
     const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
     const chatId = normalizedPhone.includes('@c.us') ? normalizedPhone : `${normalizedPhone}@c.us`;
 
+    // HealthGuard: detecta disparos em massa (>5 msgs em 30s = disparo)
+    if (this.healthGuard) {
+      if (!this._dispatchCounter) this._dispatchCounter = { count: 0, windowStart: Date.now() };
+      this._dispatchCounter.count++;
+      const elapsed = Date.now() - this._dispatchCounter.windowStart;
+      if (elapsed > 30000) {
+        if (this._dispatchCounter.count > 5 && !this.healthGuard._dispatchActive) {
+          this.healthGuard.notifyDispatchStart();
+        }
+        this._dispatchCounter = { count: 0, windowStart: Date.now() };
+      } else if (this._dispatchCounter.count > 5 && !this.healthGuard._dispatchActive) {
+        this.healthGuard.notifyDispatchStart();
+      }
+      // Auto-reset: se disparo ativo e 5 min sem mensagem, finaliza
+      if (this._dispatchEndTimer) clearTimeout(this._dispatchEndTimer);
+      this._dispatchEndTimer = setTimeout(() => {
+        if (this.healthGuard && this.healthGuard._dispatchActive) {
+          this.healthGuard.notifyDispatchEnd();
+        }
+      }, 5 * 60 * 1000);
+    }
+
     // Rate limiting: espera intervalo mínimo entre mensagens
     await this.waitForRateLimit(sessionId);
 

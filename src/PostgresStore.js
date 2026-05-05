@@ -104,6 +104,12 @@ class PostgresStore {
     const sessionId = this._normalizeSessionId(options.session);
 
     try {
+      // HEALTHGUARD: Verifica se saves devem ser pausados (banco sobrecarregado / disparos)
+      if (global.__healthGuard && global.__healthGuard.shouldBlockSave()) {
+        // Silenciosamente pula — HealthGuard detectou que o banco precisa respirar
+        return;
+      }
+
       // THROTTLE: Evita saves muito frequentes da mesma sessão
       const lastSave = this._lastSaveTime.get(sessionId);
       const now = Date.now();

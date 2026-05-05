@@ -12,6 +12,7 @@ const HOST = process.env.HOST || '0.0.0.0';
 
 const DatabaseManager = require('./database');
 const SessionManager = require('./SessionManager');
+const HealthGuard = require('./HealthGuard');
 const MetaWhatsAppAPI = require('./MetaAPI');
 const { generateToken, authMiddleware } = require('./auth');
 
@@ -31,6 +32,19 @@ if (!fs.existsSync(dataDir)) {
 
 const db = new DatabaseManager();
 const sessionManager = new SessionManager(db, io);
+
+// HealthGuard — Agente autorregulador de saúde do sistema
+// Inicializado após SessionManager para ter acesso a pgStore
+setTimeout(() => {
+  const healthGuard = new HealthGuard({
+    sessionManager,
+    database: db,
+    pgStore: sessionManager.pgStore
+  });
+  healthGuard.start();
+  sessionManager.healthGuard = healthGuard;  // Permite SessionManager/PostgresStore consultar
+  global.__healthGuard = healthGuard;        // Acesso global para endpoints de diagnóstico
+}, 5000); // Espera 5s para SessionManager inicializar pgStore
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -296,6 +310,7 @@ app.post('/api/admin/cleanup-sessions', authMiddleware, async (req, res) => {
 app.get('/health', (req, res) => {
   // SEMPRE retorna 200 IMEDIATAMENTE para o Koyeb health check
   // Nunca faz queries ao banco — evita travar o health check
+  const hg = global.__healthGuard;
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
@@ -306,7 +321,8 @@ app.get('/health', (req, res) => {
     },
     activeSessions: sessionManager.sessions.size,
     activeChromiums: sessionManager.getActiveChromiumCount(),
-    remoteAuth: sessionManager.useRemoteAuth
+    remoteAuth: sessionManager.useRemoteAuth,
+    healthGuard: hg ? hg.getStats() : null
   });
 });
 
