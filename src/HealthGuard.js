@@ -192,37 +192,67 @@ class HealthGuard {
   }
 
   /**
-   * Remove blob oversized do banco.
-   * O usuário precisará escanear QR novamente, mas o banco fica protegido.
+   * Remove blob oversized do banco — COM PROTEÇÕES ANTI-PERDA:
+   *
+   * REGRAS DE OURO (NUNCA deletar blob se):
+   * 1. Sessão está conectada/autenticada agora
+   * 2. Sessão está em processo de inicialização/reconexão
+   * 3. Blob foi atualizado nas últimas 2 horas (pode ser deploy/restart temporário)
+   * 4. Sessão existe na tabela sessions (usuário ativo, pode reconectar)
+   *
+   * Só deleta blob se: sessão NÃO existe no banco OU desconectada há mais de 2h
    */
   async _cleanOversizedBlob(sessionId, sizeMB) {
     try {
-      // Verifica se essa sessão está conectada agora
       const shortId = sessionId.replace('RemoteAuth-', '');
       const session = this.sessionManager.sessions.get(shortId);
-      const isConnected = session && (session.status === 'connected' || session.status === 'authenticated');
 
-      if (isConnected) {
-        // ═══════════════════════════════════════════════════════════════
-        // SESSÃO CONECTADA — NUNCA DELETAR BLOB!
-        // ═══════════════════════════════════════════════════════════════
-        // Se deletarmos e o servidor crashar antes do RemoteAuth recriar,
-        // a sessão é perdida para sempre. Apenas logamos o alerta.
-        // O limite de 15MB no PostgresStore.save() já impede que fique pior.
-        // Quando a sessão desconectar limpa e reconectar, o blob será menor.
-        console.warn(`⚠️ [HealthGuard] ${sessionId} (${sizeMB}MB) oversized MAS CONECTADA — NÃO deletar (proteção anti-perda)`);
-        console.warn(`   → O limite de 15MB no save() impede crescimento. Blob será renovado no próximo ciclo limpo.`);
-        // NÃO incrementa blobsCleaned — blob foi preservado intencionalmente
+      // PROTEÇÃO 1: Sessão conectada ou em processo de conexão — NUNCA deletar
+      const isActive = session && ['connected', 'authenticated', 'initializing', 'qr_code'].includes(session.status);
+      if (isActive) {
+        console.warn(`⚠️ [HealthGuard] ${sessionId} (${sizeMB}MB) oversized MAS ATIVA (${session.status}) — NÃO deletar`);
         return;
-      } else {
-        // Sessão desconectada — deleta blob (usuário fará novo QR)
-        await this.db.pool.query(
-          'DELETE FROM whatsapp_auth_sessions WHERE session_id = $1',
+      }
+
+      // PROTEÇÃO 2: Blob atualizado recentemente — pode ser restart/deploy temporário
+      try {
+        const result = await this.db.pool.query(
+          'SELECT updated_at FROM whatsapp_auth_sessions WHERE session_id = $1',
           [sessionId]
         );
-        console.log(`🗑️ [HealthGuard] Blob oversized ${sessionId} (${sizeMB}MB) deletado (sessão desconectada — novo QR será necessário)`);
-        this._stats.blobsCleaned++;
+        if (result.rows.length > 0) {
+          const updatedAt = new Date(result.rows[0].updated_at);
+          const hoursAgo = (Date.now() - updatedAt.getTime()) / (1000 * 60 * 60);
+          if (hoursAgo < 2) {
+            console.warn(`⚠️ [HealthGuard] ${sessionId} (${sizeMB}MB) atualizado há ${hoursAgo.toFixed(1)}h — NÃO deletar (proteção anti-perda por restart)`);
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn(`⚠️ [HealthGuard] Erro ao verificar updated_at de ${sessionId}: ${e.message}`);
+        return; // Na dúvida, NÃO deleta
       }
+
+      // PROTEÇÃO 3: Sessão existe na tabela sessions (usuário ativo) — preservar
+      try {
+        const dbSession = await this.db.getSession(shortId);
+        if (dbSession && dbSession.status !== 'disconnected') {
+          console.warn(`⚠️ [HealthGuard] ${sessionId} (${sizeMB}MB) sessão ativa no banco (${dbSession.status}) — NÃO deletar`);
+          return;
+        }
+      } catch (e) {
+        // Erro ao verificar = proteção, não deleta
+        return;
+      }
+
+      // Todas as proteções passaram — blob é de sessão desconectada há mais de 2h
+      // Seguro deletar (usuário fará novo QR)
+      await this.db.pool.query(
+        'DELETE FROM whatsapp_auth_sessions WHERE session_id = $1',
+        [sessionId]
+      );
+      console.log(`🗑️ [HealthGuard] Blob oversized ${sessionId} (${sizeMB}MB) deletado (desconectada há >2h)`);
+      this._stats.blobsCleaned++;
     } catch (err) {
       console.error(`❌ [HealthGuard] Erro ao limpar blob ${sessionId}:`, err.message);
     }
