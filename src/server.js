@@ -1917,5 +1917,60 @@ process.on('uncaughtException', (error) => {
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+  const errMsg = (reason && reason.message) ? reason.message.toLowerCase() : String(reason).toLowerCase();
+  console.error('❌ Unhandled Rejection:', errMsg);
+
+  // "Execution context was destroyed" vindo de whatsapp-web.js interno
+  // indica Chromium morto — precisamos identificar qual sessão e reconectar
+  const fatalPatterns = [
+    'execution context was destroyed',
+    'session closed',
+    'target closed',
+    'page crashed',
+    'browser disconnected',
+    'browser has disconnected',
+    'chromium morto',
+  ];
+
+  if (fatalPatterns.some(p => errMsg.includes(p))) {
+    console.warn('🧟 Unhandled Rejection indica Chromium morto — ativando verificação de sessões...');
+    // Agenda uma verificação rápida de todas as sessões ativas
+    setTimeout(async () => {
+      try {
+        const activeSessions = sessionManager.getAllSessions();
+        for (const [sid, session] of activeSessions) {
+          if (session.status === 'connected' || session.status === 'ready') {
+            try {
+              const alive = await sessionManager.isSessionAlive(sid);
+              if (!alive) {
+                console.error(`🧟 [${sid}] Chromium morto detectado via unhandledRejection! Reconectando...`);
+                await sessionManager.cleanupSession(sid);
+                await db.updateSessionStatus(sid, 'disconnected');
+                try {
+                  const reconSession = await sessionManager.autoReconnectForSend(sid);
+                  if (reconSession) {
+                    console.log(`✅ [${sid}] Auto-reconexão pós-unhandledRejection OK!`);
+                    io.to(`user_${session.userId}`).emit('session_reconnected', {
+                      sessionId: sid, reason: 'AUTO_RECONNECT_AFTER_UNHANDLED_REJECTION'
+                    });
+                  } else {
+                    console.warn(`❌ [${sid}] Auto-reconexão falhou — QR necessário`);
+                    io.to(`user_${session.userId}`).emit('session_disconnected', {
+                      sessionId: sid, reason: 'CHROMIUM_DEAD_UNHANDLED'
+                    });
+                  }
+                } catch (reconErr) {
+                  console.error(`❌ [${sid}] Erro reconexão: ${reconErr.message}`);
+                }
+              }
+            } catch (checkErr) {
+              console.warn(`⚠️ [${sid}] Erro verificando saúde: ${checkErr.message}`);
+            }
+          }
+        }
+      } catch (scanErr) {
+        console.error('❌ Erro no scan pós-unhandledRejection:', scanErr.message);
+      }
+    }, 2000); // 2s delay para não conflitar com outros handlers
+  }
 });

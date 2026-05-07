@@ -1348,6 +1348,7 @@ class SessionManager {
       'epipe',
       'browser has disconnected',
       'connection closed',
+      'chromium morto',
     ];
     return fatalPatterns.some(p => msg.includes(p));
   }
@@ -1672,7 +1673,7 @@ class SessionManager {
         }
 
         // Se é um erro fatal do Chromium E ainda não tentamos reconectar
-        if ((this.isFatalSessionError(error) || errMsg.toLowerCase().includes('chromium morto')) && !isRetry) {
+        if ((this.isFatalSessionError(error) || (error.message || '').toLowerCase().includes('chromium morto')) && !isRetry) {
           console.warn(`💀 [${sessionId}] Erro FATAL de Chromium — tentando reconexão transparente...`);
           session.status = 'disconnected';
           await this.db.updateSessionStatus(sessionId, 'disconnected');
