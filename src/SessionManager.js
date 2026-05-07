@@ -1324,6 +1324,10 @@ class SessionManager {
       'getIsMyContact',
       'detached Frame',                // Puppeteer frame bug (não fatal com --disable-site-isolation)
       'Attempted to use detached',     // Variação do mesmo bug
+      'invalid wid',                   // Número inválido — NÃO é erro do Chromium
+      'wid error',                     // Variação do mesmo
+      'invalid number',                // Número inválido
+      'not registered',                // Número não registrado no WhatsApp
     ];
     return ignorablePatterns.some(p => msg.includes(p));
   }
@@ -1654,13 +1658,41 @@ class SessionManager {
         }
 
         // ═══════════════════════════════════════════════════════════════
+        // TRATAMENTO DE NÚMERO INVÁLIDO — NUNCA derrubar sessão por isso
+        // Erros de número inválido são do número, NÃO do Chromium.
+        // Devem ser propagados como erro simples sem reconexão.
+        // ═══════════════════════════════════════════════════════════════
+        const errLower = errMsg.toLowerCase();
+        const isInvalidNumberError = [
+          'invalid wid',
+          'wid error',
+          'invalid number',
+          'não está registrado',
+          'not registered',
+          'number not found',
+          'contact not found',
+          'invalid phone',
+          'invalid chatid',
+          'is not a contact',
+          'phone number shared via url',
+          'unpaired',
+          'could not send message to',
+          'getcontactbyid',
+        ].some(p => errLower.includes(p));
+
+        if (isInvalidNumberError) {
+          console.warn(`📵 [${sessionId}] Número inválido/inexistente ${normalizedPhone}: ${errMsg.substring(0, 100)} — NÃO é erro do Chromium`);
+          throw error; // Propaga como erro simples, SEM reconexão
+        }
+
+        // ═══════════════════════════════════════════════════════════════
         // TRATAMENTO DE TIMEOUT — Chromium pode estar morto
         // Quando client.sendMessage() trava e dá timeout, verificamos se
         // o Chromium ainda está vivo. Se morreu, tratamos como fatal.
         // Usa flag chromiumDead para evitar problemas de escopo com error
         // ═══════════════════════════════════════════════════════════════
         let chromiumDead = false;
-        if (errMsg.toLowerCase().includes('timeout') && !isRetry) {
+        if (errLower.includes('timeout') && !isRetry) {
           console.warn(`⏰ [${sessionId}] Timeout no envio — verificando saúde do Chromium...`);
           try {
             const alive = await this.isSessionAlive(sessionId);
@@ -1681,6 +1713,25 @@ class SessionManager {
               throw error;
             }
           }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // ANTES de tratar como fatal, verificar se é erro "inofensivo"
+        // que NÃO deve desconectar a sessão (número inválido, permissão, etc.)
+        // ═══════════════════════════════════════════════════════════════
+        const isNonFatalSendError = [
+          'could not send message',
+          'message send timeout',
+          'media upload failed',
+          'not authorized',
+          'message too long',
+          'blocked',
+          'permission denied to send',
+        ].some(p => errLower.includes(p));
+
+        if (isNonFatalSendError && !chromiumDead) {
+          console.warn(`⚠️ [${sessionId}] Erro de envio não-fatal para ${normalizedPhone}: ${errMsg.substring(0, 100)} — sessão mantida`);
+          throw error; // Propaga sem derrubar sessão
         }
 
         // Se é um erro fatal do Chromium E ainda não tentamos reconectar
