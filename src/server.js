@@ -1473,10 +1473,30 @@ setInterval(async () => {
           await sessionManager.cleanupSession(s.id);
           await db.updateSessionStatus(s.id, 'disconnected');
 
-          io.to(`user_${s.userId}`).emit('session_disconnected', {
-            sessionId: s.id,
-            reason: 'CHROMIUM_DEAD'
-          });
+          // Tenta auto-reconexão antes de notificar desconexão
+          console.log(`🔄 [${s.id}] Tentando auto-reconexão após detectar Chromium morto...`);
+          try {
+            const reconSession = await sessionManager.autoReconnectForSend(s.id);
+            if (reconSession) {
+              console.log(`✅ [${s.id}] Auto-reconexão pós-zombie bem-sucedida! Sessão restaurada.`);
+              io.to(`user_${s.userId}`).emit('session_reconnected', {
+                sessionId: s.id,
+                reason: 'AUTO_RECONNECT_AFTER_ZOMBIE'
+              });
+            } else {
+              console.warn(`❌ [${s.id}] Auto-reconexão pós-zombie falhou — QR será necessário`);
+              io.to(`user_${s.userId}`).emit('session_disconnected', {
+                sessionId: s.id,
+                reason: 'CHROMIUM_DEAD'
+              });
+            }
+          } catch (reconErr) {
+            console.error(`❌ [${s.id}] Erro na auto-reconexão pós-zombie: ${reconErr.message}`);
+            io.to(`user_${s.userId}`).emit('session_disconnected', {
+              sessionId: s.id,
+              reason: 'CHROMIUM_DEAD'
+            });
+          }
         }
       } catch (e) {
         // Erro ao verificar NÃO mata a sessão — pode ser temporário

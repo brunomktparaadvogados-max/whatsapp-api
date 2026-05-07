@@ -19,7 +19,7 @@ const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
 const IDLE_DISCONNECT_MS = parseInt(process.env.IDLE_DISCONNECT_MS) || 5 * 60 * 60 * 1000; // 5 horas idle → desconecta sessão
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;        // verifica a cada 2 minutos (economiza queries)
 const SESSION_INIT_TIMEOUT_MS = 120000;           // 2 minutos para Chromium iniciar
-const MESSAGE_SEND_TIMEOUT_MS = 60000;            // 60 segundos timeout por mensagem (1 tentativa única)
+const MESSAGE_SEND_TIMEOUT_MS = 30000;            // 30 segundos timeout por mensagem (reduzido de 60s para feedback rápido)
 const MIN_MESSAGE_INTERVAL_MS = 1500;             // 1.5 segundos entre mensagens (anti-rate-limit)
 const MAX_SEND_RETRIES = 0;                       // SEM retries — evita mensagens duplicadas
 const AUTO_RECONNECT_TIMEOUT_MS = 90000;          // 90s máx para auto-reconexão no envio
@@ -1643,8 +1643,36 @@ class SessionManager {
           }
         }
 
+        // ═══════════════════════════════════════════════════════════════
+        // TRATAMENTO DE TIMEOUT — Chromium pode estar morto
+        // Quando client.sendMessage() trava e dá timeout, verificamos se
+        // o Chromium ainda está vivo. Se morreu, tratamos como fatal.
+        // ═══════════════════════════════════════════════════════════════
+        if (errMsg.toLowerCase().includes('timeout') && !isRetry) {
+          console.warn(`⏰ [${sessionId}] Timeout no envio — verificando saúde do Chromium...`);
+          try {
+            const alive = await this.isSessionAlive(sessionId);
+            if (!alive) {
+              console.error(`🧟 [${sessionId}] Chromium MORTO detectado após timeout! Tratando como erro fatal...`);
+              error = new Error('Chromium morto detectado após timeout de envio');
+            } else {
+              console.log(`✅ [${sessionId}] Chromium vivo — timeout foi do número/rede, não do Chromium`);
+              throw error;
+            }
+          } catch (healthErr) {
+            if (healthErr.message === error.message) throw healthErr;
+            if (healthErr.message.includes('health_check_timeout')) {
+              console.error(`🧟 [${sessionId}] Health check timeout = Chromium morto!`);
+              error = new Error('Chromium morto detectado após health check timeout');
+            } else {
+              console.warn(`⚠️ [${sessionId}] Erro no health check: ${healthErr.message} — mantendo erro original`);
+              throw error;
+            }
+          }
+        }
+
         // Se é um erro fatal do Chromium E ainda não tentamos reconectar
-        if (this.isFatalSessionError(error) && !isRetry) {
+        if ((this.isFatalSessionError(error) || errMsg.toLowerCase().includes('chromium morto')) && !isRetry) {
           console.warn(`💀 [${sessionId}] Erro FATAL de Chromium — tentando reconexão transparente...`);
           session.status = 'disconnected';
           await this.db.updateSessionStatus(sessionId, 'disconnected');
