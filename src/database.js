@@ -423,6 +423,17 @@ class DatabaseManager {
     `, [sessionId, phoneNumber, name, profilePic]);
   }
 
+  // UPDATE ONLY — não cria contato novo, apenas atualiza se já existir
+  // Usado para mensagens RECEBIDAS: evita criar contatos pessoais como leads
+  async updateContactIfExists(sessionId, phoneNumber, name = null) {
+    return await this.run(`
+      UPDATE contacts SET
+        name = COALESCE($3, contacts.name),
+        last_message_at = CURRENT_TIMESTAMP
+      WHERE session_id = $1 AND phone_number = $2
+    `, [sessionId, phoneNumber, name]);
+  }
+
   async createAutoReply(sessionId, triggerType, triggerValue, responseMessage) {
     const result = await this.run(`
       INSERT INTO auto_replies (session_id, trigger_type, trigger_value, response_message)

@@ -941,7 +941,14 @@ class SessionManager {
         messages.shift();
       }
 
-      await this.cachedUpsertContact(sessionData.id, contactPhone, message._data.notifyName);
+      // UPDATE ONLY — NÃO cria contato novo para mensagens recebidas
+      // Apenas atualiza last_message_at se o contato JÁ existir no sistema
+      // Isso evita que contatos pessoais do WhatsApp apareçam como leads
+      try {
+        await this.db.updateContactIfExists(sessionData.id, contactPhone, message._data.notifyName);
+      } catch (err) {
+        // Falha no update não deve bloquear processamento da mensagem
+      }
 
       this.io.to(`user_${sessionData.userId}`).emit('new_message', {
         sessionId: sessionData.id,
@@ -961,7 +968,9 @@ class SessionManager {
             sessionId: sessionData.id,
             userId: sessionData.userId,
             messageType: messageData.messageType,
-            notifyName: message._data?.notifyName || message._data?.pushname || null
+            notifyName: message._data?.notifyName || message._data?.pushname || null,
+            // Flag para Edge Function: NÃO criar lead novo, apenas atualizar existente
+            doNotCreateLead: true
           };
 
           const webhookController = new AbortController();
@@ -1648,23 +1657,25 @@ class SessionManager {
         // TRATAMENTO DE TIMEOUT — Chromium pode estar morto
         // Quando client.sendMessage() trava e dá timeout, verificamos se
         // o Chromium ainda está vivo. Se morreu, tratamos como fatal.
+        // Usa flag chromiumDead para evitar problemas de escopo com error
         // ═══════════════════════════════════════════════════════════════
+        let chromiumDead = false;
         if (errMsg.toLowerCase().includes('timeout') && !isRetry) {
           console.warn(`⏰ [${sessionId}] Timeout no envio — verificando saúde do Chromium...`);
           try {
             const alive = await this.isSessionAlive(sessionId);
             if (!alive) {
-              console.error(`🧟 [${sessionId}] Chromium MORTO detectado após timeout! Tratando como erro fatal...`);
-              error = new Error('Chromium morto detectado após timeout de envio');
+              console.error(`🧟 [${sessionId}] Chromium MORTO detectado após timeout! Marcando para reconexão...`);
+              chromiumDead = true;
             } else {
               console.log(`✅ [${sessionId}] Chromium vivo — timeout foi do número/rede, não do Chromium`);
               throw error;
             }
           } catch (healthErr) {
-            if (healthErr.message === error.message) throw healthErr;
-            if (healthErr.message.includes('health_check_timeout')) {
-              console.error(`🧟 [${sessionId}] Health check timeout = Chromium morto!`);
-              error = new Error('Chromium morto detectado após health check timeout');
+            if (healthErr === error) throw healthErr;
+            if (healthErr.message && healthErr.message.includes('health_check_timeout')) {
+              console.error(`🧟 [${sessionId}] Health check timeout = Chromium morto! Marcando para reconexão...`);
+              chromiumDead = true;
             } else {
               console.warn(`⚠️ [${sessionId}] Erro no health check: ${healthErr.message} — mantendo erro original`);
               throw error;
@@ -1673,9 +1684,16 @@ class SessionManager {
         }
 
         // Se é um erro fatal do Chromium E ainda não tentamos reconectar
-        if ((this.isFatalSessionError(error) || (error.message || '').toLowerCase().includes('chromium morto')) && !isRetry) {
+        if ((this.isFatalSessionError(error) || chromiumDead) && !isRetry) {
           console.warn(`💀 [${sessionId}] Erro FATAL de Chromium — tentando reconexão transparente...`);
-          session.status = 'disconnected';
+
+          // IMPORTANTE: Limpar sessão morta ANTES de tentar reconectar
+          try {
+            await this.cleanupSession(sessionId);
+            console.log(`🧹 [${sessionId}] Sessão morta limpa com sucesso`);
+          } catch (cleanErr) {
+            console.warn(`⚠️ [${sessionId}] Erro ao limpar sessão morta: ${cleanErr.message}`);
+          }
           await this.db.updateSessionStatus(sessionId, 'disconnected');
 
           // Tenta reconexão automática ANTES de desistir
