@@ -1655,16 +1655,34 @@ class SessionManager {
             return messageData;
           } catch (lidRetryErr) {
             console.error(`❌ [${sessionId}] Retry LID falhou para ${normalizedPhone}: ${lidRetryErr.message}`);
-            throw lidRetryErr;
+            // NÃO fazer throw direto aqui! Isso bypassaria toda a lógica de proteção
+            // (invalid number, timeout, fatal error handling) abaixo.
+            // Em vez disso, tratamos como erro de número — pula o contato sem derrubar sessão.
+            const lidErrMsg = (lidRetryErr.message || '').toLowerCase();
+            if (lidErrMsg.includes('target closed') || lidErrMsg.includes('session closed') ||
+                lidErrMsg.includes('protocol error') || lidErrMsg.includes('context was destroyed')) {
+              // Chromium morreu durante o LID retry — NÃO propagar diretamente.
+              // Deixar cair no handler fatal abaixo para reconexão limpa.
+              console.error(`💀 [${sessionId}] Chromium morreu durante LID retry — delegando para handler fatal`);
+              // Atualiza errMsg para que o handler fatal abaixo funcione corretamente
+              error = lidRetryErr;
+            } else {
+              // Erro de número/rede — pula o contato sem derrubar sessão
+              console.warn(`📵 [${sessionId}] LID retry falhou para ${normalizedPhone} — pulando contato`);
+              throw new Error(`Número ${normalizedPhone} falhou no envio (LID não resolvido). O contato não foi marcado como número inválido.`);
+            }
           }
         }
+
+        // Recalcular errMsg caso tenha sido atualizado pelo LID retry handler
+        const currentErrMsg = error.message || '';
 
         // ═══════════════════════════════════════════════════════════════
         // TRATAMENTO DE NÚMERO INVÁLIDO — NUNCA derrubar sessão por isso
         // Erros de número inválido são do número, NÃO do Chromium.
         // Devem ser propagados como erro simples sem reconexão.
         // ═══════════════════════════════════════════════════════════════
-        const errLower = errMsg.toLowerCase();
+        const errLower = currentErrMsg.toLowerCase();
         const isInvalidNumberError = [
           'invalid wid',
           'wid error',
@@ -1680,6 +1698,8 @@ class SessionManager {
           'unpaired',
           'could not send message to',
           'getcontactbyid',
+          'no lid for user',              // LID não resolvido — erro do número
+          'lid não resolvido',            // Variação em PT
         ].some(p => errLower.includes(p));
 
         if (isInvalidNumberError) {
