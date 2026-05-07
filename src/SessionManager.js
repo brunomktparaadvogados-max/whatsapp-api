@@ -1034,7 +1034,9 @@ class SessionManager {
         status: 'sent'
       };
 
-      await this.cachedUpsertContact(sessionData.id, contactPhone);
+      // NÃO faz upsertContact aqui — o sendMessage (disparo via API) já cria o contato.
+      // Fazer upsert aqui criaria leads falsos para contatos pessoais do WhatsApp,
+      // já que message_create dispara para TODA mensagem enviada (pessoal ou campanha).
 
       this.io.to(`user_${sessionData.userId}`).emit('message_sent', {
         sessionId: sessionData.id,
