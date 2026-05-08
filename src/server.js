@@ -63,6 +63,32 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
+function enqueueWhatsAppSend(sessionId, to, message, mediaUrl = null) {
+  setImmediate(async () => {
+    try {
+      console.log(`📥 [${sessionId}] Enfileirado para envio em background: ${to}`);
+      const result = await sessionManager.sendMessage(sessionId, to, message, mediaUrl);
+      if (result?.skipped) {
+        console.warn(`⚠️ [${sessionId}] Contato pulado em background: ${to} — ${result.error}`);
+      } else {
+        console.log(`✅ [${sessionId}] Envio em background concluído: ${to}`);
+      }
+    } catch (error) {
+      console.error(`❌ [${sessionId}] Envio em background falhou para ${to}:`, error.message);
+    }
+  });
+}
+
+function respondQueued(res, sessionId) {
+  return res.status(202).json({
+    success: true,
+    queued: true,
+    sessionId,
+    message: 'Mensagem enfileirada. A API vai reconectar e enviar em background.',
+    data: { status: 'queued' }
+  });
+}
+
 io.on('connection', (socket) => {
   console.log('Cliente WebSocket conectado:', socket.id);
 
@@ -685,15 +711,8 @@ app.post('/api/sessions/:sessionId/messages', authMiddleware, async (req, res) =
       });
     }
 
-    const result = await sessionManager.sendMessage(sessionId, to, message);
-    if (!res.headersSent) {
-      res.json({
-        success: true,
-        skipped: !!result?.skipped,
-        message: result?.skipped ? 'Contato pulado; disparo pode continuar' : 'Mensagem enviada com sucesso',
-        data: result
-      });
-    }
+    enqueueWhatsAppSend(sessionId, to, message);
+    return respondQueued(res, sessionId);
   } catch (error) {
     console.error(`Erro ao enviar mensagem para ${req.body.to} na sessão ${req.params.sessionId}:`, error);
     if (!res.headersSent) {
@@ -790,17 +809,9 @@ app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) =>
       });
     }
 
-    console.log(`✅ [SEND MESSAGE] Enviando mensagem via SessionManager...`);
-    const result = await sessionManager.sendMessage(sessionId, to, message);
-    console.log(`✅ [SEND MESSAGE] Mensagem enviada com sucesso!`);
-    if (!res.headersSent) {
-      res.json({
-        success: true,
-        skipped: !!result?.skipped,
-        message: result?.skipped ? 'Contato pulado; disparo pode continuar' : 'Mensagem enviada com sucesso',
-        data: result
-      });
-    }
+    console.log(`✅ [SEND MESSAGE] Enfileirando mensagem via SessionManager...`);
+    enqueueWhatsAppSend(sessionId, to, message);
+    return respondQueued(res, sessionId);
   } catch (error) {
     console.error(`❌ [SEND MESSAGE] Erro ao enviar mensagem:`, error.message);
     if (res.headersSent) return; // Timeout já respondeu
@@ -1718,16 +1729,8 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Sessão não encontrada ou não pertence a você' });
     }
 
-    const result = await sessionManager.sendMessage(targetSessionId, to, message);
-    if (!res.headersSent) {
-      res.json({
-        success: true,
-        skipped: !!result?.skipped,
-        message: result?.skipped ? 'Contato pulado; disparo pode continuar' : 'Mensagem enviada com sucesso',
-        sessionId: targetSessionId,
-        data: result
-      });
-    }
+    enqueueWhatsAppSend(targetSessionId, to, message);
+    return respondQueued(res, targetSessionId);
   } catch (error) {
     console.error(`Erro ao enviar mensagem:`, error.message);
     if (res.headersSent) return; // Timeout já respondeu
