@@ -53,8 +53,8 @@ app.use(express.static('public'));
 // Timeout global de 180s para rotas da API — evita requests travados
 // (auto-reconexão pode levar até 90s + envio 60s + getState 15s = 165s)
 app.use('/api', (req, res, next) => {
-  req.setTimeout(180000);
-  res.setTimeout(180000, () => {
+  req.setTimeout(480000);
+  res.setTimeout(480000, () => {
     if (!res.headersSent) {
       console.error(`⏰ Timeout na rota ${req.method} ${req.path}`);
       res.status(504).json({ error: 'Request timeout — tente novamente' });
@@ -687,7 +687,12 @@ app.post('/api/sessions/:sessionId/messages', authMiddleware, async (req, res) =
 
     const result = await sessionManager.sendMessage(sessionId, to, message);
     if (!res.headersSent) {
-      res.json({ success: true, message: 'Mensagem enviada com sucesso', data: result });
+      res.json({
+        success: true,
+        skipped: !!result?.skipped,
+        message: result?.skipped ? 'Contato pulado; disparo pode continuar' : 'Mensagem enviada com sucesso',
+        data: result
+      });
     }
   } catch (error) {
     console.error(`Erro ao enviar mensagem para ${req.body.to} na sessão ${req.params.sessionId}:`, error);
@@ -791,7 +796,8 @@ app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) =>
     if (!res.headersSent) {
       res.json({
         success: true,
-        message: 'Mensagem enviada com sucesso',
+        skipped: !!result?.skipped,
+        message: result?.skipped ? 'Contato pulado; disparo pode continuar' : 'Mensagem enviada com sucesso',
         data: result
       });
     }
@@ -1716,7 +1722,8 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
     if (!res.headersSent) {
       res.json({
         success: true,
-        message: 'Mensagem enviada com sucesso',
+        skipped: !!result?.skipped,
+        message: result?.skipped ? 'Contato pulado; disparo pode continuar' : 'Mensagem enviada com sucesso',
         sessionId: targetSessionId,
         data: result
       });

@@ -13,17 +13,18 @@ const path = require('path');
 // ═══════════════════════════════════════════════════════════════════
 // LIMITES DE MEMÓRIA — Sessões sob demanda para 20+ usuários
 // ═══════════════════════════════════════════════════════════════════
-const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 2;  // Koyeb nano: poucos Chromiums, reconexão sob demanda via RemoteAuth
-const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 450;                          // Limite seguro para evitar queda por memória no nano
+const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 5;  // Mantém folga para disparos sem expulsar sessões ativas
+const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 650;                          // Limite seguro para evitar queda por memória
 const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
 const IDLE_DISCONNECT_MS = parseInt(process.env.IDLE_DISCONNECT_MS) || 5 * 60 * 60 * 1000; // 5 horas idle → desconecta sessão
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;        // verifica a cada 2 minutos (economiza queries)
-const SESSION_INIT_TIMEOUT_MS = 120000;           // 2 minutos para Chromium iniciar
+const SESSION_INIT_TIMEOUT_MS = 240000;           // 4 minutos para Chromium iniciar em Koyeb sob carga
 const MESSAGE_SEND_TIMEOUT_MS = 30000;            // 30 segundos timeout por mensagem (reduzido de 60s para feedback rápido)
 const STALE_SESSION_HEALTHCHECK_MS = parseInt(process.env.STALE_SESSION_HEALTHCHECK_MS) || 2 * 60 * 1000;
 const MIN_MESSAGE_INTERVAL_MS = 1500;             // 1.5 segundos entre mensagens (anti-rate-limit)
 const MAX_SEND_RETRIES = 0;                       // SEM retries — evita mensagens duplicadas
-const AUTO_RECONNECT_TIMEOUT_MS = 180000;         // 180s máx para auto-reconexão no envio (CPU 100% durante startup pode demorar)
+const AUTO_RECONNECT_TIMEOUT_MS = 420000;         // 7 min máx para auto-reconexão no envio
+const AUTHENTICATED_READY_TIMEOUT_MS = parseInt(process.env.AUTHENTICATED_READY_TIMEOUT_MS) || 420000;
 
 class SessionManager {
   constructor(database, io) {
@@ -779,7 +780,7 @@ class SessionManager {
           // Limpa o Chromium travado
           await this.cleanupSession(sessionData.id);
         }
-      }, 180000);
+      }, AUTHENTICATED_READY_TIMEOUT_MS);
     });
 
     // RemoteAuth: sessão salva no PostgreSQL com sucesso
@@ -1414,6 +1415,25 @@ class SessionManager {
   // Garante que só 1 reconexão por sessão aconteça ao mesmo tempo.
   // ═══════════════════════════════════════════════════════════════════
   async autoReconnectForSend(sessionId) {
+    const existingReconnect = this.reconnectPromises.get(sessionId);
+    if (existingReconnect) {
+      console.log(`⏳ [${sessionId}] Reconexão já em andamento, aguardando promise existente...`);
+      return await existingReconnect;
+    }
+
+    const reconnectPromise = this._autoReconnectForSend(sessionId);
+    this.reconnectPromises.set(sessionId, reconnectPromise);
+
+    try {
+      return await reconnectPromise;
+    } finally {
+      if (this.reconnectPromises.get(sessionId) === reconnectPromise) {
+        this.reconnectPromises.delete(sessionId);
+      }
+    }
+  }
+
+  async _autoReconnectForSend(sessionId) {
     // Se já está reconectando, espera a reconexão existente
     if (this.reconnectingSet.has(sessionId)) {
       console.log(`⏳ [${sessionId}] Reconexão já em andamento, aguardando...`);
@@ -1536,6 +1556,23 @@ class SessionManager {
   }
 
   async sendMessage(sessionId, phoneNumber, message, mediaUrl = null) {
+    const previousSend = this.sessionSendLock.get(sessionId) || Promise.resolve();
+    const currentSend = previousSend
+      .catch(() => {})
+      .then(() => this._sendMessageUnlocked(sessionId, phoneNumber, message, mediaUrl));
+
+    this.sessionSendLock.set(sessionId, currentSend);
+
+    try {
+      return await currentSend;
+    } finally {
+      if (this.sessionSendLock.get(sessionId) === currentSend) {
+        this.sessionSendLock.delete(sessionId);
+      }
+    }
+  }
+
+  async _sendMessageUnlocked(sessionId, phoneNumber, message, mediaUrl = null) {
     let session = this.sessions.get(sessionId);
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1556,7 +1593,7 @@ class SessionManager {
       }
     }
 
-    const client = session.client;
+    let client = session.client;
 
     // ═══════════════════════════════════════════════════════════════════
     // VERIFICAÇÃO LEVE: Exige status 'connected' (evento 'ready' disparou)
@@ -1578,6 +1615,7 @@ class SessionManager {
         if (!session || !session.client || session.status !== 'connected') {
           throw new Error('Sessão conectada no banco, mas o Chromium não respondeu e a reconexão falhou. Tente novamente em 1 minuto.');
         }
+        client = session.client;
       }
     }
 
@@ -1704,7 +1742,17 @@ class SessionManager {
             } else {
               // Erro de número/rede — pula o contato sem derrubar sessão
               console.warn(`📵 [${sessionId}] LID retry falhou para ${normalizedPhone} — pulando contato`);
-              throw new Error(`Número ${normalizedPhone} falhou no envio (LID não resolvido). O contato não foi marcado como número inválido.`);
+              return {
+                success: false,
+                skipped: true,
+                status: 'failed',
+                error: `Número ${normalizedPhone} falhou no envio (LID não resolvido).`,
+                sessionId: sessionId,
+                contactPhone: normalizedPhone,
+                body: message,
+                fromMe: true,
+                timestamp: Math.floor(Date.now() / 1000)
+              };
             }
           }
         }
@@ -1739,7 +1787,17 @@ class SessionManager {
 
         if (isInvalidNumberError) {
           console.warn(`📵 [${sessionId}] Número inválido/inexistente ${normalizedPhone}: ${errMsg.substring(0, 100)} — NÃO é erro do Chromium`);
-          throw error; // Propaga como erro simples, SEM reconexão
+          return {
+            success: false,
+            skipped: true,
+            status: 'failed',
+            error: currentErrMsg,
+            sessionId: sessionId,
+            contactPhone: normalizedPhone,
+            body: message,
+            fromMe: true,
+            timestamp: Math.floor(Date.now() / 1000)
+          };
         }
 
         // ═══════════════════════════════════════════════════════════════

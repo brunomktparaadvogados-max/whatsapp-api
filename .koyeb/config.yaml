@@ -24,11 +24,13 @@ services:
       - key: PUPPETEER_ARGS
         value: "--no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage,--disable-gpu,--no-first-run,--no-zygote,--single-process"
       - key: MAX_CONCURRENT_SESSIONS
-        value: "2"
+        value: "5"
       - key: MAX_RSS_MB
-        value: "450"
+        value: "650"
       - key: STALE_SESSION_HEALTHCHECK_MS
         value: "120000"
+      - key: AUTHENTICATED_READY_TIMEOUT_MS
+        value: "420000"
     build:
       type: docker
       dockerfile: Dockerfile
