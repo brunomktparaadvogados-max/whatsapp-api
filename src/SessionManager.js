@@ -770,15 +770,20 @@ class SessionManager {
         const currentSession = this.sessions.get(sessionData.id);
         if (currentSession && currentSession.status === 'authenticated') {
           console.warn(`⚠️ [${sessionData.id}] Sessão autenticada há 180s sem ficar 'ready'. Marcando como failed.`);
-          currentSession.status = 'failed';
-          await this.db.updateSessionStatus(sessionData.id, 'failed');
-          this.io.to(`user_${sessionData.userId}`).emit('session_error', {
+          currentSession.status = 'disconnected';
+          await this.db.updateSessionStatus(sessionData.id, 'disconnected');
+          this.io.to(`user_${sessionData.userId}`).emit('session_reconnecting', {
             sessionId: sessionData.id,
-            error: 'WhatsApp autenticou mas não conectou. Delete e crie a sessão novamente.',
-            status: 'failed'
+            error: 'WhatsApp autenticou mas demorou para conectar. Reconexão automática em andamento.',
+            status: 'reconnecting'
           });
           // Limpa o Chromium travado
           await this.cleanupSession(sessionData.id);
+          setTimeout(() => {
+            this.autoReconnectForSend(sessionData.id).catch(err => {
+              console.error(`Reconnect after authenticated timeout failed for ${sessionData.id}: ${err.message}`);
+            });
+          }, 5000);
         }
       }, AUTHENTICATED_READY_TIMEOUT_MS);
     });
@@ -1366,13 +1371,10 @@ class SessionManager {
     // NOTA: "frame was detached" removido — com --disable-site-isolation-trials
     // é prevenido, e quando ocorre não é necessariamente fatal
     const fatalPatterns = [
-      'execution context was destroyed',
       'session closed',
-      'protocol error',
       'target closed',
       'page crashed',
       'browser disconnected',
-      'navigation failed',
       'cannot find context',
       'websocket is not open',
       'econnrefused',
