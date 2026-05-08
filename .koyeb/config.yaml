@@ -30,7 +30,7 @@ services:
       - key: STALE_SESSION_HEALTHCHECK_MS
         value: "120000"
       - key: AUTHENTICATED_READY_TIMEOUT_MS
-        value: "420000"
+        value: "180000"
     build:
       type: docker
       dockerfile: Dockerfile
