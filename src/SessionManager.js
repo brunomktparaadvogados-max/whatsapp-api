@@ -13,8 +13,8 @@ const path = require('path');
 // ═══════════════════════════════════════════════════════════════════
 // LIMITES DE MEMÓRIA — Sessões sob demanda para 20+ usuários
 // ═══════════════════════════════════════════════════════════════════
-const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 20; // 20 Chromiums (~1.6GB RAM com flags otimizados)
-const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 1800;                         // Recusa novas sessões se RSS > 1.8GB
+const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 2;  // Koyeb nano: poucos Chromiums, reconexão sob demanda via RemoteAuth
+const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 450;                          // Limite seguro para evitar queda por memória no nano
 const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
 const IDLE_DISCONNECT_MS = parseInt(process.env.IDLE_DISCONNECT_MS) || 5 * 60 * 60 * 1000; // 5 horas idle → desconecta sessão
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;        // verifica a cada 2 minutos (economiza queries)
