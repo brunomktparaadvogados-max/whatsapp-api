@@ -944,8 +944,10 @@ class SessionManager {
       // UPDATE ONLY — NÃO cria contato novo para mensagens recebidas
       // Apenas atualiza last_message_at se o contato JÁ existir no sistema
       // Isso evita que contatos pessoais do WhatsApp apareçam como leads
+      let contactExists = false;
       try {
-        await this.db.updateContactIfExists(sessionData.id, contactPhone, message._data.notifyName);
+        const updateResult = await this.db.updateContactIfExists(sessionData.id, contactPhone, message._data.notifyName);
+        contactExists = updateResult && updateResult.changes > 0;
       } catch (err) {
         // Falha no update não deve bloquear processamento da mensagem
       }
@@ -955,36 +957,45 @@ class SessionManager {
         message: messageData
       });
 
-      // Webhook — só envia para mensagens RECEBIDAS de números válidos
-      const webhookUrl = await this.db.getSessionWebhook(sessionData.id);
-      if (webhookUrl) {
-        try {
-          const webhookPayload = {
-            phone: contactPhone,
-            message: messageData.body || '',
-            fromMe: false,
-            timestamp: messageData.timestamp,
-            messageId: messageData.id,
-            sessionId: sessionData.id,
-            userId: sessionData.userId,
-            messageType: messageData.messageType,
-            notifyName: message._data?.notifyName || message._data?.pushname || null,
-            // Flag para Edge Function: NÃO criar lead novo, apenas atualizar existente
-            doNotCreateLead: true
-          };
+      // Webhook — SÓ envia se o contato EXISTE no banco (é um lead cadastrado)
+      // Contatos pessoais do WhatsApp (que não são leads) NÃO disparam webhook,
+      // impedindo que o Edge Function crie leads falsos.
+      // Antes dependíamos do flag doNotCreateLead, mas o Edge Function no projeto
+      // tnpklervxwlexgaanxlw pode não ter essa verificação.
+      if (contactExists) {
+        const webhookUrl = await this.db.getSessionWebhook(sessionData.id);
+        if (webhookUrl) {
+          try {
+            const webhookPayload = {
+              phone: contactPhone,
+              message: messageData.body || '',
+              fromMe: false,
+              timestamp: messageData.timestamp,
+              messageId: messageData.id,
+              sessionId: sessionData.id,
+              userId: sessionData.userId,
+              messageType: messageData.messageType,
+              notifyName: message._data?.notifyName || message._data?.pushname || null,
+              // Flag para Edge Function: NÃO criar lead novo, apenas atualizar existente
+              // (redundância de segurança — já filtramos acima por contactExists)
+              doNotCreateLead: true
+            };
 
-          const webhookController = new AbortController();
-          const webhookTimeout = setTimeout(() => webhookController.abort(), 5000);
-          await fetch(webhookUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(webhookPayload),
-            signal: webhookController.signal
-          });
-          clearTimeout(webhookTimeout);
-        } catch (error) {
-          console.error(`❌ Erro webhook:`, error.message);
+            const webhookController = new AbortController();
+            const webhookTimeout = setTimeout(() => webhookController.abort(), 5000);
+            await fetch(webhookUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(webhookPayload),
+              signal: webhookController.signal
+            });
+            clearTimeout(webhookTimeout);
+          } catch (error) {
+            console.error(`❌ Erro webhook:`, error.message);
+          }
         }
+      } else {
+        console.log(`👤 [${sessionData.id}] Msg de contato pessoal ${contactPhone} — webhook NÃO enviado (não é lead)`);
       }
 
       await this.processAutoReplies(sessionData.id, message);
@@ -1472,7 +1483,10 @@ class SessionManager {
     }
   }
 
-  // Espera uma sessão ficar pronta (connected/authenticated) ou falhar
+  // Espera uma sessão ficar pronta (connected = evento 'ready' disparou) ou falhar
+  // IMPORTANTE: NÃO retornar em 'authenticated' — nesse estado o client WhatsApp
+  // ainda está carregando e NÃO tem getChat/sendMessage disponíveis.
+  // Retornar em 'authenticated' causa "Cannot read properties of undefined (reading 'getChat')"
   async waitForSessionReady(sessionId, maxWaitMs) {
     const startTime = Date.now();
     const pollInterval = 2000; // checa a cada 2s
@@ -1480,13 +1494,16 @@ class SessionManager {
     while (Date.now() - startTime < maxWaitMs) {
       const session = this.sessions.get(sessionId);
       if (session) {
-        if (session.status === 'connected' || session.status === 'authenticated') {
+        // SÓ retorna quando 'connected' (evento 'ready' disparou)
+        // 'authenticated' NÃO é suficiente — client ainda carregando
+        if (session.status === 'connected') {
           return session;
         }
         // Estados terminais — não vai recuperar
         if (session.status === 'failed' || session.status === 'auth_failure') {
           return null;
         }
+        // 'authenticated' = progredindo, continua aguardando 'ready'
       }
       await new Promise(resolve => setTimeout(resolve, pollInterval));
     }
@@ -1521,9 +1538,11 @@ class SessionManager {
     // AUTO-RECONEXÃO: Se sessão desconectada, tenta reconectar via RemoteAuth
     // Isso permite que ProspectFlow envie sem o usuário ter que escanear QR
     // ═══════════════════════════════════════════════════════════════════
+    // AUTO-RECONEXÃO: 'connected' = evento 'ready' disparou, client totalmente funcional
+    // 'authenticated' NÃO é suficiente — client carregando, getChat/sendMessage não existem
     const needsReconnect = !session ||
                            !session.client ||
-                           (session.status !== 'connected' && session.status !== 'authenticated');
+                           session.status !== 'connected';
 
     if (needsReconnect) {
       console.log(`🔄 [${sessionId}] Sessão não está pronta (status: ${session?.status || 'não na memória'}). Tentando auto-reconexão...`);
@@ -1536,13 +1555,11 @@ class SessionManager {
     const client = session.client;
 
     // ═══════════════════════════════════════════════════════════════════
-    // VERIFICAÇÃO LEVE: Confia no status em memória.
-    // NÃO chama getState() a cada mensagem — isso sobrecarrega o Chromium
-    // durante disparos em lote e causa timeouts que derrubam a sessão.
-    // getState() só é chamado pelo zombie checker a cada 15 minutos.
+    // VERIFICAÇÃO LEVE: Exige status 'connected' (evento 'ready' disparou)
+    // NÃO aceita 'authenticated' — client ainda carregando, getChat undefined
     // ═══════════════════════════════════════════════════════════════════
-    if (session.status !== 'connected' && session.status !== 'authenticated') {
-      console.error(`❌ [${sessionId}] Status em memória: ${session.status} — não pode enviar`);
+    if (session.status !== 'connected') {
+      console.error(`❌ [${sessionId}] Status em memória: ${session.status} — não pode enviar (precisa de 'connected')`);
       throw new Error(`Sessão não está conectada. Status: ${session.status}. Reconecte o WhatsApp.`);
     }
 

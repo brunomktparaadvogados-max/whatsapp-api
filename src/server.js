@@ -1938,8 +1938,9 @@ process.on('unhandledRejection', (reason, promise) => {
     setTimeout(async () => {
       try {
         const activeSessions = sessionManager.getAllSessions();
-        for (const [sid, session] of activeSessions) {
-          if (session.status === 'connected' || session.status === 'ready') {
+        for (const session of activeSessions) {
+          const sid = session.id;
+          if (session.status === 'connected') {
             try {
               const alive = await sessionManager.isSessionAlive(sid);
               if (!alive) {
