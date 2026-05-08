@@ -22,7 +22,7 @@ const SESSION_INIT_TIMEOUT_MS = 120000;           // 2 minutos para Chromium ini
 const MESSAGE_SEND_TIMEOUT_MS = 30000;            // 30 segundos timeout por mensagem (reduzido de 60s para feedback rápido)
 const MIN_MESSAGE_INTERVAL_MS = 1500;             // 1.5 segundos entre mensagens (anti-rate-limit)
 const MAX_SEND_RETRIES = 0;                       // SEM retries — evita mensagens duplicadas
-const AUTO_RECONNECT_TIMEOUT_MS = 90000;          // 90s máx para auto-reconexão no envio
+const AUTO_RECONNECT_TIMEOUT_MS = 180000;         // 180s máx para auto-reconexão no envio (CPU 100% durante startup pode demorar)
 
 class SessionManager {
   constructor(database, io) {
@@ -206,8 +206,10 @@ class SessionManager {
           restored++;
 
           // Intervalo entre restaurações para não sobrecarregar CPU
+          // 8s entre cada uma — com 11 sessões e CPU limitado, 3s era insuficiente
+          // e o CPU ficava 100% sem tempo para as sessões atingirem 'ready'
           if (restored < toRestore.length) {
-            await new Promise(r => setTimeout(r, 3000));
+            await new Promise(r => setTimeout(r, 8000));
           }
         } catch (error) {
           console.error(`❌ Erro ao restaurar ${session.id}: ${error.message}`);
@@ -759,12 +761,13 @@ class SessionManager {
         info: sessionData.info
       });
 
-      // Safety net: se 'ready' não disparar em 90s após autenticação,
+      // Safety net: se 'ready' não disparar em 180s após autenticação,
       // marca como failed para o frontend não ficar preso em "Autenticado"
+      // 180s porque durante startup com muitos Chromiums (CPU 100%), o ready pode demorar mais
       setTimeout(async () => {
         const currentSession = this.sessions.get(sessionData.id);
         if (currentSession && currentSession.status === 'authenticated') {
-          console.warn(`⚠️ [${sessionData.id}] Sessão autenticada há 90s sem ficar 'ready'. Marcando como failed.`);
+          console.warn(`⚠️ [${sessionData.id}] Sessão autenticada há 180s sem ficar 'ready'. Marcando como failed.`);
           currentSession.status = 'failed';
           await this.db.updateSessionStatus(sessionData.id, 'failed');
           this.io.to(`user_${sessionData.userId}`).emit('session_error', {
@@ -775,7 +778,7 @@ class SessionManager {
           // Limpa o Chromium travado
           await this.cleanupSession(sessionData.id);
         }
-      }, 90000);
+      }, 180000);
     });
 
     // RemoteAuth: sessão salva no PostgreSQL com sucesso
