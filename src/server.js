@@ -657,12 +657,16 @@ app.post('/api/sessions/:sessionId/messages', authMiddleware, async (req, res) =
       });
 
       if (activeSessions.length === 0) {
-        return res.status(404).json({ error: 'Nenhuma sessão conectada encontrada' });
+        if (userSessions.length === 1) {
+          sessionId = userSessions[0].id;
+        } else {
+          return res.status(404).json({ error: 'Nenhuma sessão encontrada para auto-detectar' });
+        }
       }
 
       if (activeSessions.length === 1) {
         sessionId = activeSessions[0].id;
-      } else {
+      } else if (activeSessions.length > 1) {
         return res.status(400).json({
           error: 'Múltiplas sessões conectadas. Especifique qual usar.',
           sessions: activeSessions.map(s => s.id)
@@ -723,13 +727,18 @@ app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) =>
 
       if (activeSessions.length === 0) {
         console.log(`❌ [SEND MESSAGE] Nenhuma sessão conectada encontrada`);
-        return res.status(404).json({ error: 'Nenhuma sessão conectada encontrada' });
+        if (userSessions.length === 1) {
+          sessionId = userSessions[0].id;
+          console.log(`✅ [SEND MESSAGE] Sessão única encontrada no banco para reconexão: ${sessionId}`);
+        } else {
+          return res.status(404).json({ error: 'Nenhuma sessão encontrada para auto-detectar' });
+        }
       }
 
       if (activeSessions.length === 1) {
         sessionId = activeSessions[0].id;
         console.log(`✅ [SEND MESSAGE] Sessão auto-detectada: ${sessionId}`);
-      } else {
+      } else if (activeSessions.length > 1) {
         console.log(`⚠️ [SEND MESSAGE] Múltiplas sessões conectadas`);
         return res.status(400).json({
           error: 'Múltiplas sessões conectadas. Especifique qual usar.',
@@ -1669,15 +1678,19 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
       });
 
       if (activeSessions.length === 0) {
-        return res.status(404).json({
-          error: 'Nenhuma sessão conectada encontrada. Conecte seu WhatsApp primeiro.',
-          action: 'connect_whatsapp'
-        });
+        if (!isAdmin && userSessions.length === 1) {
+          targetSessionId = userSessions[0].id;
+        } else {
+          return res.status(404).json({
+            error: 'Nenhuma sessão conectada encontrada. Conecte seu WhatsApp primeiro.',
+            action: 'connect_whatsapp'
+          });
+        }
       }
 
       if (activeSessions.length === 1) {
         targetSessionId = activeSessions[0].id;
-      } else {
+      } else if (activeSessions.length > 1) {
         return res.status(400).json({
           error: 'Múltiplas sessões conectadas. Especifique qual usar no campo "sessionId".',
           sessions: activeSessions.map(s => ({

@@ -23,6 +23,12 @@ services:
         value: /usr/bin/chromium
       - key: PUPPETEER_ARGS
         value: "--no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage,--disable-gpu,--no-first-run,--no-zygote,--single-process"
+      - key: MAX_CONCURRENT_SESSIONS
+        value: "2"
+      - key: MAX_RSS_MB
+        value: "450"
+      - key: STALE_SESSION_HEALTHCHECK_MS
+        value: "120000"
     build:
       type: docker
       dockerfile: Dockerfile

@@ -20,6 +20,7 @@ const IDLE_DISCONNECT_MS = parseInt(process.env.IDLE_DISCONNECT_MS) || 5 * 60 * 
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;        // verifica a cada 2 minutos (economiza queries)
 const SESSION_INIT_TIMEOUT_MS = 120000;           // 2 minutos para Chromium iniciar
 const MESSAGE_SEND_TIMEOUT_MS = 30000;            // 30 segundos timeout por mensagem (reduzido de 60s para feedback rápido)
+const STALE_SESSION_HEALTHCHECK_MS = parseInt(process.env.STALE_SESSION_HEALTHCHECK_MS) || 2 * 60 * 1000;
 const MIN_MESSAGE_INTERVAL_MS = 1500;             // 1.5 segundos entre mensagens (anti-rate-limit)
 const MAX_SEND_RETRIES = 0;                       // SEM retries — evita mensagens duplicadas
 const AUTO_RECONNECT_TIMEOUT_MS = 180000;         // 180s máx para auto-reconexão no envio (CPU 100% durante startup pode demorar)
@@ -1564,6 +1565,20 @@ class SessionManager {
     if (session.status !== 'connected') {
       console.error(`❌ [${sessionId}] Status em memória: ${session.status} — não pode enviar (precisa de 'connected')`);
       throw new Error(`Sessão não está conectada. Status: ${session.status}. Reconecte o WhatsApp.`);
+    }
+
+    const staleForMs = Date.now() - (session.lastSeen || 0);
+    if (staleForMs > STALE_SESSION_HEALTHCHECK_MS) {
+      const alive = await this.isSessionAlive(sessionId);
+      if (!alive) {
+        console.warn(`⚠️ [${sessionId}] Sessão marcada como connected, mas Chromium não respondeu. Reconectando antes do envio...`);
+        await this.cleanupSession(sessionId);
+        await this.db.updateSessionStatus(sessionId, 'disconnected');
+        session = await this.autoReconnectForSend(sessionId);
+        if (!session || !session.client || session.status !== 'connected') {
+          throw new Error('Sessão conectada no banco, mas o Chromium não respondeu e a reconexão falhou. Tente novamente em 1 minuto.');
+        }
+      }
     }
 
     const normalizedPhone = this.normalizePhoneNumber(phoneNumber);

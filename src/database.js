@@ -33,7 +33,7 @@ class DatabaseManager {
     setTimeout(async () => {
       try {
         console.log('🧹 Executando limpeza inicial de mensagens antigas...');
-        const deletedCount = await this.deleteOldMessages(24);
+        const deletedCount = await this.deleteOldMessages(24 * 60);
         console.log(`✅ Limpeza inicial: ${deletedCount} mensagens antigas removidas`);
       } catch (error) {
         console.error('❌ Erro na limpeza inicial:', error.message);
