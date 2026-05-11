@@ -1374,6 +1374,8 @@ class SessionManager {
       'starMessage',
       'getStatus',
       'No LID for user',
+      "Cannot read properties of undefined (reading 'isBot')",
+      'reading \'isBot\'',
       'getIsMyContact',
       'detached Frame',                // Puppeteer frame bug (não fatal com --disable-site-isolation)
       'Attempted to use detached',     // Variação do mesmo bug
@@ -1712,8 +1714,10 @@ class SessionManager {
 
         return messageData;
       } catch (error) {
-        this.logRecentError(sessionId, error);
         const errMsg = error.message || '';
+        if (!this.isIgnorableWhatsAppError(error)) {
+          this.logRecentError(sessionId, error);
+        }
         console.error(`❌ [${sessionId}] Erro envio para ${normalizedPhone}${isRetry ? ' (retry)' : isLidRetry ? ' (retry LID)' : ''}:`, errMsg);
 
         // ═══════════════════════════════════════════════════════════════
@@ -1725,9 +1729,9 @@ class SessionManager {
         // 3. Reenviar com o chatId validado
         // Se getNumberId() retorna null → número não existe no WhatsApp
         // ═══════════════════════════════════════════════════════════════
-        if (errMsg.includes('No LID for user') && !isLidRetry) {
+        if ((errMsg.includes('No LID for user') || errMsg.includes("reading 'isBot'")) && !isLidRetry) {
           let hadRegisteredVariant = false;
-          console.warn(`🔄 [${sessionId}] "No LID for user" para ${normalizedPhone} — validando número e retentando...`);
+          console.warn(`🔄 [${sessionId}] Erro de resolução WhatsApp para ${normalizedPhone} — validando número e retentando...`);
           try {
             // Valida se o número realmente existe no WhatsApp
             let numberId = null;
