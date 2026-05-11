@@ -1339,6 +1339,23 @@ class SessionManager {
     return [...new Set(variants)];
   }
 
+  emitMessageSent(session, messageData) {
+    if (!session || !this.io) return;
+    this.io.to(`user_${session.userId}`).emit('message_sent', {
+      sessionId: session.id,
+      ...messageData,
+      message: {
+        ...messageData,
+        to: messageData.to || messageData.contactPhone,
+        phone: messageData.phone || messageData.contactPhone,
+        contactPhone: messageData.contactPhone,
+        status: messageData.status || 'sent',
+        fromMe: true,
+        isFromMe: true
+      }
+    });
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   // VERIFICAÇÃO DE SAÚDE DA SESSÃO — Testa se Chromium ainda responde
   // ═══════════════════════════════════════════════════════════════════
@@ -1753,6 +1770,8 @@ class SessionManager {
           unconfirmed: false,
           sessionId: sessionId,
           contactPhone: normalizedPhone,
+          to: normalizedPhone,
+          phone: normalizedPhone,
           messageType: sentMessage.type,
           body: message,
           mediaUrl: mediaUrl,
@@ -1765,6 +1784,7 @@ class SessionManager {
         await this.cachedUpsertContact(sessionId, normalizedPhone);
         session.lastSeen = Date.now();
         this.sessionLastActivity.set(sessionId, Date.now());
+        this.emitMessageSent(session, messageData);
 
         return messageData;
       } catch (error) {
@@ -1786,7 +1806,7 @@ class SessionManager {
           session.lastSeen = Date.now();
           this.sessionLastActivity.set(sessionId, Date.now());
 
-          return {
+          const messageData = {
             id: acceptedId,
             messageId: acceptedId,
             success: true,
@@ -1795,6 +1815,8 @@ class SessionManager {
             unconfirmed: false,
             sessionId: sessionId,
             contactPhone: normalizedPhone,
+            to: normalizedPhone,
+            phone: normalizedPhone,
             messageType: mediaUrl ? 'media' : 'chat',
             body: message,
             mediaUrl: mediaUrl,
@@ -1804,6 +1826,9 @@ class SessionManager {
             status: 'sent',
             note: 'Numero validado antes do envio; tratado como enviado para evitar duplicidade.'
           };
+
+          this.emitMessageSent(session, messageData);
+          return messageData;
         }
         if (!this.isIgnorableWhatsAppError(error)) {
           this.logRecentError(sessionId, error);
@@ -1853,6 +1878,8 @@ class SessionManager {
               unconfirmed: false,
               sessionId: sessionId,
               contactPhone: resolvedPhone,
+              to: resolvedPhone,
+              phone: resolvedPhone,
               messageType: mediaUrl ? 'media' : 'chat',
               body: message,
               mediaUrl: mediaUrl,
@@ -1866,6 +1893,7 @@ class SessionManager {
             await this.cachedUpsertContact(sessionId, resolvedPhone);
             session.lastSeen = Date.now();
             this.sessionLastActivity.set(sessionId, Date.now());
+            this.emitMessageSent(session, messageData);
             return messageData;
           } catch (lidRetryErr) {
             console.error(`❌ [${sessionId}] Retry LID falhou para ${normalizedPhone}: ${lidRetryErr.message}`);
@@ -1883,7 +1911,10 @@ class SessionManager {
             } else {
               if (hadRegisteredVariant) {
                 console.warn(`[${sessionId}] LID retry falhou para numero confirmado ${normalizedPhone}; mantendo contato sem marcar como invalido`);
-                return {
+                const acceptedId = `accepted_${sessionId}_${normalizedPhone}_${Date.now()}`;
+                const messageData = {
+                  id: acceptedId,
+                  messageId: acceptedId,
                   success: true,
                   confirmed: true,
                   invalidNumber: false,
@@ -1892,10 +1923,14 @@ class SessionManager {
                   note: `WhatsApp confirmou que ${normalizedPhone} existe, mas nao retornou confirmacao final do envio; tratado como enviado para evitar duplicidade.`,
                   sessionId: sessionId,
                   contactPhone: normalizedPhone,
+                  to: normalizedPhone,
+                  phone: normalizedPhone,
                   body: message,
                   fromMe: true,
                   timestamp: Math.floor(Date.now() / 1000)
                 };
+                this.emitMessageSent(session, messageData);
+                return messageData;
               }
               // Erro de número/rede — pula o contato sem derrubar sessão
               console.warn(`📵 [${sessionId}] LID retry falhou para ${normalizedPhone} — pulando contato`);
