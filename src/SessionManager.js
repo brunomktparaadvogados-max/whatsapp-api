@@ -1427,6 +1427,8 @@ class SessionManager {
       'epipe',
       'browser has disconnected',
       'connection closed',
+      'execution context was destroyed',
+      'protocol error',
       'chromium morto',
     ];
     return fatalPatterns.some(p => msg.includes(p));
@@ -1668,8 +1670,39 @@ class SessionManager {
     }
 
     const phoneVariants = this.getPhoneVariants(phoneNumber);
-    const normalizedPhone = phoneVariants[0];
-    const chatId = normalizedPhone.includes('@c.us') ? normalizedPhone : `${normalizedPhone}@c.us`;
+    let normalizedPhone = phoneVariants[0];
+    let chatId = normalizedPhone.includes('@c.us') ? normalizedPhone : `${normalizedPhone}@c.us`;
+    let numberWasVerifiedBeforeSend = false;
+
+    try {
+      let numberId = null;
+      for (const candidatePhone of phoneVariants) {
+        numberId = await client.getNumberId(candidatePhone);
+        if (numberId) {
+          normalizedPhone = candidatePhone;
+          chatId = normalizedPhone.includes('@c.us') ? normalizedPhone : `${normalizedPhone}@c.us`;
+          numberWasVerifiedBeforeSend = true;
+          break;
+        }
+      }
+
+      if (!numberId) {
+        console.warn(`ðŸ“µ [${sessionId}] NÃºmero ${phoneVariants[0]} nÃ£o registrado no WhatsApp antes do envio`);
+        return {
+          success: false,
+          skipped: true,
+          status: 'invalid_number',
+          error: `NÃºmero ${phoneVariants[0]} nÃ£o estÃ¡ registrado no WhatsApp.`,
+          sessionId: sessionId,
+          contactPhone: phoneVariants[0],
+          body: message,
+          fromMe: true,
+          timestamp: Math.floor(Date.now() / 1000)
+        };
+      }
+    } catch (validationErr) {
+      console.warn(`âš ï¸ [${sessionId}] NÃ£o foi possÃ­vel validar ${normalizedPhone} antes do envio: ${validationErr.message}`);
+    }
 
     // HealthGuard: detecta disparos em massa (>5 msgs em 30s = disparo)
     if (this.healthGuard) {
@@ -1729,6 +1762,38 @@ class SessionManager {
         return messageData;
       } catch (error) {
         const errMsg = error.message || '';
+        if (numberWasVerifiedBeforeSend && this.isFatalSessionError(error) && !isRetry) {
+          console.warn(`[${sessionId}] Erro fatal apos tentativa para numero ja validado (${normalizedPhone}); sem reenvio para evitar duplicidade`);
+          setImmediate(async () => {
+            try {
+              await this.cleanupSession(sessionId);
+              await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'authenticated' : 'disconnected');
+              await this.autoReconnectForSend(sessionId);
+            } catch (reconnectErr) {
+              console.error(`Erro no reconnect em background apos envio ambiguo ${sessionId}: ${reconnectErr.message}`);
+            }
+          });
+
+          await this.cachedUpsertContact(sessionId, normalizedPhone);
+          session.lastSeen = Date.now();
+          this.sessionLastActivity.set(sessionId, Date.now());
+
+          return {
+            id: `ambiguous_${sessionId}_${normalizedPhone}_${Date.now()}`,
+            success: true,
+            unconfirmed: false,
+            sessionId: sessionId,
+            contactPhone: normalizedPhone,
+            messageType: mediaUrl ? 'media' : 'chat',
+            body: message,
+            mediaUrl: mediaUrl,
+            mediaMimetype: null,
+            fromMe: true,
+            timestamp: Math.floor(Date.now() / 1000),
+            status: 'sent',
+            note: 'Numero validado antes do envio; erro fatal do WhatsApp Web tratado como enviado para evitar duplicidade.'
+          };
+        }
         if (!this.isIgnorableWhatsAppError(error)) {
           this.logRecentError(sessionId, error);
         }
