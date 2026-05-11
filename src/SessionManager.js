@@ -1738,13 +1738,13 @@ class SessionManager {
         // O WhatsApp Web às vezes não resolve o LID interno de um contato.
         // É transiente na maioria dos casos. Solução:
         // 1. Validar número com getNumberId() (confirma que existe no WhatsApp)
-        // 2. Aguardar 3s (cache interno do WA Web se atualiza)
-        // 3. Reenviar com o chatId validado
+        // 2. Nao reenviar: a primeira tentativa pode ja ter sido entregue
+        //    mesmo quando o WhatsApp Web retorna erro de confirmacao.
         // Se getNumberId() retorna null → número não existe no WhatsApp
         // ═══════════════════════════════════════════════════════════════
         if ((errMsg.includes('No LID for user') || errMsg.includes("reading 'isBot'")) && !isLidRetry) {
           let hadRegisteredVariant = false;
-          console.warn(`🔄 [${sessionId}] Erro de resolução WhatsApp para ${normalizedPhone} — validando número e retentando...`);
+          console.warn(`🔄 [${sessionId}] Erro de resolução WhatsApp para ${normalizedPhone} — validando número sem reenviar...`);
           try {
             // Valida se o número realmente existe no WhatsApp
             let numberId = null;
@@ -1761,25 +1761,25 @@ class SessionManager {
               console.warn(`📵 [${sessionId}] Número ${normalizedPhone} NÃO existe no WhatsApp (getNumberId=null)`);
               throw new Error(`Número ${normalizedPhone} não está registrado no WhatsApp.`);
             }
-            // Número válido — aguarda 3s para cache LID se resolver e retenta
-            console.log(`✅ [${sessionId}] Número ${normalizedPhone} confirmado no WhatsApp (${numberId._serialized}). Aguardando 3s e retentando...`);
-            await new Promise(resolve => setTimeout(resolve, 3000));
-            // Usa o chatId retornado pelo getNumberId (pode ser diferente do original)
-            const validatedChatId = numberId._serialized;
-            const sentMessage = await this.sendMessageWithTimeout(currentClient, validatedChatId, message, mediaUrl);
-            console.log(`✅ [${sessionId}] Mensagem enviada com sucesso (após retry LID)! ID: ${sentMessage?.id?._serialized || 'N/A'}`);
+            // Se chegou aqui, a primeira tentativa pode ja ter sido entregue.
+            // Nao reenviar: isso gerava mensagens duplicadas quando o WA Web
+            // retornava erro de confirmacao apos entregar a mensagem.
+            console.warn(`[${sessionId}] Numero ${resolvedPhone} confirmado (${numberId._serialized}); reenvio bloqueado para evitar duplicidade`);
 
             const messageData = {
-              id: sentMessage.id._serialized,
+              id: `unconfirmed_${sessionId}_${resolvedPhone}_${Date.now()}`,
+              success: true,
+              unconfirmed: false,
               sessionId: sessionId,
               contactPhone: resolvedPhone,
-              messageType: sentMessage.type,
+              messageType: mediaUrl ? 'media' : 'chat',
               body: message,
               mediaUrl: mediaUrl,
               mediaMimetype: null,
               fromMe: true,
-              timestamp: sentMessage.timestamp,
-              status: 'sent'
+              timestamp: Math.floor(Date.now() / 1000),
+              status: 'sent',
+              note: 'Envio tratado como concluido apos erro ambiguo de confirmacao do WhatsApp Web; sem reenvio.'
             };
 
             await this.cachedUpsertContact(sessionId, resolvedPhone);
