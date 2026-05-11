@@ -159,6 +159,8 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
       message: 'Envio duplicado ignorado: esta mesma mensagem ja esta em processamento para este contato.',
       data: {
         status: 'sent',
+        confirmed: true,
+        invalidNumber: false,
         duplicate: true,
         duplicateSuppressed: true,
         note: 'Envio duplicado suprimido; manter lead como enviado.'
@@ -169,6 +171,10 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
   const result = await sessionManager.sendMessage(sessionId, to, message, mediaUrl);
   return res.status(result?.skipped ? 422 : 200).json({
     success: !result?.skipped,
+    status: result?.status || (result?.skipped ? 'invalid_number' : 'sent'),
+    confirmed: !result?.skipped,
+    invalidNumber: result?.status === 'invalid_number',
+    messageId: result?.messageId || result?.id || null,
     skipped: !!result?.skipped,
     unconfirmed: !!result?.unconfirmed,
     sessionId,

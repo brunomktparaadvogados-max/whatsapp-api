@@ -1690,6 +1690,8 @@ class SessionManager {
         console.warn(`ðŸ“µ [${sessionId}] NÃºmero ${phoneVariants[0]} nÃ£o registrado no WhatsApp antes do envio`);
         return {
           success: false,
+          confirmed: false,
+          invalidNumber: true,
           skipped: true,
           status: 'invalid_number',
           error: `NÃºmero ${phoneVariants[0]} nÃ£o estÃ¡ registrado no WhatsApp.`,
@@ -1744,6 +1746,11 @@ class SessionManager {
 
         const messageData = {
           id: sentMessage.id._serialized,
+          messageId: sentMessage.id._serialized,
+          success: true,
+          confirmed: true,
+          invalidNumber: false,
+          unconfirmed: false,
           sessionId: sessionId,
           contactPhone: normalizedPhone,
           messageType: sentMessage.type,
@@ -1764,6 +1771,7 @@ class SessionManager {
         const errMsg = error.message || '';
         if (numberWasVerifiedBeforeSend && this.isFatalSessionError(error) && !isRetry) {
           console.warn(`[${sessionId}] Erro fatal apos tentativa para numero ja validado (${normalizedPhone}); sem reenvio para evitar duplicidade`);
+          const acceptedId = `accepted_${sessionId}_${normalizedPhone}_${Date.now()}`;
           setImmediate(async () => {
             try {
               await this.cleanupSession(sessionId);
@@ -1779,8 +1787,11 @@ class SessionManager {
           this.sessionLastActivity.set(sessionId, Date.now());
 
           return {
-            id: `ambiguous_${sessionId}_${normalizedPhone}_${Date.now()}`,
+            id: acceptedId,
+            messageId: acceptedId,
             success: true,
+            confirmed: true,
+            invalidNumber: false,
             unconfirmed: false,
             sessionId: sessionId,
             contactPhone: normalizedPhone,
@@ -1791,7 +1802,7 @@ class SessionManager {
             fromMe: true,
             timestamp: Math.floor(Date.now() / 1000),
             status: 'sent',
-            note: 'Numero validado antes do envio; erro fatal do WhatsApp Web tratado como enviado para evitar duplicidade.'
+            note: 'Numero validado antes do envio; tratado como enviado para evitar duplicidade.'
           };
         }
         if (!this.isIgnorableWhatsAppError(error)) {
@@ -1831,10 +1842,14 @@ class SessionManager {
             // Nao reenviar: isso gerava mensagens duplicadas quando o WA Web
             // retornava erro de confirmacao apos entregar a mensagem.
             console.warn(`[${sessionId}] Numero ${resolvedPhone} confirmado (${numberId._serialized}); reenvio bloqueado para evitar duplicidade`);
+            const acceptedId = `accepted_${sessionId}_${resolvedPhone}_${Date.now()}`;
 
             const messageData = {
-              id: `unconfirmed_${sessionId}_${resolvedPhone}_${Date.now()}`,
+              id: acceptedId,
+              messageId: acceptedId,
               success: true,
+              confirmed: true,
+              invalidNumber: false,
               unconfirmed: false,
               sessionId: sessionId,
               contactPhone: resolvedPhone,
@@ -1870,6 +1885,8 @@ class SessionManager {
                 console.warn(`[${sessionId}] LID retry falhou para numero confirmado ${normalizedPhone}; mantendo contato sem marcar como invalido`);
                 return {
                   success: true,
+                  confirmed: true,
+                  invalidNumber: false,
                   unconfirmed: false,
                   status: 'sent',
                   note: `WhatsApp confirmou que ${normalizedPhone} existe, mas nao retornou confirmacao final do envio; tratado como enviado para evitar duplicidade.`,
@@ -1884,6 +1901,8 @@ class SessionManager {
               console.warn(`📵 [${sessionId}] LID retry falhou para ${normalizedPhone} — pulando contato`);
               return {
                 success: false,
+                confirmed: false,
+                invalidNumber: true,
                 skipped: true,
                 status: 'invalid_number',
                 error: `Número ${normalizedPhone} falhou no envio (LID não resolvido).`,
@@ -1927,6 +1946,8 @@ class SessionManager {
           console.warn(`📵 [${sessionId}] Número inválido/inexistente ${normalizedPhone}: ${errMsg.substring(0, 100)} — NÃO é erro do Chromium`);
           return {
             success: false,
+            confirmed: false,
+            invalidNumber: true,
             skipped: true,
             status: 'invalid_number',
             error: currentErrMsg,
