@@ -1558,7 +1558,7 @@ setInterval(async () => {
     if (s.status === 'authenticated' && s.lastSeen && (now - s.lastSeen) > 5 * 60 * 1000) {
       console.warn(`🧟 Sessão zumbi: ${s.id} — "authenticated" por ${Math.round((now - s.lastSeen) / 1000)}s`);
       await sessionManager.cleanupSession(s.id);
-      await db.updateSessionStatus(s.id, 'disconnected');
+      await db.updateSessionStatus(s.id, await sessionManager.hasSavedRemoteAuth(s.id) ? 'authenticated' : 'disconnected');
     }
 
     // Caso 2: Sessão "connected" mas SEM ATIVIDADE por mais de 30 min
@@ -1569,7 +1569,7 @@ setInterval(async () => {
         if (!alive) {
           console.warn(`🧟 Sessão ${s.id} — "connected" mas Chromium morto (inativa ${Math.round((now - s.lastSeen) / 60000)}min)`);
           await sessionManager.cleanupSession(s.id);
-          await db.updateSessionStatus(s.id, 'disconnected');
+          await db.updateSessionStatus(s.id, await sessionManager.hasSavedRemoteAuth(s.id) ? 'authenticated' : 'disconnected');
 
           // Tenta auto-reconexão antes de notificar desconexão
           console.log(`🔄 [${s.id}] Tentando auto-reconexão após detectar Chromium morto...`);
@@ -1994,7 +1994,7 @@ process.on('SIGTERM', async () => {
         }
       }
       // Marca como disconnected no banco (NÃO deleta)
-      await db.updateSessionStatus(session.id, 'disconnected');
+      await db.updateSessionStatus(session.id, await sessionManager.hasSavedRemoteAuth(session.id) ? 'authenticated' : 'disconnected');
     } catch (error) {
       console.error(`❌ Erro ao encerrar ${session.id}:`, error.message);
     }
@@ -2040,7 +2040,7 @@ process.on('unhandledRejection', (reason, promise) => {
               if (!alive) {
                 console.error(`🧟 [${sid}] Chromium morto detectado via unhandledRejection! Reconectando...`);
                 await sessionManager.cleanupSession(sid);
-                await db.updateSessionStatus(sid, 'disconnected');
+                await db.updateSessionStatus(sid, await sessionManager.hasSavedRemoteAuth(sid) ? 'authenticated' : 'disconnected');
                 try {
                   const reconSession = await sessionManager.autoReconnectForSend(sid);
                   if (reconSession) {

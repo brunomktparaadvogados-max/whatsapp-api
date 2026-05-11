@@ -244,6 +244,16 @@ class SessionManager {
     }
   }
 
+  async hasSavedRemoteAuth(sessionId) {
+    if (!this.pgStore || !this.useRemoteAuth) return false;
+    try {
+      return await this.pgStore.sessionExists({ session: `RemoteAuth-${sessionId}` });
+    } catch (error) {
+      console.warn(`Erro ao verificar RemoteAuth de ${sessionId}: ${error.message}`);
+      return false;
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   // DESCONEXÃO POR INATIVIDADE: Destrói sessão completamente
   // Usuário precisa criar nova sessão e escanear QR novamente
@@ -352,7 +362,7 @@ class SessionManager {
 
         // Marca como disconnected em vez de tentar restaurar
         if (session.status === 'connected' || session.status === 'authenticated') {
-          await this.db.updateSessionStatus(sessionId, 'disconnected');
+          await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'authenticated' : 'disconnected');
           console.log(`📴 Sessão ${sessionId}: ${session.status} → disconnected`);
         }
       }
@@ -530,8 +540,9 @@ class SessionManager {
       }
 
       // Limpa recursos sem deletar do banco (permite tentar de novo)
+      const failedStatus = await this.hasSavedRemoteAuth(sessionData.id) ? 'authenticated' : 'failed';
       await this.cleanupSession(sessionData.id);
-      await this.db.updateSessionStatus(sessionData.id, 'failed');
+      await this.db.updateSessionStatus(sessionData.id, failedStatus);
 
       console.log(`💾 Sessão ${sessionData.id} marcada como 'failed' no banco`);
 
@@ -539,7 +550,7 @@ class SessionManager {
       this.io.to(`user_${sessionData.userId}`).emit('session_error', {
         sessionId: sessionData.id,
         error: 'Falha ao inicializar sessão. Tente criar novamente.',
-        status: 'failed'
+        status: failedStatus
       });
     }
   }
@@ -725,8 +736,9 @@ class SessionManager {
       // Se é um erro fatal que indica que o Chromium morreu
       if (this.isFatalSessionError(error)) {
         console.error(`💀 [${sessionData.id}] Erro FATAL detectado no event handler. Iniciando reconexão...`);
-        sessionData.status = 'disconnected';
-        await this.db.updateSessionStatus(sessionData.id, 'disconnected');
+        const nextStatus = await this.hasSavedRemoteAuth(sessionData.id) ? 'authenticated' : 'disconnected';
+        sessionData.status = nextStatus;
+        await this.db.updateSessionStatus(sessionData.id, nextStatus);
 
         this.io.to(`user_${sessionData.userId}`).emit('session_disconnected', {
           sessionId: sessionData.id,
@@ -786,8 +798,9 @@ class SessionManager {
         const currentSession = this.sessions.get(sessionData.id);
         if (currentSession && currentSession.status === 'authenticated') {
           console.warn(`⚠️ [${sessionData.id}] Sessão autenticada há 180s sem ficar 'ready'. Marcando como failed.`);
-          currentSession.status = 'disconnected';
-          await this.db.updateSessionStatus(sessionData.id, 'disconnected');
+          const nextStatus = await this.hasSavedRemoteAuth(sessionData.id) ? 'authenticated' : 'disconnected';
+          currentSession.status = nextStatus;
+          await this.db.updateSessionStatus(sessionData.id, nextStatus);
           this.io.to(`user_${sessionData.userId}`).emit('session_reconnecting', {
             sessionId: sessionData.id,
             error: 'WhatsApp autenticou mas demorou para conectar. Reconexão automática em andamento.',
@@ -847,14 +860,14 @@ class SessionManager {
       sessionData.status = 'auth_failure';
       sessionData.lastSeen = Date.now();
 
-      await this.db.updateSessionStatus(sessionData.id, 'auth_failure');
+      await this.db.updateSessionStatus(sessionData.id, 'authenticated');
 
       // Auth falhou — RemoteAuth data está corrompido, deletar para forçar novo QR
       if (this.pgStore) {
         try {
           const authSessionId = `RemoteAuth-${sessionData.id}`;
-          await this.pgStore.delete({ session: authSessionId });
-          console.log(`🗑️ [${sessionData.id}] RemoteAuth corrompido deletado — próximo login pedirá QR`);
+          // Preserva RemoteAuth; remocao so deve ocorrer em logout explicito.
+          console.warn(`[${sessionData.id}] Auth failure detectado, mas RemoteAuth foi preservado: ${authSessionId}`);
         } catch (e) {
           console.warn(`⚠️ Erro ao limpar RemoteAuth corrompido: ${e.message}`);
         }
