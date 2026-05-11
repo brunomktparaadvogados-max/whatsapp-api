@@ -45,6 +45,7 @@ class SessionManager {
     this.reconnectingSet = new Set();       // Sessões em processo de auto-reconexão
     this.reconnectPromises = new Map();     // Promises de reconexão em andamento
     this.reconnectCancelled = new Set();   // Sessões que tiveram reconnect cancelado
+    this.remoteAuthSaveInFlight = new Set(); // Evita backups RemoteAuth simultaneos da mesma sessao
     this._contactCache = new Map();          // Cache de contatos: "session_phone" → timestamp (evita upsert repetido)
     this._contactCacheTTL = 10 * 60 * 1000; // 10 min TTL — mesmo contato não faz upsert de novo por 10 min
 
@@ -251,6 +252,33 @@ class SessionManager {
     } catch (error) {
       console.warn(`Erro ao verificar RemoteAuth de ${sessionId}: ${error.message}`);
       return false;
+    }
+  }
+
+  scheduleRemoteAuthBackup(sessionData, delayMs, reason) {
+    if (!this.useRemoteAuth || !sessionData?.client?.authStrategy?.storeRemoteSession) return;
+    setTimeout(() => {
+      this.forceRemoteAuthBackup(sessionData.id, reason).catch(error => {
+        console.warn(`[${sessionData.id}] Backup RemoteAuth (${reason}) falhou: ${error.message}`);
+      });
+    }, delayMs).unref?.();
+  }
+
+  async forceRemoteAuthBackup(sessionId, reason = 'manual') {
+    if (!this.pgStore || !this.useRemoteAuth) return false;
+    if (await this.hasSavedRemoteAuth(sessionId)) return true;
+
+    const session = this.sessions.get(sessionId);
+    if (!session?.client?.authStrategy?.storeRemoteSession) return false;
+    if (this.remoteAuthSaveInFlight.has(sessionId)) return false;
+
+    this.remoteAuthSaveInFlight.add(sessionId);
+    try {
+      console.log(`[${sessionId}] Forcando primeiro backup RemoteAuth (${reason})`);
+      await session.client.authStrategy.storeRemoteSession({ emit: true });
+      return await this.hasSavedRemoteAuth(sessionId);
+    } finally {
+      this.remoteAuthSaveInFlight.delete(sessionId);
     }
   }
 
@@ -704,7 +732,7 @@ class SessionManager {
         ? new RemoteAuth({
             clientId: sessionId,
             store: this.pgStore,
-            backupSyncIntervalMs: 30 * 60 * 1000 // Salva sessão no PostgreSQL a cada 30 minutos (reduz carga no Supabase durante disparos)
+            backupSyncIntervalMs: 60 * 1000 // Salva frequentemente para proteger novos scans contra deploy/restart
           })
         : new LocalAuth({
             clientId: sessionId,
@@ -785,6 +813,8 @@ class SessionManager {
       this.sessionLastActivity.set(sessionData.id, Date.now());
 
       await this.db.updateSessionStatus(sessionData.id, 'authenticated');
+      this.scheduleRemoteAuthBackup(sessionData, 20000, 'authenticated');
+      this.scheduleRemoteAuthBackup(sessionData, 70000, 'authenticated_retry');
 
       this.io.to(`user_${sessionData.userId}`).emit('session_authenticated', {
         sessionId: sessionData.id,
@@ -844,6 +874,8 @@ class SessionManager {
         client.info.wid._serialized,
         client.info.pushname
       );
+      this.scheduleRemoteAuthBackup(sessionData, 10000, 'ready');
+      this.scheduleRemoteAuthBackup(sessionData, 60000, 'ready_retry');
 
       console.log(`💾 Sessão ${sessionData.id} salva com status: connected`);
       console.log(`📞 Número: ${client.info.wid._serialized} | 👤 Nome: ${client.info.pushname}`);

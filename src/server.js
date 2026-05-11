@@ -521,9 +521,18 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
     const session = sessionManager.getSession(sessionId);
     
     if (!session) {
-      return res.status(404).json({ 
-        error: 'Sessão não encontrada',
-        message: 'Sua sessão ainda não foi criada. Faça login novamente ou aguarde a inicialização.'
+      const dbSession = await db.getSession(sessionId);
+      if (!dbSession || ['qr_code', 'failed', 'disconnected', 'authenticated'].includes(dbSession.status)) {
+        setImmediate(() => {
+          sessionManager.createSession(sessionId, req.userId).catch(error => {
+            console.error(`Erro ao preparar sessao ${sessionId}:`, error.message);
+          });
+        });
+      }
+      return res.json({
+        success: true,
+        status: 'initializing',
+        message: 'Sessao sendo preparada. Aguarde atualizar.'
       });
     }
 
@@ -545,9 +554,19 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
     const session = sessionManager.getSession(sessionId);
     
     if (!session) {
-      return res.status(404).json({ 
-        error: 'Sessão não encontrada',
-        message: 'Sua sessão ainda não foi criada. Aguarde alguns minutos após o login.'
+      const dbSession = await db.getSession(sessionId);
+      if (!dbSession || ['qr_code', 'failed', 'disconnected', 'authenticated'].includes(dbSession.status)) {
+        setImmediate(() => {
+          sessionManager.createSession(sessionId, req.userId).catch(error => {
+            console.error(`Erro ao preparar sessao ${sessionId}:`, error.message);
+          });
+        });
+      }
+      return res.json({
+        success: true,
+        status: 'initializing',
+        qrCode: null,
+        message: 'Sessao sendo preparada. Aguarde o QR Code atualizar.'
       });
     }
 
