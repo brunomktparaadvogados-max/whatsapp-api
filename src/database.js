@@ -224,6 +224,19 @@ class DatabaseManager {
       )
     `);
 
+    await this.run(`
+      CREATE TABLE IF NOT EXISTS whatsapp_send_locks (
+        lock_key TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        contact_phone TEXT NOT NULL,
+        message_hash TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMP NOT NULL
+      )
+    `);
+
+    await this.run(`CREATE INDEX IF NOT EXISTS idx_whatsapp_send_locks_expires ON whatsapp_send_locks(expires_at)`);
+
     try {
       await this.run(`
         DO $$
@@ -320,7 +333,7 @@ class DatabaseManager {
 
   async updateSessionStatus(sessionId, status, phoneNumber = null, phoneName = null) {
     return await this.run(
-      'UPDATE sessions SET status = $1, phone_number = $2, phone_name = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4',
+      'UPDATE sessions SET status = $1, phone_number = COALESCE($2, phone_number), phone_name = COALESCE($3, phone_name), updated_at = CURRENT_TIMESTAMP WHERE id = $4',
       [status, phoneNumber, phoneName, sessionId]
     );
   }
@@ -380,6 +393,19 @@ class DatabaseManager {
       console.error('❌ Erro ao salvar mensagem:', error.message);
       throw error;
     }
+  }
+
+  async acquireWhatsAppSendLock(lockKey, sessionId, contactPhone, messageHash, ttlMs = 120000) {
+    await this.run('DELETE FROM whatsapp_send_locks WHERE expires_at < NOW()');
+
+    const result = await this.query(`
+      INSERT INTO whatsapp_send_locks (lock_key, session_id, contact_phone, message_hash, expires_at)
+      VALUES ($1, $2, $3, $4, NOW() + ($5 * interval '1 millisecond'))
+      ON CONFLICT (lock_key) DO NOTHING
+      RETURNING lock_key
+    `, [lockKey, sessionId, contactPhone, messageHash, ttlMs]);
+
+    return result.rowCount > 0;
   }
 
   async updateMessageStatus(messageId, status) {

@@ -223,7 +223,7 @@ class HealthGuard {
         if (result.rows.length > 0) {
           const updatedAt = new Date(result.rows[0].updated_at);
           const hoursAgo = (Date.now() - updatedAt.getTime()) / (1000 * 60 * 60);
-          if (hoursAgo < 2) {
+          if (hoursAgo < 24 * 7) {
             console.warn(`⚠️ [HealthGuard] ${sessionId} (${sizeMB}MB) atualizado há ${hoursAgo.toFixed(1)}h — NÃO deletar (proteção anti-perda por restart)`);
             return;
           }
@@ -236,7 +236,7 @@ class HealthGuard {
       // PROTEÇÃO 3: Sessão existe na tabela sessions (usuário ativo) — preservar
       try {
         const dbSession = await this.db.getSession(shortId);
-        if (dbSession && dbSession.status !== 'disconnected') {
+        if (dbSession) {
           console.warn(`⚠️ [HealthGuard] ${sessionId} (${sizeMB}MB) sessão ativa no banco (${dbSession.status}) — NÃO deletar`);
           return;
         }

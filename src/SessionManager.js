@@ -142,6 +142,14 @@ class SessionManager {
       }
 
       // Identifica sessões com RemoteAuth salvo
+      let authSessionsById = new Map();
+      try {
+        const savedAuthSessions = await this.pgStore.listSessions();
+        authSessionsById = new Map(savedAuthSessions.map(s => [String(s.session_id).replace('RemoteAuth-', ''), s]));
+      } catch (listErr) {
+        console.warn(`Erro ao listar RemoteAuth para priorizacao: ${listErr.message}`);
+      }
+
       const sessionsWithAuth = [];
       for (const session of validSessions) {
         try {
@@ -160,6 +168,14 @@ class SessionManager {
 
       console.log(`🔑 ${sessionsWithAuth.length} sessões com RemoteAuth encontradas`);
 
+      sessionsWithAuth.sort((a, b) => {
+        const authA = authSessionsById.get(a.id);
+        const authB = authSessionsById.get(b.id);
+        const timeA = authA?.updated_at ? new Date(authA.updated_at).getTime() : new Date(a.updated_at || 0).getTime();
+        const timeB = authB?.updated_at ? new Date(authB.updated_at).getTime() : new Date(b.updated_at || 0).getTime();
+        return timeB - timeA;
+      });
+
       if (sessionsWithAuth.length === 0) {
         console.log(`💡 Nenhuma sessão para restaurar. Usuários precisarão escanear QR.`);
         return;
@@ -174,7 +190,7 @@ class SessionManager {
 
       // Sessões que excedem o limite ficam disconnected (auto-reconexão sob demanda)
       for (const s of remaining) {
-        await this.db.updateSessionStatus(s.id, 'disconnected');
+        await this.db.updateSessionStatus(s.id, 'authenticated');
         console.log(`⏸️ ${s.id}: RemoteAuth salvo mas slot cheio — reconexão sob demanda`);
       }
 

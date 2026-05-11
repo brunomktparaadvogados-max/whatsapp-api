@@ -5,6 +5,7 @@ const socketIo = require('socket.io');
 const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 require('dotenv').config();
 
 const PORT = process.env.PORT || 3000;
@@ -69,11 +70,16 @@ const SEND_DEDUPE_MS = 2 * 60 * 1000;
 function getWhatsAppSendKey(sessionId, to, message) {
   const cleanTo = String(to || '').replace(/\D/g, '');
   const cleanMessage = String(message || '').trim().replace(/\s+/g, ' ');
-  return `${sessionId}:${cleanTo}:${cleanMessage}`;
+  const messageHash = crypto.createHash('sha256').update(cleanMessage).digest('hex');
+  return {
+    cleanTo,
+    messageHash,
+    key: `${sessionId}:${cleanTo}:${messageHash}`
+  };
 }
 
 function claimWhatsAppSend(sessionId, to, message) {
-  const key = getWhatsAppSendKey(sessionId, to, message);
+  const { key } = getWhatsAppSendKey(sessionId, to, message);
   const now = Date.now();
   const existing = recentWhatsAppSends.get(key);
   if (existing && (now - existing) < SEND_DEDUPE_MS) {
@@ -82,6 +88,23 @@ function claimWhatsAppSend(sessionId, to, message) {
 
   recentWhatsAppSends.set(key, now);
   setTimeout(() => recentWhatsAppSends.delete(key), SEND_DEDUPE_MS).unref?.();
+  return { duplicate: false, key };
+}
+
+async function claimWhatsAppSendGlobal(sessionId, to, message) {
+  const localClaim = claimWhatsAppSend(sessionId, to, message);
+  if (localClaim.duplicate) return localClaim;
+
+  const { cleanTo, messageHash, key } = getWhatsAppSendKey(sessionId, to, message);
+  try {
+    const acquired = await db.acquireWhatsAppSendLock(key, sessionId, cleanTo, messageHash, SEND_DEDUPE_MS);
+    if (!acquired) {
+      return { duplicate: true, key };
+    }
+  } catch (error) {
+    console.warn(`Falha ao gravar trava global de envio (${sessionId}/${cleanTo}); usando trava local: ${error.message}`);
+  }
+
   return { duplicate: false, key };
 }
 
@@ -112,7 +135,7 @@ function respondQueued(res, sessionId) {
 }
 
 async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null) {
-  const sendClaim = claimWhatsAppSend(sessionId, to, message);
+  const sendClaim = await claimWhatsAppSendGlobal(sessionId, to, message);
   if (sendClaim.duplicate) {
     return res.status(202).json({
       success: true,
