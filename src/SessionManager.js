@@ -1295,6 +1295,20 @@ class SessionManager {
     return normalized;
   }
 
+  getPhoneVariants(phoneNumber) {
+    const normalized = this.normalizePhoneNumber(phoneNumber);
+    const variants = [normalized];
+
+    // Brazilian mobile contacts may resolve in WhatsApp with or without the ninth digit.
+    if (normalized.startsWith('55') && normalized.length === 13 && normalized[4] === '9') {
+      variants.push(`${normalized.slice(0, 4)}${normalized.slice(5)}`);
+    } else if (normalized.startsWith('55') && normalized.length === 12) {
+      variants.push(`${normalized.slice(0, 4)}9${normalized.slice(4)}`);
+    }
+
+    return [...new Set(variants)];
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   // VERIFICAÇÃO DE SAÚDE DA SESSÃO — Testa se Chromium ainda responde
   // ═══════════════════════════════════════════════════════════════════
@@ -1621,7 +1635,8 @@ class SessionManager {
       }
     }
 
-    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+    const phoneVariants = this.getPhoneVariants(phoneNumber);
+    const normalizedPhone = phoneVariants[0];
     const chatId = normalizedPhone.includes('@c.us') ? normalizedPhone : `${normalizedPhone}@c.us`;
 
     // HealthGuard: detecta disparos em massa (>5 msgs em 30s = disparo)
@@ -1695,10 +1710,20 @@ class SessionManager {
         // Se getNumberId() retorna null → número não existe no WhatsApp
         // ═══════════════════════════════════════════════════════════════
         if (errMsg.includes('No LID for user') && !isLidRetry) {
+          let hadRegisteredVariant = false;
           console.warn(`🔄 [${sessionId}] "No LID for user" para ${normalizedPhone} — validando número e retentando...`);
           try {
             // Valida se o número realmente existe no WhatsApp
-            const numberId = await currentClient.getNumberId(normalizedPhone);
+            let numberId = null;
+            let resolvedPhone = normalizedPhone;
+            for (const candidatePhone of phoneVariants) {
+              numberId = await currentClient.getNumberId(candidatePhone);
+              if (numberId) {
+                resolvedPhone = candidatePhone;
+                break;
+              }
+            }
+            hadRegisteredVariant = !!numberId;
             if (!numberId) {
               console.warn(`📵 [${sessionId}] Número ${normalizedPhone} NÃO existe no WhatsApp (getNumberId=null)`);
               throw new Error(`Número ${normalizedPhone} não está registrado no WhatsApp.`);
@@ -1714,7 +1739,7 @@ class SessionManager {
             const messageData = {
               id: sentMessage.id._serialized,
               sessionId: sessionId,
-              contactPhone: normalizedPhone,
+              contactPhone: resolvedPhone,
               messageType: sentMessage.type,
               body: message,
               mediaUrl: mediaUrl,
@@ -1724,7 +1749,7 @@ class SessionManager {
               status: 'sent'
             };
 
-            await this.cachedUpsertContact(sessionId, normalizedPhone);
+            await this.cachedUpsertContact(sessionId, resolvedPhone);
             session.lastSeen = Date.now();
             this.sessionLastActivity.set(sessionId, Date.now());
             return messageData;
@@ -1742,6 +1767,20 @@ class SessionManager {
               // Atualiza errMsg para que o handler fatal abaixo funcione corretamente
               error = lidRetryErr;
             } else {
+              if (hadRegisteredVariant) {
+                console.warn(`[${sessionId}] LID retry falhou para numero confirmado ${normalizedPhone}; mantendo contato sem marcar como invalido`);
+                return {
+                  success: true,
+                  unconfirmed: true,
+                  status: 'sent_unconfirmed',
+                  error: `WhatsApp confirmou que ${normalizedPhone} existe, mas nao retornou confirmacao final do envio.`,
+                  sessionId: sessionId,
+                  contactPhone: normalizedPhone,
+                  body: message,
+                  fromMe: true,
+                  timestamp: Math.floor(Date.now() / 1000)
+                };
+              }
               // Erro de número/rede — pula o contato sem derrubar sessão
               console.warn(`📵 [${sessionId}] LID retry falhou para ${normalizedPhone} — pulando contato`);
               return {
@@ -1783,8 +1822,6 @@ class SessionManager {
           'unpaired',
           'could not send message to',
           'getcontactbyid',
-          'no lid for user',              // LID não resolvido — erro do número
-          'lid não resolvido',            // Variação em PT
         ].some(p => errLower.includes(p));
 
         if (isInvalidNumberError) {
