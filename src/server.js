@@ -67,8 +67,23 @@ app.use('/api', (req, res, next) => {
 const recentWhatsAppSends = new Map();
 const SEND_DEDUPE_MS = 2 * 60 * 1000;
 
+function normalizeWhatsAppPhoneForDedupe(to) {
+  let cleanTo = String(to || '').replace(/\D/g, '');
+  if (!cleanTo) return cleanTo;
+
+  if (cleanTo.length >= 10 && cleanTo.length <= 11 && !cleanTo.startsWith('55')) {
+    cleanTo = `55${cleanTo}`;
+  }
+
+  if (cleanTo.length === 13 && cleanTo.startsWith('55') && cleanTo[4] === '9') {
+    return `${cleanTo.slice(0, 4)}${cleanTo.slice(5)}`;
+  }
+
+  return cleanTo;
+}
+
 function getWhatsAppSendKey(sessionId, to, message) {
-  const cleanTo = String(to || '').replace(/\D/g, '');
+  const cleanTo = normalizeWhatsAppPhoneForDedupe(to);
   const cleanMessage = String(message || '').trim().replace(/\s+/g, ' ');
   const messageHash = crypto.createHash('sha256').update(cleanMessage).digest('hex');
   return {
@@ -137,30 +152,29 @@ function respondQueued(res, sessionId) {
 async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null) {
   const sendClaim = await claimWhatsAppSendGlobal(sessionId, to, message);
   if (sendClaim.duplicate) {
-    return res.status(202).json({
+    return res.status(200).json({
       success: true,
       duplicate: true,
       sessionId,
       message: 'Envio duplicado ignorado: esta mesma mensagem ja esta em processamento para este contato.',
-      data: { status: 'duplicate_suppressed' }
+      data: {
+        status: 'sent',
+        duplicate: true,
+        duplicateSuppressed: true,
+        note: 'Envio duplicado suprimido; manter lead como enviado.'
+      }
     });
   }
 
-  const liveSession = sessionManager.getSession(sessionId);
-  if (liveSession?.client && liveSession.status === 'connected') {
-    const result = await sessionManager.sendMessage(sessionId, to, message, mediaUrl);
-    return res.status(result?.skipped ? 422 : 200).json({
-      success: !result?.skipped,
-      skipped: !!result?.skipped,
-      unconfirmed: !!result?.unconfirmed,
-      sessionId,
-      message: result?.skipped ? 'Contato invalido ou nao resolvido pelo WhatsApp' : result?.unconfirmed ? 'Envio aceito, mas sem confirmacao final do WhatsApp' : 'Mensagem enviada com sucesso',
-      data: result
-    });
-  }
-
-  enqueueWhatsAppSend(sessionId, to, message, mediaUrl);
-  return respondQueued(res, sessionId);
+  const result = await sessionManager.sendMessage(sessionId, to, message, mediaUrl);
+  return res.status(result?.skipped ? 422 : 200).json({
+    success: !result?.skipped,
+    skipped: !!result?.skipped,
+    unconfirmed: !!result?.unconfirmed,
+    sessionId,
+    message: result?.skipped ? 'Contato invalido ou nao resolvido pelo WhatsApp' : 'Mensagem enviada com sucesso',
+    data: result
+  });
 }
 
 io.on('connection', (socket) => {

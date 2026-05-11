@@ -1137,13 +1137,14 @@ class SessionManager {
     if (attempts >= this.maxReconnectAttempts) {
       console.log(`❌ [${sessionId}] Máximo de ${this.maxReconnectAttempts} reconexões atingido. Sessão precisa ser recriada manualmente.`);
       await this.cleanupSession(sessionId);
-      await this.db.updateSessionStatus(sessionId, 'failed');
+      const preservedStatus = await this.hasSavedRemoteAuth(sessionId) ? 'authenticated' : 'failed';
+      await this.db.updateSessionStatus(sessionId, preservedStatus);
 
       // Notifica frontend que todas as tentativas falharam
       this.io.to(`user_${sessionData.userId}`).emit('session_error', {
         sessionId: sessionId,
         error: 'Reconexão falhou após várias tentativas. Delete e crie a sessão novamente.',
-        status: 'failed'
+        status: preservedStatus
       });
       return;
     }
@@ -1804,9 +1805,9 @@ class SessionManager {
                 console.warn(`[${sessionId}] LID retry falhou para numero confirmado ${normalizedPhone}; mantendo contato sem marcar como invalido`);
                 return {
                   success: true,
-                  unconfirmed: true,
-                  status: 'sent_unconfirmed',
-                  error: `WhatsApp confirmou que ${normalizedPhone} existe, mas nao retornou confirmacao final do envio.`,
+                  unconfirmed: false,
+                  status: 'sent',
+                  note: `WhatsApp confirmou que ${normalizedPhone} existe, mas nao retornou confirmacao final do envio; tratado como enviado para evitar duplicidade.`,
                   sessionId: sessionId,
                   contactPhone: normalizedPhone,
                   body: message,
@@ -1819,7 +1820,7 @@ class SessionManager {
               return {
                 success: false,
                 skipped: true,
-                status: 'failed',
+                status: 'invalid_number',
                 error: `Número ${normalizedPhone} falhou no envio (LID não resolvido).`,
                 sessionId: sessionId,
                 contactPhone: normalizedPhone,
@@ -1862,7 +1863,7 @@ class SessionManager {
           return {
             success: false,
             skipped: true,
-            status: 'failed',
+            status: 'invalid_number',
             error: currentErrMsg,
             sessionId: sessionId,
             contactPhone: normalizedPhone,
