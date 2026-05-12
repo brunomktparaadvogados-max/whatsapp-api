@@ -67,6 +67,7 @@ app.use('/api', (req, res, next) => {
 const recentWhatsAppSends = new Map();
 const SEND_DEDUPE_MS = parseInt(process.env.WHATSAPP_SEND_DEDUPE_MS) || 15 * 60 * 1000;
 const GLOBAL_SEND_CONCURRENCY = parseInt(process.env.WHATSAPP_GLOBAL_SEND_CONCURRENCY) || 2;
+const GLOBAL_SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_GLOBAL_SEND_TIMEOUT_MS) || 120000;
 let activeGlobalSends = 0;
 const globalSendQueue = [];
 
@@ -130,7 +131,10 @@ function runNextGlobalSend() {
   while (activeGlobalSends < GLOBAL_SEND_CONCURRENCY && globalSendQueue.length > 0) {
     const item = globalSendQueue.shift();
     activeGlobalSends++;
-    item.fn()
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Global WhatsApp send timeout after ${GLOBAL_SEND_TIMEOUT_MS}ms`)), GLOBAL_SEND_TIMEOUT_MS)
+    );
+    Promise.race([item.fn(), timeout])
       .then(item.resolve)
       .catch(item.reject)
       .finally(() => {
@@ -138,6 +142,46 @@ function runNextGlobalSend() {
         runNextGlobalSend();
       });
   }
+}
+
+function isSessionReadyForImmediateSend(sessionId) {
+  const session = sessionManager.getSession(sessionId);
+  return !!(session && session.client && session.status === 'connected');
+}
+
+function kickSessionReconnect(sessionId, reason = 'send') {
+  setImmediate(() => {
+    sessionManager.autoReconnectForSend(sessionId).catch(error => {
+      console.error(`Erro ao preparar/reconectar ${sessionId} (${reason}):`, error.message);
+    });
+  });
+}
+
+function respondSessionReconnecting(res, sessionId, to, reason = 'Sessao nao carregada para envio imediato') {
+  return res.status(202).json({
+    success: false,
+    status: 'pending',
+    finalStatus: 'pending',
+    shouldMarkLead: 'pending',
+    confirmed: false,
+    invalidNumber: false,
+    unconfirmed: true,
+    queued: false,
+    sessionId,
+    to,
+    errorType: 'session_reconnecting',
+    action: 'reconnect_session',
+    message: `${reason}. Reconexao iniciada; tente novamente quando a sessao aparecer conectada.`,
+    data: {
+      status: 'pending',
+      finalStatus: 'pending',
+      shouldMarkLead: 'pending',
+      confirmed: false,
+      invalidNumber: false,
+      unconfirmed: true,
+      action: 'reconnect_session'
+    }
+  });
 }
 
 function withGlobalWhatsAppSendLimit(fn, meta = {}) {
@@ -178,6 +222,11 @@ function respondQueued(res, sessionId) {
 }
 
 async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null) {
+  if (!isSessionReadyForImmediateSend(sessionId)) {
+    kickSessionReconnect(sessionId, 'send_requested');
+    return respondSessionReconnecting(res, sessionId, to);
+  }
+
   const sendClaim = await claimWhatsAppSendGlobal(sessionId, to, message, mediaUrl);
   if (sendClaim.duplicate) {
     const duplicateAttemptId = `duplicate_${sessionId}_${Date.now()}`;
