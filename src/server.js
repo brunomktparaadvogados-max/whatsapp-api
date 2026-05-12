@@ -68,6 +68,7 @@ const recentWhatsAppSends = new Map();
 const SEND_DEDUPE_MS = parseInt(process.env.WHATSAPP_SEND_DEDUPE_MS) || 15 * 60 * 1000;
 const GLOBAL_SEND_CONCURRENCY = parseInt(process.env.WHATSAPP_GLOBAL_SEND_CONCURRENCY) || 2;
 const GLOBAL_SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_GLOBAL_SEND_TIMEOUT_MS) || 120000;
+const SEND_RECONNECT_WAIT_MS = parseInt(process.env.WHATSAPP_SEND_RECONNECT_WAIT_MS) || 90000;
 let activeGlobalSends = 0;
 const globalSendQueue = [];
 
@@ -149,12 +150,35 @@ function isSessionReadyForImmediateSend(sessionId) {
   return !!(session && session.client && session.status === 'connected');
 }
 
+function needsLiveSessionReconnect(dbStatus) {
+  return ['connected', 'authenticated', 'reconnecting', 'initializing'].includes(dbStatus);
+}
+
 function kickSessionReconnect(sessionId, reason = 'send') {
   setImmediate(() => {
     sessionManager.autoReconnectForSend(sessionId).catch(error => {
       console.error(`Erro ao preparar/reconectar ${sessionId} (${reason}):`, error.message);
     });
   });
+}
+
+async function ensureSessionReadyForSend(sessionId) {
+  if (isSessionReadyForImmediateSend(sessionId)) return true;
+
+  const dbSession = await db.getSession(sessionId);
+  if (!dbSession) return false;
+
+  const hasAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
+  if (!hasAuth) return false;
+
+  console.log(`🔄 [${sessionId}] Sessao nao esta carregada. Reidratando RemoteAuth antes do envio...`);
+
+  const reconnectPromise = sessionManager.autoReconnectForSend(sessionId);
+  const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), SEND_RECONNECT_WAIT_MS));
+  const readySession = await Promise.race([reconnectPromise, timeoutPromise]);
+
+  return !!(readySession && readySession.client && readySession.status === 'connected') ||
+         isSessionReadyForImmediateSend(sessionId);
 }
 
 function respondSessionReconnecting(res, sessionId, to, reason = 'Sessao nao carregada para envio imediato') {
@@ -222,7 +246,8 @@ function respondQueued(res, sessionId) {
 }
 
 async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null) {
-  if (!isSessionReadyForImmediateSend(sessionId)) {
+  const readyForSend = await ensureSessionReadyForSend(sessionId);
+  if (!readyForSend) {
     kickSessionReconnect(sessionId, 'send_requested');
     return respondSessionReconnecting(res, sessionId, to);
   }
@@ -681,7 +706,7 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
     
     if (!session) {
       const dbSession = await db.getSession(sessionId);
-      if (!dbSession || ['qr_code', 'failed', 'disconnected', 'authenticated'].includes(dbSession.status)) {
+      if (!dbSession || ['qr_code', 'failed', 'disconnected', 'authenticated', 'connected'].includes(dbSession.status)) {
         setImmediate(() => {
           sessionManager.createSession(sessionId, req.userId).catch(error => {
             console.error(`Erro ao preparar sessao ${sessionId}:`, error.message);
@@ -690,8 +715,10 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
       }
       return res.json({
         success: true,
-        status: 'initializing',
-        message: 'Sessao sendo preparada. Aguarde atualizar.'
+        status: dbSession && needsLiveSessionReconnect(dbSession.status) ? 'reconnecting' : 'initializing',
+        canSend: false,
+        dbStatus: dbSession?.status || null,
+        message: 'Sessao sendo preparada no Chromium. Aguarde aparecer como conectada.'
       });
     }
 
@@ -699,6 +726,7 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
       success: true,
       sessionId: session.id,
       status: session.status,
+      canSend: session.status === 'connected',
       qrCode: session.qrCode,
       info: session.info
     });
@@ -714,7 +742,7 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
     
     if (!session) {
       const dbSession = await db.getSession(sessionId);
-      if (!dbSession || ['qr_code', 'failed', 'disconnected', 'authenticated'].includes(dbSession.status)) {
+      if (!dbSession || ['qr_code', 'failed', 'disconnected', 'authenticated', 'connected'].includes(dbSession.status)) {
         setImmediate(() => {
           sessionManager.createSession(sessionId, req.userId).catch(error => {
             console.error(`Erro ao preparar sessao ${sessionId}:`, error.message);
@@ -723,8 +751,10 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
       }
       return res.json({
         success: true,
-        status: 'initializing',
+        status: dbSession && needsLiveSessionReconnect(dbSession.status) ? 'reconnecting' : 'initializing',
         qrCode: null,
+        canSend: false,
+        dbStatus: dbSession?.status || null,
         message: 'Sessao sendo preparada. Aguarde o QR Code atualizar.'
       });
     }
@@ -734,6 +764,7 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
         success: true,
         qrCode: null,
         status: session.status,
+        canSend: session.status === 'connected',
         message: (session.status === 'connected' || session.status === 'authenticated')
           ? 'WhatsApp já está conectado!'
           : 'QR Code ainda não disponível. Aguarde...'
@@ -743,7 +774,8 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
     res.json({
       success: true,
       qrCode: session.qrCode,
-      status: session.status
+      status: session.status,
+      canSend: session.status === 'connected'
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -829,9 +861,14 @@ app.get('/api/sessions', authMiddleware, async (req, res) => {
 
     const sessionsWithStatus = sessions.map(session => {
       const liveSession = sessionManager.getSession(session.id);
+      if (!liveSession && needsLiveSessionReconnect(session.status)) {
+        kickSessionReconnect(session.id, 'sessions_list');
+      }
       return {
         ...session,
-        status: liveSession ? liveSession.status : session.status,
+        status: liveSession ? liveSession.status : (needsLiveSessionReconnect(session.status) ? 'reconnecting' : session.status),
+        dbStatus: session.status,
+        canSend: liveSession ? liveSession.status === 'connected' : false,
         qrCode: liveSession ? liveSession.qrCode : null,
         info: liveSession ? liveSession.info : null
       };
@@ -860,12 +897,17 @@ app.get('/api/sessions/:sessionId', authMiddleware, async (req, res) => {
     }
 
     const liveSession = sessionManager.getSession(sessionId);
+    if (!liveSession && needsLiveSessionReconnect(dbSession.status)) {
+      kickSessionReconnect(sessionId, 'session_detail');
+    }
 
     res.json({
       success: true,
       session: {
         ...dbSession,
-        status: liveSession ? liveSession.status : dbSession.status,
+        status: liveSession ? liveSession.status : (needsLiveSessionReconnect(dbSession.status) ? 'reconnecting' : dbSession.status),
+        dbStatus: dbSession.status,
+        canSend: liveSession ? liveSession.status === 'connected' : false,
         qrCode: liveSession ? liveSession.qrCode : null,
         info: liveSession ? liveSession.info : null
       }
