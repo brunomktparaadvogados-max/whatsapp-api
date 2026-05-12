@@ -600,6 +600,10 @@ app.post('/api/admin/recover-auth-sessions', authMiddleware, async (req, res) =>
       return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
     }
 
+    if (req.body?.force === true) {
+      global.__recoveringRemoteAuthSessions = false;
+    }
+
     if (global.__recoveringRemoteAuthSessions) {
       return res.status(409).json({
         success: false,
@@ -612,6 +616,7 @@ app.post('/api/admin/recover-auth-sessions', authMiddleware, async (req, res) =>
       ? new Set(req.body.sessionIds.map(String))
       : null;
     const limit = Math.max(1, Math.min(parseInt(req.body?.limit || '10', 10), 25));
+    const perSessionTimeoutMs = Math.max(60000, Math.min(parseInt(req.body?.timeoutMs || '180000', 10), 300000));
     const allSessions = await db.getAllSessionsFromDB();
     const candidates = [];
 
@@ -646,10 +651,13 @@ app.post('/api/admin/recover-auth-sessions', authMiddleware, async (req, res) =>
           try {
             console.log(`[RECOVER] Restaurando ${session.id} via RemoteAuth...`);
             await db.updateSessionStatus(session.id, 'authenticated');
-            const recovered = await sessionManager.autoReconnectForSend(session.id);
+            const recovered = await Promise.race([
+              sessionManager.autoReconnectForSend(session.id),
+              new Promise(resolve => setTimeout(() => resolve(null), perSessionTimeoutMs))
+            ]);
             summary.push({
               sessionId: session.id,
-              status: recovered?.status || 'not_ready',
+              status: recovered?.status || 'timeout',
               connected: recovered?.status === 'connected'
             });
           } catch (error) {
