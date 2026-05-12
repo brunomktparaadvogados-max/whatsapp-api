@@ -429,34 +429,22 @@ app.post('/api/auth/login', async (req, res) => {
     const sessionId = `user_${user.id}`;
 
     const existingSession = sessionManager.getSession(sessionId);
+    const dbSession = await db.getSession(sessionId);
     let sessionStatus = 'not_found';
 
     if (existingSession) {
       if (existingSession.status === 'qr_code' && Date.now() - existingSession.lastSeen > 90 * 1000) {
-        console.log(`QR antigo para ${sessionId}; recriando sessao para gerar QR limpo`);
+        console.log(`QR antigo para ${sessionId}; limpando Chromium sem recriar no login`);
         await sessionManager.cleanupSession(sessionId);
-        sessionStatus = 'initializing';
-        setImmediate(async () => {
-          try {
-            await sessionManager.createSession(sessionId, user.id);
-          } catch (error) {
-            console.error(`Erro ao recriar QR antigo ${sessionId}:`, error.message);
-          }
-        });
+        sessionStatus = dbSession ? dbSession.status : 'not_created';
       } else {
         sessionStatus = existingSession.status;
       }
     } else {
-      setImmediate(async () => {
-        try {
-          console.log(`🔄 Criando sessão automática para usuário ${user.id} no login...`);
-          await sessionManager.createSession(sessionId, user.id);
-          console.log(`✅ Sessão ${sessionId} criada com sucesso`);
-        } catch (error) {
-          console.error(`❌ Erro ao criar sessão automática:`, error.message);
-        }
-      });
-      sessionStatus = 'initializing';
+      const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
+      sessionStatus = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status)
+        ? 'saved_auth'
+        : (dbSession?.status || 'not_created');
     }
 
     res.json({
