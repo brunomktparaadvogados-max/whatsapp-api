@@ -65,7 +65,10 @@ app.use('/api', (req, res, next) => {
 });
 
 const recentWhatsAppSends = new Map();
-const SEND_DEDUPE_MS = 2 * 60 * 1000;
+const SEND_DEDUPE_MS = parseInt(process.env.WHATSAPP_SEND_DEDUPE_MS) || 15 * 60 * 1000;
+const GLOBAL_SEND_CONCURRENCY = parseInt(process.env.WHATSAPP_GLOBAL_SEND_CONCURRENCY) || 2;
+let activeGlobalSends = 0;
+const globalSendQueue = [];
 
 function normalizeWhatsAppPhoneForDedupe(to) {
   let cleanTo = String(to || '').replace(/\D/g, '');
@@ -82,9 +85,9 @@ function normalizeWhatsAppPhoneForDedupe(to) {
   return cleanTo;
 }
 
-function getWhatsAppSendKey(sessionId, to, message) {
+function getWhatsAppSendKey(sessionId, to, message, mediaUrl = null) {
   const cleanTo = normalizeWhatsAppPhoneForDedupe(to);
-  const cleanMessage = String(message || '').trim().replace(/\s+/g, ' ');
+  const cleanMessage = `${String(message || '').trim().replace(/\s+/g, ' ')}|media:${String(mediaUrl || '').trim()}`;
   const messageHash = crypto.createHash('sha256').update(cleanMessage).digest('hex');
   return {
     cleanTo,
@@ -93,8 +96,8 @@ function getWhatsAppSendKey(sessionId, to, message) {
   };
 }
 
-function claimWhatsAppSend(sessionId, to, message) {
-  const { key } = getWhatsAppSendKey(sessionId, to, message);
+function claimWhatsAppSend(sessionId, to, message, mediaUrl = null) {
+  const { key } = getWhatsAppSendKey(sessionId, to, message, mediaUrl);
   const now = Date.now();
   const existing = recentWhatsAppSends.get(key);
   if (existing && (now - existing) < SEND_DEDUPE_MS) {
@@ -106,11 +109,11 @@ function claimWhatsAppSend(sessionId, to, message) {
   return { duplicate: false, key };
 }
 
-async function claimWhatsAppSendGlobal(sessionId, to, message) {
-  const localClaim = claimWhatsAppSend(sessionId, to, message);
+async function claimWhatsAppSendGlobal(sessionId, to, message, mediaUrl = null) {
+  const localClaim = claimWhatsAppSend(sessionId, to, message, mediaUrl);
   if (localClaim.duplicate) return localClaim;
 
-  const { cleanTo, messageHash, key } = getWhatsAppSendKey(sessionId, to, message);
+  const { cleanTo, messageHash, key } = getWhatsAppSendKey(sessionId, to, message, mediaUrl);
   try {
     const acquired = await db.acquireWhatsAppSendLock(key, sessionId, cleanTo, messageHash, SEND_DEDUPE_MS);
     if (!acquired) {
@@ -123,11 +126,36 @@ async function claimWhatsAppSendGlobal(sessionId, to, message) {
   return { duplicate: false, key };
 }
 
+function runNextGlobalSend() {
+  while (activeGlobalSends < GLOBAL_SEND_CONCURRENCY && globalSendQueue.length > 0) {
+    const item = globalSendQueue.shift();
+    activeGlobalSends++;
+    item.fn()
+      .then(item.resolve)
+      .catch(item.reject)
+      .finally(() => {
+        activeGlobalSends--;
+        runNextGlobalSend();
+      });
+  }
+}
+
+function withGlobalWhatsAppSendLimit(fn, meta = {}) {
+  return new Promise((resolve, reject) => {
+    globalSendQueue.push({ fn, resolve, reject, meta, queuedAt: Date.now() });
+    console.log(`📥 [GLOBAL SEND] Fila: ${globalSendQueue.length} | Ativos: ${activeGlobalSends}/${GLOBAL_SEND_CONCURRENCY} | ${meta.sessionId || ''} ${meta.to || ''}`);
+    runNextGlobalSend();
+  });
+}
+
 function enqueueWhatsAppSend(sessionId, to, message, mediaUrl = null) {
   setImmediate(async () => {
     try {
       console.log(`📥 [${sessionId}] Enfileirado para envio em background: ${to}`);
-      const result = await sessionManager.sendMessage(sessionId, to, message, mediaUrl);
+      const result = await withGlobalWhatsAppSendLimit(
+        () => sessionManager.sendMessage(sessionId, to, message, mediaUrl),
+        { sessionId, to }
+      );
       if (result?.skipped) {
         console.warn(`⚠️ [${sessionId}] Contato pulado em background: ${to} — ${result.error}`);
       } else {
@@ -150,7 +178,7 @@ function respondQueued(res, sessionId) {
 }
 
 async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null) {
-  const sendClaim = await claimWhatsAppSendGlobal(sessionId, to, message);
+  const sendClaim = await claimWhatsAppSendGlobal(sessionId, to, message, mediaUrl);
   if (sendClaim.duplicate) {
     const duplicateMessageId = `duplicate_${sessionId}_${Date.now()}`;
     return res.status(200).json({
@@ -158,6 +186,8 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
       status: 'sent',
       confirmed: true,
       invalidNumber: false,
+      finalStatus: 'sent',
+      shouldMarkLead: 'sent',
       messageId: duplicateMessageId,
       duplicate: true,
       sessionId,
@@ -168,6 +198,8 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
         status: 'sent',
         confirmed: true,
         invalidNumber: false,
+        finalStatus: 'sent',
+        shouldMarkLead: 'sent',
         duplicate: true,
         duplicateSuppressed: true,
         note: 'Envio duplicado suprimido; manter lead como enviado.'
@@ -175,18 +207,67 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
     });
   }
 
-  const result = await sessionManager.sendMessage(sessionId, to, message, mediaUrl);
+  const result = await withGlobalWhatsAppSendLimit(
+    () => sessionManager.sendMessage(sessionId, to, message, mediaUrl),
+    { sessionId, to }
+  );
+  const finalStatus = result?.skipped ? 'invalid_number' : 'sent';
   return res.status(result?.skipped ? 422 : 200).json({
     success: !result?.skipped,
-    status: result?.status || (result?.skipped ? 'invalid_number' : 'sent'),
+    status: result?.status || finalStatus,
+    finalStatus,
+    shouldMarkLead: result?.skipped ? 'invalid' : 'sent',
     confirmed: !result?.skipped,
-    invalidNumber: result?.status === 'invalid_number',
+    invalidNumber: Boolean(result?.skipped || result?.status === 'invalid_number'),
     messageId: result?.messageId || result?.id || null,
     skipped: !!result?.skipped,
     unconfirmed: !!result?.unconfirmed,
     sessionId,
     message: result?.skipped ? 'Contato invalido ou nao resolvido pelo WhatsApp' : 'Mensagem enviada com sucesso',
     data: result
+  });
+}
+
+function respondWhatsAppSendError(res, error, context = {}) {
+  if (res.headersSent) return;
+
+  const errorMsg = (error.message || '').toLowerCase();
+  const isSessionDead = errorMsg.includes('perdeu conex') ||
+                        errorMsg.includes('caiu') ||
+                        errorMsg.includes('reconectando') ||
+                        errorMsg.includes('nao esta conectada') ||
+                        errorMsg.includes('não está conectada') ||
+                        errorMsg.includes('nao encontrada') ||
+                        errorMsg.includes('não encontrada') ||
+                        errorMsg.includes('nao disponivel') ||
+                        errorMsg.includes('não disponível');
+  const isRateLimit = errorMsg.includes('timeout') || errorMsg.includes('rate') || errorMsg.includes('limite');
+  const isInvalidNumber = errorMsg.includes('invalid_number') ||
+                          errorMsg.includes('numero nao esta registrado') ||
+                          errorMsg.includes('número não está registrado') ||
+                          errorMsg.includes('not registered') ||
+                          errorMsg.includes('invalid wid');
+
+  const statusCode = isInvalidNumber ? 422 : (isSessionDead ? 503 : (isRateLimit ? 429 : 400));
+  const finalStatus = isInvalidNumber ? 'invalid_number' : 'pending';
+
+  return res.status(statusCode).json({
+    success: false,
+    status: finalStatus,
+    finalStatus,
+    shouldMarkLead: isInvalidNumber ? 'invalid' : 'pending',
+    confirmed: false,
+    invalidNumber: isInvalidNumber,
+    skipped: isInvalidNumber,
+    queued: false,
+    sessionId: context.sessionId || null,
+    to: context.to || null,
+    error: error.message,
+    errorType: isInvalidNumber ? 'invalid_number' : (isSessionDead ? 'session_error' : (isRateLimit ? 'rate_limit' : 'temporary_send_error')),
+    action: isInvalidNumber ? 'mark_invalid' : (isSessionDead ? 'reconnect_session' : 'retry_later'),
+    details: isInvalidNumber
+      ? 'Numero confirmado como inexistente pelo WhatsApp.'
+      : 'Envio nao confirmado. Mantenha o lead pendente e nao marque como numero invalido.'
   });
 }
 
@@ -520,6 +601,12 @@ app.get('/api/health', async (req, res) => {
           messages: messagesCount,
           status: dbCapacity < 80 ? 'healthy' : 'warning'
         },
+        sendQueue: {
+          active: activeGlobalSends,
+          queued: globalSendQueue.length,
+          maxConcurrency: GLOBAL_SEND_CONCURRENCY,
+          dedupeMs: SEND_DEDUPE_MS
+        },
         ...health
       });
     }
@@ -805,7 +892,7 @@ app.delete('/api/sessions/:sessionId', authMiddleware, async (req, res) => {
 app.post('/api/sessions/:sessionId/messages', authMiddleware, async (req, res) => {
   try {
     let { sessionId } = req.params;
-    const { to, message } = req.body;
+    const { to, message, mediaUrl } = req.body;
 
     // Auto-detectar sessão se não for informada ou for 'auto'
     if (!sessionId || sessionId === 'auto') {
@@ -844,19 +931,17 @@ app.post('/api/sessions/:sessionId/messages', authMiddleware, async (req, res) =
       });
     }
 
-    return await sendOrQueueWhatsApp(res, sessionId, to, message);
+    return await sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl);
   } catch (error) {
     console.error(`Erro ao enviar mensagem para ${req.body.to} na sessão ${req.params.sessionId}:`, error);
-    if (!res.headersSent) {
-      res.status(400).json({ success: false, error: error.message });
-    }
+    return respondWhatsAppSendError(res, error, { sessionId: req.params.sessionId, to: req.body?.to });
   }
 });
 
 app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) => {
   try {
     let { sessionId } = req.params;
-    const { to, message } = req.body;
+    const { to, message, mediaUrl } = req.body;
 
     console.log(`📤 [SEND MESSAGE] Requisição recebida:`);
     console.log(`   - User ID: ${req.userId}`);
@@ -942,30 +1027,10 @@ app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) =>
     }
 
     console.log(`✅ [SEND MESSAGE] Enfileirando mensagem via SessionManager...`);
-    return await sendOrQueueWhatsApp(res, sessionId, to, message);
+    return await sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl);
   } catch (error) {
     console.error(`❌ [SEND MESSAGE] Erro ao enviar mensagem:`, error.message);
-    if (res.headersSent) return; // Timeout já respondeu
-
-    const errorMsg = (error.message || '').toLowerCase();
-    const isSessionDead = errorMsg.includes('perdeu conexão') ||
-                          errorMsg.includes('caiu') ||
-                          errorMsg.includes('reconectando') ||
-                          errorMsg.includes('não está conectada') ||
-                          errorMsg.includes('não encontrada') ||
-                          errorMsg.includes('não disponível');
-    const isRateLimit = errorMsg.includes('timeout') || errorMsg.includes('rate');
-    const statusCode = isSessionDead ? 503 : (isRateLimit ? 429 : 400);
-
-    res.status(statusCode).json({
-      success: false,
-      error: error.message,
-      errorType: isSessionDead ? 'session_error' : (isRateLimit ? 'rate_limit' : 'send_error'),
-      action: isSessionDead ? 'reconnect_session' : 'check_number',
-      details: isSessionDead
-        ? 'Sessão WhatsApp desconectou. Reconexão automática em progresso.'
-        : 'Falha ao enviar mensagem. Verifique o número e tente novamente.'
-    });
+    return respondWhatsAppSendError(res, error, { sessionId: req.params.sessionId, to: req.body?.to });
   }
 });
 
@@ -992,14 +1057,24 @@ app.post('/api/sessions/:sessionId/messages/media', authMiddleware, async (req, 
       });
     }
 
-    const result = await sessionManager.sendMedia(sessionId, to, mediaUrl, caption);
+    const result = await withGlobalWhatsAppSendLimit(
+      () => sessionManager.sendMedia(sessionId, to, mediaUrl, caption),
+      { sessionId, to, media: true }
+    );
     if (!res.headersSent) {
-      res.json({ success: true, data: result });
+      res.json({
+        success: true,
+        status: 'sent',
+        finalStatus: 'sent',
+        shouldMarkLead: 'sent',
+        confirmed: true,
+        invalidNumber: false,
+        messageId: result?.messageId || result?.id || null,
+        data: result
+      });
     }
   } catch (error) {
-    if (!res.headersSent) {
-      res.status(400).json({ success: false, error: error.message });
-    }
+    return respondWhatsAppSendError(res, error, { sessionId: req.params.sessionId, to: req.body?.to });
   }
 });
 
@@ -1442,9 +1517,15 @@ cron.schedule('*/5 * * * *', async () => {  // A cada 5 min (era a cada 1 min)
   for (const msg of pendingMessages) {
     try {
       if (msg.media_url) {
-        await sessionManager.sendMedia(msg.session_id, msg.contact_phone, msg.media_url, msg.message);
+        await withGlobalWhatsAppSendLimit(
+          () => sessionManager.sendMedia(msg.session_id, msg.contact_phone, msg.media_url, msg.message),
+          { sessionId: msg.session_id, to: msg.contact_phone, scheduled: true, media: true }
+        );
       } else {
-        await sessionManager.sendMessage(msg.session_id, msg.contact_phone, msg.message);
+        await withGlobalWhatsAppSendLimit(
+          () => sessionManager.sendMessage(msg.session_id, msg.contact_phone, msg.message),
+          { sessionId: msg.session_id, to: msg.contact_phone, scheduled: true }
+        );
       }
 
       await db.updateScheduledMessageStatus(msg.id, 'sent', new Date().toISOString());
@@ -1801,7 +1882,7 @@ app.get('/api/database-stats', authMiddleware, async (req, res) => {
 // Atualizado: Admin pode enviar mensagens de qualquer sessão
 app.post('/api/messages/send', authMiddleware, async (req, res) => {
   try {
-    const { to, message, sessionId } = req.body;
+    const { to, message, sessionId, mediaUrl } = req.body;
 
     if (!to || !message) {
       return res.status(400).json({
@@ -1860,32 +1941,10 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Sessão não encontrada ou não pertence a você' });
     }
 
-    return await sendOrQueueWhatsApp(res, targetSessionId, to, message);
+    return await sendOrQueueWhatsApp(res, targetSessionId, to, message, mediaUrl);
   } catch (error) {
     console.error(`Erro ao enviar mensagem:`, error.message);
-    if (res.headersSent) return; // Timeout já respondeu
-
-    const errorMsg = (error.message || '').toLowerCase();
-    const isSessionDead = errorMsg.includes('perdeu conexão') ||
-                          errorMsg.includes('caiu') ||
-                          errorMsg.includes('reconectando') ||
-                          errorMsg.includes('não está conectada') ||
-                          errorMsg.includes('não encontrada') ||
-                          errorMsg.includes('não disponível');
-
-    const isRateLimit = errorMsg.includes('timeout') || errorMsg.includes('rate');
-    const statusCode = isSessionDead ? 503 : (isRateLimit ? 429 : 400);
-    const action = isSessionDead ? 'reconnect_session' : (isRateLimit ? 'slow_down' : 'check_number');
-
-    res.status(statusCode).json({
-      success: false,
-      error: error.message,
-      errorType: isSessionDead ? 'session_error' : (isRateLimit ? 'rate_limit' : 'send_error'),
-      action: action,
-      details: isSessionDead
-        ? 'Sessão WhatsApp desconectou. Reconexão automática em progresso. Tente novamente em 1 minuto.'
-        : 'Falha ao enviar mensagem. Verifique o número e tente novamente.'
-    });
+    return respondWhatsAppSendError(res, error, { sessionId: req.body?.sessionId, to: req.body?.to });
   }
 });
 
