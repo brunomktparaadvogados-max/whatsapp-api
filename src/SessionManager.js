@@ -172,8 +172,14 @@ class SessionManager {
       sessionsWithAuth.sort((a, b) => {
         const authA = authSessionsById.get(a.id);
         const authB = authSessionsById.get(b.id);
-        const timeA = authA?.updated_at ? new Date(authA.updated_at).getTime() : new Date(a.updated_at || 0).getTime();
-        const timeB = authB?.updated_at ? new Date(authB.updated_at).getTime() : new Date(b.updated_at || 0).getTime();
+        const sessionTimeA = new Date(a.updated_at || 0).getTime();
+        const sessionTimeB = new Date(b.updated_at || 0).getTime();
+        const authTimeA = authA?.updated_at ? new Date(authA.updated_at).getTime() : 0;
+        const authTimeB = authB?.updated_at ? new Date(authB.updated_at).getTime() : 0;
+        const statusBoostA = ['connected', 'authenticated'].includes(a.status) ? 24 * 60 * 60 * 1000 : 0;
+        const statusBoostB = ['connected', 'authenticated'].includes(b.status) ? 24 * 60 * 60 * 1000 : 0;
+        const timeA = Math.max(sessionTimeA, authTimeA) + statusBoostA;
+        const timeB = Math.max(sessionTimeB, authTimeB) + statusBoostB;
         return timeB - timeA;
       });
 
@@ -185,7 +191,7 @@ class SessionManager {
       // Restaura até (MAX_CONCURRENT_SESSIONS - 2) sessões, sequencialmente
       // RESERVA 2 slots para novos usuários que precisam escanear QR code
       // (sequencial para não estourar CPU/RAM com N Chromiums iniciando ao mesmo tempo)
-      const restoreLimit = Math.max(MAX_CONCURRENT_SESSIONS - 2, 1);
+      const restoreLimit = Math.max(MAX_CONCURRENT_SESSIONS, 1);
       const toRestore = sessionsWithAuth.slice(0, restoreLimit);
       const remaining = sessionsWithAuth.slice(restoreLimit);
 
@@ -1373,7 +1379,8 @@ class SessionManager {
 
   emitMessageSent(session, messageData) {
     if (!session || !this.io) return;
-    this.io.to(`user_${session.userId}`).emit('message_sent', {
+    const room = `user_${session.userId}`;
+    const payload = {
       sessionId: session.id,
       ...messageData,
       message: {
@@ -1385,7 +1392,45 @@ class SessionManager {
         fromMe: true,
         isFromMe: true
       }
-    });
+    };
+
+    this.io.to(room).emit('message_sent', payload);
+
+    // Fallback para o Lovable/ProspectFlow quando o Socket.IO acabou de reconectar
+    // e ainda nao entrou na sala do usuario. Payload sanitizado: sem corpo da mensagem.
+    const publicPayload = {
+      sessionId: payload.sessionId,
+      id: payload.id,
+      messageId: payload.messageId,
+      to: payload.to || payload.contactPhone,
+      phone: payload.phone || payload.contactPhone,
+      contactPhone: payload.contactPhone,
+      status: payload.status || 'sent',
+      confirmed: true,
+      invalidNumber: false,
+      fromMe: true,
+      isFromMe: true,
+      timestamp: payload.timestamp,
+      message: {
+        id: payload.id,
+        messageId: payload.messageId,
+        to: payload.to || payload.contactPhone,
+        phone: payload.phone || payload.contactPhone,
+        contactPhone: payload.contactPhone,
+        status: payload.status || 'sent',
+        confirmed: true,
+        invalidNumber: false,
+        fromMe: true,
+        isFromMe: true,
+        timestamp: payload.timestamp
+      }
+    };
+
+    if (typeof this.io.except === 'function') {
+      this.io.except(room).emit('message_sent', publicPayload);
+    } else {
+      this.io.emit('message_sent', publicPayload);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════

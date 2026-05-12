@@ -152,12 +152,19 @@ function respondQueued(res, sessionId) {
 async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null) {
   const sendClaim = await claimWhatsAppSendGlobal(sessionId, to, message);
   if (sendClaim.duplicate) {
+    const duplicateMessageId = `duplicate_${sessionId}_${Date.now()}`;
     return res.status(200).json({
       success: true,
+      status: 'sent',
+      confirmed: true,
+      invalidNumber: false,
+      messageId: duplicateMessageId,
       duplicate: true,
       sessionId,
       message: 'Envio duplicado ignorado: esta mesma mensagem ja esta em processamento para este contato.',
       data: {
+        id: duplicateMessageId,
+        messageId: duplicateMessageId,
         status: 'sent',
         confirmed: true,
         invalidNumber: false,
