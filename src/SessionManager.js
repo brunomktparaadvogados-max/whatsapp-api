@@ -17,6 +17,7 @@ const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) ||
 const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 650;                          // Limite seguro para evitar queda por memória
 const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
 const IDLE_DISCONNECT_MS = parseInt(process.env.IDLE_DISCONNECT_MS) || 5 * 60 * 60 * 1000; // 5 horas idle → desconecta sessão
+const EVICT_IDLE_AFTER_MS = parseInt(process.env.EVICT_IDLE_AFTER_MS) || 20 * 60 * 1000; // não expulsar sessão usada recentemente
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;        // verifica a cada 2 minutos (economiza queries)
 const SESSION_INIT_TIMEOUT_MS = 240000;           // 4 minutos para Chromium iniciar em Koyeb sob carga
 const MESSAGE_SEND_TIMEOUT_MS = 30000;            // 30 segundos timeout por mensagem (reduzido de 60s para feedback rápido)
@@ -355,6 +356,7 @@ class SessionManager {
       const sess = this.sessions.get(sid);
       if (!sess || !sess.client) continue;
       if (sess.status !== 'connected' && sess.status !== 'authenticated') continue;
+      if ((Date.now() - lastTs) < EVICT_IDLE_AFTER_MS) continue;
 
       if (lastTs < oldestTime) {
         oldestTime = lastTs;
@@ -440,7 +442,7 @@ class SessionManager {
       if (existing.client && existing.status === 'qr_code' && Date.now() - existing.lastSeen > 90 * 1000) {
         console.log(`QR antigo para ${sessionId}; limpando para gerar QR novo`);
         await this.cleanupSession(sessionId);
-      } else if (existing.client && (existing.status === 'connected' || existing.status === 'qr_code' || existing.status === 'initializing')) {
+      } else if (existing.client && (existing.status === 'connected' || existing.status === 'authenticated' || existing.status === 'qr_code' || existing.status === 'initializing')) {
         console.log(`⚠️ Sessão ${sessionId} já existe na memória com status ${existing.status}`);
         return existing;
       }

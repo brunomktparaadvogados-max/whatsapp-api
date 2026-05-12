@@ -79,13 +79,14 @@ Leia `/api/health` e mostre:
 
 Se houver fila, mostrar como “disparos em processamento”, não como erro.
 
-## Construir Lista - ES com print do processo
+## Construir Lista - ES com print do processo via extensão Claude
 
-No fluxo do ES, quando a extensão/consulta de processo salvar um lead, capture um print da tela no mesmo momento do salvamento.
+No fluxo do ES, o print deve ser extraído pela extensão criada via Claude que consulta o número do processo diretamente no site `https://processoeletronico.es.gov.br/`. Não capture um print genérico dentro do ProspectFlow depois do cadastro; o print correto é o da tela/resultado consultado pela extensão no momento em que ela encontra e salva o lead.
 
 Implementação esperada:
 
-- Capturar screenshot pela extensão com `chrome.tabs.captureVisibleTab` ou mecanismo equivalente já usado pela extensão.
+- Na extensão Claude do Consulta Processo ES, após preencher o número do processo e carregar o resultado no `processoeletronico.es.gov.br`, capturar screenshot com `chrome.tabs.captureVisibleTab` ou mecanismo equivalente da própria extensão.
+- O payload enviado da extensão para o ProspectFlow deve incluir os dados extraídos do processo e o arquivo/base64 do print associado ao mesmo processo/lead.
 - Enviar a imagem para Supabase Storage em bucket como `lead-process-screenshots`.
 - Caminho sugerido: `${user.id}/${lead.id}/${Date.now()}.png`.
 - Salvar a URL pública ou assinada no lead/processo em campo como `process_print_url` ou `screenshot_url`.
