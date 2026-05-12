@@ -32,6 +32,7 @@ class PostgresStore {
     this._initialized = false;
     this._lastSaveTime = new Map();  // Throttle: evita saves muito frequentes
     this._savedSessions = new Set(); // Sessões que JÁ foram salvas pelo menos 1x (proteção contra perda)
+    this._forceSaveSessions = new Set(); // Proximo save deve ignorar throttle/HealthGuard
     this._minSaveInterval = 30 * 60 * 1000; // Mínimo 30 minutos entre saves (reduz carga no Supabase durante disparos)
     this._maxSaveBytes = 15 * 1024 * 1024;  // Máximo 15MB por sessão — blobs maiores são cache acumulado
   }
@@ -100,6 +101,11 @@ class PostgresStore {
     }
   }
 
+  forceNextSave(session) {
+    const sessionId = this._normalizeSessionId(session);
+    this._forceSaveSessions.add(sessionId);
+  }
+
   /**
    * Salva o arquivo zip da sessão no banco.
    *
@@ -119,6 +125,7 @@ class PostgresStore {
     try {
       const now = Date.now();
       const isFirstSave = !this._savedSessions.has(sessionId);
+      const forcedSave = this._forceSaveSessions.delete(sessionId);
 
       // ═══════════════════════════════════════════════════════════════
       // REGRA DE OURO: O PRIMEIRO SAVE DE UMA SESSÃO NUNCA É BLOQUEADO
@@ -128,7 +135,7 @@ class PostgresStore {
       // sobrevive a restarts. Sem isso, se o servidor cair antes do 1º save,
       // a sessão é perdida e o usuário precisa escanear QR novamente.
 
-      if (!isFirstSave) {
+      if (!isFirstSave && !forcedSave) {
         // HEALTHGUARD: Verifica se saves devem ser pausados (banco sobrecarregado / disparos)
         // Só bloqueia saves SUBSEQUENTES — o primeiro save sempre passa
         if (global.__healthGuard && global.__healthGuard.shouldBlockSave()) {
@@ -142,7 +149,8 @@ class PostgresStore {
           return;
         }
       } else {
-        console.log(`🔰 PostgresStore: PRIMEIRO SAVE para "${sessionId}" — prioridade máxima (bypass throttle/healthguard)`);
+        const saveReason = isFirstSave ? 'PRIMEIRO SAVE' : 'SAVE FORCADO';
+        console.log(`🔰 PostgresStore: ${saveReason} para "${sessionId}" — prioridade máxima (bypass throttle/healthguard)`);
       }
 
       if (!fs.existsSync(zipPath)) {

@@ -13,7 +13,7 @@ const path = require('path');
 // ═══════════════════════════════════════════════════════════════════
 // LIMITES DE MEMÓRIA — Sessões sob demanda para 20+ usuários
 // ═══════════════════════════════════════════════════════════════════
-const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 7;  // Mantem folga para recuperar usuarios principais sem expulsar sessoes ativas
+const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 30; // Capacidade maxima de sessoes ativas; inicializacao continua sequencial para nao derrubar Chromium
 const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 650;                          // Limite seguro para evitar queda por memória
 const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
 const IDLE_DISCONNECT_MS = parseInt(process.env.IDLE_DISCONNECT_MS) || 5 * 60 * 60 * 1000; // 5 horas idle → desconecta sessão
@@ -284,7 +284,6 @@ class SessionManager {
 
   async forceRemoteAuthBackup(sessionId, reason = 'manual') {
     if (!this.pgStore || !this.useRemoteAuth) return false;
-    if (await this.hasSavedRemoteAuth(sessionId)) return true;
 
     const session = this.sessions.get(sessionId);
     if (!session?.client?.authStrategy?.storeRemoteSession) return false;
@@ -292,7 +291,8 @@ class SessionManager {
 
     this.remoteAuthSaveInFlight.add(sessionId);
     try {
-      console.log(`[${sessionId}] Forcando primeiro backup RemoteAuth (${reason})`);
+      this.pgStore.forceNextSave(`RemoteAuth-${sessionId}`);
+      console.log(`[${sessionId}] Forcando backup RemoteAuth (${reason})`);
       await session.client.authStrategy.storeRemoteSession({ emit: true });
       return await this.hasSavedRemoteAuth(sessionId);
     } finally {
