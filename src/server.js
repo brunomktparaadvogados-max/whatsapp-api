@@ -180,29 +180,30 @@ function respondQueued(res, sessionId) {
 async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null) {
   const sendClaim = await claimWhatsAppSendGlobal(sessionId, to, message, mediaUrl);
   if (sendClaim.duplicate) {
-    const duplicateMessageId = `duplicate_${sessionId}_${Date.now()}`;
-    return res.status(200).json({
-      success: true,
-      status: 'sent',
-      confirmed: true,
+    const duplicateAttemptId = `duplicate_${sessionId}_${Date.now()}`;
+    return res.status(202).json({
+      success: false,
+      status: 'pending',
+      finalStatus: 'pending',
+      shouldMarkLead: 'pending',
+      confirmed: false,
       invalidNumber: false,
-      finalStatus: 'sent',
-      shouldMarkLead: 'sent',
-      messageId: duplicateMessageId,
+      unconfirmed: true,
+      attemptId: duplicateAttemptId,
       duplicate: true,
       sessionId,
-      message: 'Envio duplicado ignorado: esta mesma mensagem ja esta em processamento para este contato.',
+      message: 'Envio duplicado ignorado: esta mesma mensagem ja esta em processamento ou aguardando confirmacao para este contato.',
       data: {
-        id: duplicateMessageId,
-        messageId: duplicateMessageId,
-        status: 'sent',
-        confirmed: true,
+        attemptId: duplicateAttemptId,
+        status: 'pending',
+        confirmed: false,
         invalidNumber: false,
-        finalStatus: 'sent',
-        shouldMarkLead: 'sent',
+        unconfirmed: true,
+        finalStatus: 'pending',
+        shouldMarkLead: 'pending',
         duplicate: true,
         duplicateSuppressed: true,
-        note: 'Envio duplicado suprimido; manter lead como enviado.'
+        note: 'Envio duplicado suprimido; manter lead pendente ate confirmacao real.'
       }
     });
   }
@@ -211,19 +212,21 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
     () => sessionManager.sendMessage(sessionId, to, message, mediaUrl),
     { sessionId, to }
   );
-  const finalStatus = result?.skipped ? 'invalid_number' : 'sent';
-  return res.status(result?.skipped ? 422 : 200).json({
-    success: !result?.skipped,
+  const isPending = !!result?.unconfirmed || result?.status === 'pending';
+  const finalStatus = result?.skipped ? 'invalid_number' : (isPending ? 'pending' : 'sent');
+  return res.status(result?.skipped ? 422 : (isPending ? 202 : 200)).json({
+    success: !result?.skipped && !isPending,
     status: result?.status || finalStatus,
     finalStatus,
-    shouldMarkLead: result?.skipped ? 'invalid' : 'sent',
-    confirmed: !result?.skipped,
+    shouldMarkLead: result?.skipped ? 'invalid' : (isPending ? 'pending' : 'sent'),
+    confirmed: !result?.skipped && !isPending,
     invalidNumber: Boolean(result?.skipped || result?.status === 'invalid_number'),
-    messageId: result?.messageId || result?.id || null,
+    messageId: isPending ? null : (result?.messageId || result?.id || null),
+    attemptId: result?.attemptId || null,
     skipped: !!result?.skipped,
     unconfirmed: !!result?.unconfirmed,
     sessionId,
-    message: result?.skipped ? 'Contato invalido ou nao resolvido pelo WhatsApp' : 'Mensagem enviada com sucesso',
+    message: result?.skipped ? 'Contato invalido ou nao resolvido pelo WhatsApp' : (isPending ? 'Envio nao confirmado pelo WhatsApp; manter pendente' : 'Mensagem enviada com sucesso'),
     data: result
   });
 }

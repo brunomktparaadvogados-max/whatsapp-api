@@ -1860,7 +1860,6 @@ class SessionManager {
         const errMsg = error.message || '';
         if (numberWasVerifiedBeforeSend && this.isFatalSessionError(error) && !isRetry) {
           console.warn(`[${sessionId}] Erro fatal apos tentativa para numero ja validado (${normalizedPhone}); sem reenvio para evitar duplicidade`);
-          const acceptedId = `accepted_${sessionId}_${normalizedPhone}_${Date.now()}`;
           setImmediate(async () => {
             try {
               await this.cleanupSession(sessionId);
@@ -1876,12 +1875,11 @@ class SessionManager {
           this.sessionLastActivity.set(sessionId, Date.now());
 
           const messageData = {
-            id: acceptedId,
-            messageId: acceptedId,
-            success: true,
-            confirmed: true,
+            attemptId: `unconfirmed_${sessionId}_${normalizedPhone}_${Date.now()}`,
+            success: false,
+            confirmed: false,
             invalidNumber: false,
-            unconfirmed: false,
+            unconfirmed: true,
             sessionId: sessionId,
             contactPhone: normalizedPhone,
             to: normalizedPhone,
@@ -1892,11 +1890,10 @@ class SessionManager {
             mediaMimetype: null,
             fromMe: true,
             timestamp: Math.floor(Date.now() / 1000),
-            status: 'sent',
-            note: 'Numero validado antes do envio; tratado como enviado para evitar duplicidade.'
+            status: 'pending',
+            note: 'Numero validado antes do envio, mas o WhatsApp nao confirmou entrega. Mantido pendente para evitar falso enviado e evitar duplicidade.'
           };
 
-          this.emitMessageSent(session, messageData);
           return messageData;
         }
         if (!this.isIgnorableWhatsAppError(error)) {
@@ -1935,16 +1932,14 @@ class SessionManager {
             // Se chegou aqui, a primeira tentativa pode ja ter sido entregue.
             // Nao reenviar: isso gerava mensagens duplicadas quando o WA Web
             // retornava erro de confirmacao apos entregar a mensagem.
-            console.warn(`[${sessionId}] Numero ${resolvedPhone} confirmado (${numberId._serialized}); reenvio bloqueado para evitar duplicidade`);
-            const acceptedId = `accepted_${sessionId}_${resolvedPhone}_${Date.now()}`;
+            console.warn(`[${sessionId}] Numero ${resolvedPhone} confirmado (${numberId._serialized}); sem confirmacao de envio, mantendo pendente`);
 
             const messageData = {
-              id: acceptedId,
-              messageId: acceptedId,
-              success: true,
-              confirmed: true,
+              attemptId: `unconfirmed_${sessionId}_${resolvedPhone}_${Date.now()}`,
+              success: false,
+              confirmed: false,
               invalidNumber: false,
-              unconfirmed: false,
+              unconfirmed: true,
               sessionId: sessionId,
               contactPhone: resolvedPhone,
               to: resolvedPhone,
@@ -1955,14 +1950,13 @@ class SessionManager {
               mediaMimetype: null,
               fromMe: true,
               timestamp: Math.floor(Date.now() / 1000),
-              status: 'sent',
-              note: 'Envio tratado como concluido apos erro ambiguo de confirmacao do WhatsApp Web; sem reenvio.'
+              status: 'pending',
+              note: 'WhatsApp confirmou que o numero existe, mas nao confirmou o envio. Mantido pendente sem reenvio imediato.'
             };
 
             await this.cachedUpsertContact(sessionId, resolvedPhone);
             session.lastSeen = Date.now();
             this.sessionLastActivity.set(sessionId, Date.now());
-            this.emitMessageSent(session, messageData);
             return messageData;
           } catch (lidRetryErr) {
             console.error(`❌ [${sessionId}] Retry LID falhou para ${normalizedPhone}: ${lidRetryErr.message}`);
@@ -1980,16 +1974,14 @@ class SessionManager {
             } else {
               if (hadRegisteredVariant) {
                 console.warn(`[${sessionId}] LID retry falhou para numero confirmado ${normalizedPhone}; mantendo contato sem marcar como invalido`);
-                const acceptedId = `accepted_${sessionId}_${normalizedPhone}_${Date.now()}`;
                 const messageData = {
-                  id: acceptedId,
-                  messageId: acceptedId,
-                  success: true,
-                  confirmed: true,
+                  attemptId: `unconfirmed_${sessionId}_${normalizedPhone}_${Date.now()}`,
+                  success: false,
+                  confirmed: false,
                   invalidNumber: false,
-                  unconfirmed: false,
-                  status: 'sent',
-                  note: `WhatsApp confirmou que ${normalizedPhone} existe, mas nao retornou confirmacao final do envio; tratado como enviado para evitar duplicidade.`,
+                  unconfirmed: true,
+                  status: 'pending',
+                  note: `WhatsApp confirmou que ${normalizedPhone} existe, mas nao retornou confirmacao final do envio. Mantido pendente para evitar falso enviado.`,
                   sessionId: sessionId,
                   contactPhone: normalizedPhone,
                   to: normalizedPhone,
@@ -1998,7 +1990,6 @@ class SessionManager {
                   fromMe: true,
                   timestamp: Math.floor(Date.now() / 1000)
                 };
-                this.emitMessageSent(session, messageData);
                 return messageData;
               }
               // Erro ambiguo: nao marcar como invalido quando a validacao
