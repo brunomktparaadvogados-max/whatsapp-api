@@ -1999,21 +1999,10 @@ class SessionManager {
                 this.emitMessageSent(session, messageData);
                 return messageData;
               }
-              // Erro de número/rede — pula o contato sem derrubar sessão
-              console.warn(`📵 [${sessionId}] LID retry falhou para ${normalizedPhone} — pulando contato`);
-              return {
-                success: false,
-                confirmed: false,
-                invalidNumber: true,
-                skipped: true,
-                status: 'invalid_number',
-                error: `Número ${normalizedPhone} falhou no envio (LID não resolvido).`,
-                sessionId: sessionId,
-                contactPhone: normalizedPhone,
-                body: message,
-                fromMe: true,
-                timestamp: Math.floor(Date.now() / 1000)
-              };
+              // Erro ambiguo: nao marcar como invalido quando a validacao
+              // nao foi conclusiva. O frontend deve manter pendente/retry.
+              console.warn(`[${sessionId}] LID retry sem confirmacao para ${normalizedPhone}; mantendo pendente para evitar falso invalido`);
+              throw new Error(`Envio nao confirmado pelo WhatsApp para ${normalizedPhone}. Manter pendente e tentar novamente mais tarde.`);
             }
           }
         }
@@ -2033,15 +2022,8 @@ class SessionManager {
           'invalid number',
           'não está registrado',
           'not registered',
-          'number not found',
-          'contact not found',
           'invalid phone',
           'invalid chatid',
-          'is not a contact',
-          'phone number shared via url',
-          'unpaired',
-          'could not send message to',
-          'getcontactbyid',
         ].some(p => errLower.includes(p));
 
         if (isInvalidNumberError) {
