@@ -26,6 +26,8 @@ const MIN_MESSAGE_INTERVAL_MS = 1500;             // 1.5 segundos entre mensagen
 const MAX_SEND_RETRIES = 0;                       // SEM retries — evita mensagens duplicadas
 const AUTO_RECONNECT_TIMEOUT_MS = 420000;         // 7 min máx para auto-reconexão no envio
 const AUTHENTICATED_READY_TIMEOUT_MS = parseInt(process.env.AUTHENTICATED_READY_TIMEOUT_MS) || 180000;
+const STARTUP_RESTORE_LIMIT = parseInt(process.env.STARTUP_RESTORE_LIMIT) || Math.min(3, MAX_CONCURRENT_SESSIONS);
+const SESSION_INIT_MAX_ATTEMPTS = parseInt(process.env.SESSION_INIT_MAX_ATTEMPTS) || 2;
 
 class SessionManager {
   constructor(database, io) {
@@ -189,10 +191,9 @@ class SessionManager {
         return;
       }
 
-      // Restaura até (MAX_CONCURRENT_SESSIONS - 2) sessões, sequencialmente
-      // RESERVA 2 slots para novos usuários que precisam escanear QR code
-      // (sequencial para não estourar CPU/RAM com N Chromiums iniciando ao mesmo tempo)
-      const restoreLimit = Math.max(MAX_CONCURRENT_SESSIONS, 1);
+      // Restaura um lote pequeno no boot, sequencialmente.
+      // As demais preservam RemoteAuth e reconectam sob demanda para evitar pico de CPU/RAM.
+      const restoreLimit = Math.max(1, Math.min(STARTUP_RESTORE_LIMIT, MAX_CONCURRENT_SESSIONS));
       const toRestore = sessionsWithAuth.slice(0, restoreLimit);
       const remaining = sessionsWithAuth.slice(restoreLimit);
 
@@ -560,9 +561,19 @@ class SessionManager {
     return sessionData;
   }
 
-  async initializeClientInBackground(client, sessionData) {
+  isTransientInitError(error) {
+    const message = (error?.message || '').toLowerCase();
+    return message.includes('execution context was destroyed') ||
+      message.includes('runtime.callfunctionon') ||
+      message.includes('target closed') ||
+      message.includes('protocol error') ||
+      message.includes('context was destroyed') ||
+      message.includes('timeout');
+  }
+
+  async initializeClientInBackground(client, sessionData, attempt = 1) {
     try {
-      console.log(`🚀 Inicializando cliente ${sessionData.id} em background...`);
+      console.log(`🚀 Inicializando cliente ${sessionData.id} em background... tentativa ${attempt}/${SESSION_INIT_MAX_ATTEMPTS}`);
       console.log(`⏱️ Timeout configurado: ${SESSION_INIT_TIMEOUT_MS / 1000} segundos`);
 
       const initPromise = client.initialize();
@@ -575,7 +586,7 @@ class SessionManager {
       console.log(`✅ Cliente ${sessionData.id} inicializado com sucesso`);
       this.reconnectAttempts.delete(sessionData.id);
     } catch (error) {
-      console.error(`❌ Erro ao inicializar cliente ${sessionData.id}:`, error.message);
+      console.error(`❌ Erro ao inicializar cliente ${sessionData.id} (tentativa ${attempt}/${SESSION_INIT_MAX_ATTEMPTS}):`, error.message);
 
       // Timeout NÃO deleta RemoteAuth — é condição temporária (CPU sobrecarregada),
       // NÃO corrupção de dados. Deletar forçaria todos a escanear QR de novo.
@@ -584,12 +595,39 @@ class SessionManager {
         console.warn(`⚠️ [${sessionData.id}] Timeout na inicialização — RemoteAuth PRESERVADO para próxima tentativa`);
       }
 
+      const hasRemoteAuth = await this.hasSavedRemoteAuth(sessionData.id);
+      if (hasRemoteAuth && attempt < SESSION_INIT_MAX_ATTEMPTS && this.isTransientInitError(error)) {
+        console.warn(`[${sessionData.id}] Falha transiente do Chromium/WhatsApp Web. Recriando cliente sem perder RemoteAuth...`);
+
+        try {
+          await client.destroy();
+        } catch (destroyError) {
+          console.warn(`[${sessionData.id}] Erro ao destruir cliente instavel: ${destroyError.message}`);
+        }
+
+        this.sessions.delete(sessionData.id);
+        this.sessionLastActivity.delete(sessionData.id);
+        this.cleanupSessionFiles(sessionData.id);
+        await new Promise(r => setTimeout(r, 10000 * attempt));
+
+        const retryClient = await this.createWhatsAppClient(sessionData.id);
+        this.setupClientEvents(retryClient, sessionData);
+        sessionData.client = retryClient;
+        sessionData.status = 'initializing';
+        sessionData.lastSeen = Date.now();
+        this.sessions.set(sessionData.id, sessionData);
+        this.sessionLastActivity.set(sessionData.id, Date.now());
+        await this.db.updateSessionStatus(sessionData.id, 'initializing');
+
+        return this.initializeClientInBackground(retryClient, sessionData, attempt + 1);
+      }
+
       // Limpa recursos sem deletar do banco (permite tentar de novo)
-      const failedStatus = await this.hasSavedRemoteAuth(sessionData.id) ? 'authenticated' : 'failed';
+      const failedStatus = hasRemoteAuth ? 'authenticated' : 'failed';
       await this.cleanupSession(sessionData.id);
       await this.db.updateSessionStatus(sessionData.id, failedStatus);
 
-      console.log(`💾 Sessão ${sessionData.id} marcada como 'failed' no banco`);
+      console.log(`💾 Sessão ${sessionData.id} preservada no banco como '${failedStatus}'`);
 
       // Notifica frontend que a inicialização falhou (evita "Inicializando..." eterno)
       this.io.to(`user_${sessionData.userId}`).emit('session_error', {
@@ -714,33 +752,18 @@ class SessionManager {
           '--disable-gpu',
           '--no-first-run',
           '--disable-extensions',
-          '--disable-background-networking',
           '--disable-default-apps',
-          '--disable-sync',
           '--disable-translate',
           '--hide-scrollbars',
           '--mute-audio',
           '--no-default-browser-check',
-          '--disable-software-rasterizer',
-          '--disable-features=TranslateUI,IsolateOrigins,site-per-process',
-          '--disable-site-isolation-trials',      // Evita "detached frame" errors
-          '--disable-ipc-flooding-protection',
+          '--disable-features=TranslateUI',
           '--disable-renderer-backgrounding',
           '--disable-backgrounding-occluded-windows',
-          '--disable-component-update',
-          '--renderer-process-limit=1',            // 1 renderer por Chromium (economiza RAM)
-          '--js-flags=--max-old-space-size=128',   // 128MB max JS heap (era 256, economiza ~50% RAM/sessão)
-          '--disable-canvas-aa',                    // Desativa antialiasing canvas (economiza RAM)
-          '--disable-2d-canvas-clip-aa',
-          '--disable-gl-drawing-for-tests',
+          '--js-flags=--max-old-space-size=256',
           '--autoplay-policy=user-gesture-required',
           '--disable-domain-reliability',
-          '--aggressive-cache-discard',             // Descarta cache agressivamente
-          '--disable-cache',                        // Sem cache de disco (headless não precisa)
-          '--disable-application-cache',
-          '--media-cache-size=1',                   // Cache de mídia mínimo
-          '--disk-cache-size=1',                    // Cache de disco mínimo
-          '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+          '--window-size=1280,720'
         ],
         executablePath: actualExecPath,
         timeout: SESSION_INIT_TIMEOUT_MS
