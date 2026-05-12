@@ -431,7 +431,10 @@ class SessionManager {
     // Se a sessão já existe na memória E tem cliente ativo, retorna ela
     if (this.sessions.has(sessionId)) {
       const existing = this.sessions.get(sessionId);
-      if (existing.client && (existing.status === 'connected' || existing.status === 'qr_code' || existing.status === 'initializing')) {
+      if (existing.client && existing.status === 'qr_code' && Date.now() - existing.lastSeen > 90 * 1000) {
+        console.log(`QR antigo para ${sessionId}; limpando para gerar QR novo`);
+        await this.cleanupSession(sessionId);
+      } else if (existing.client && (existing.status === 'connected' || existing.status === 'qr_code' || existing.status === 'initializing')) {
         console.log(`⚠️ Sessão ${sessionId} já existe na memória com status ${existing.status}`);
         return existing;
       }
@@ -1395,42 +1398,6 @@ class SessionManager {
     };
 
     this.io.to(room).emit('message_sent', payload);
-
-    // Fallback para o Lovable/ProspectFlow quando o Socket.IO acabou de reconectar
-    // e ainda nao entrou na sala do usuario. Payload sanitizado: sem corpo da mensagem.
-    const publicPayload = {
-      sessionId: payload.sessionId,
-      id: payload.id,
-      messageId: payload.messageId,
-      to: payload.to || payload.contactPhone,
-      phone: payload.phone || payload.contactPhone,
-      contactPhone: payload.contactPhone,
-      status: payload.status || 'sent',
-      confirmed: true,
-      invalidNumber: false,
-      fromMe: true,
-      isFromMe: true,
-      timestamp: payload.timestamp,
-      message: {
-        id: payload.id,
-        messageId: payload.messageId,
-        to: payload.to || payload.contactPhone,
-        phone: payload.phone || payload.contactPhone,
-        contactPhone: payload.contactPhone,
-        status: payload.status || 'sent',
-        confirmed: true,
-        invalidNumber: false,
-        fromMe: true,
-        isFromMe: true,
-        timestamp: payload.timestamp
-      }
-    };
-
-    if (typeof this.io.except === 'function') {
-      this.io.except(room).emit('message_sent', publicPayload);
-    } else {
-      this.io.emit('message_sent', publicPayload);
-    }
   }
 
   // ═══════════════════════════════════════════════════════════════════

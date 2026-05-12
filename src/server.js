@@ -274,7 +274,20 @@ app.post('/api/auth/login', async (req, res) => {
     let sessionStatus = 'not_found';
 
     if (existingSession) {
-      sessionStatus = existingSession.status;
+      if (existingSession.status === 'qr_code' && Date.now() - existingSession.lastSeen > 90 * 1000) {
+        console.log(`QR antigo para ${sessionId}; recriando sessao para gerar QR limpo`);
+        await sessionManager.cleanupSession(sessionId);
+        sessionStatus = 'initializing';
+        setImmediate(async () => {
+          try {
+            await sessionManager.createSession(sessionId, user.id);
+          } catch (error) {
+            console.error(`Erro ao recriar QR antigo ${sessionId}:`, error.message);
+          }
+        });
+      } else {
+        sessionStatus = existingSession.status;
+      }
     } else {
       setImmediate(async () => {
         try {
