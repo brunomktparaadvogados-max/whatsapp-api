@@ -605,6 +605,94 @@ app.post('/api/admin/cleanup-sessions', authMiddleware, async (req, res) => {
   }
 });
 
+app.post('/api/admin/recover-auth-sessions', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = await db.getUserById(req.userId);
+    if (currentUser.email !== 'admin@flow.com') {
+      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
+    }
+
+    if (global.__recoveringRemoteAuthSessions) {
+      return res.status(409).json({
+        success: false,
+        error: 'Recuperacao de sessoes ja esta em andamento',
+        message: 'Aguarde a fila atual terminar antes de iniciar outra.'
+      });
+    }
+
+    const requestedIds = Array.isArray(req.body?.sessionIds)
+      ? new Set(req.body.sessionIds.map(String))
+      : null;
+    const limit = Math.max(1, Math.min(parseInt(req.body?.limit || '10', 10), 25));
+    const allSessions = await db.getAllSessionsFromDB();
+    const candidates = [];
+
+    for (const session of allSessions) {
+      if (!session.id || !session.id.startsWith('user_')) continue;
+      if (requestedIds && !requestedIds.has(session.id)) continue;
+
+      const live = sessionManager.getSession(session.id);
+      if (live && live.status === 'connected') continue;
+
+      const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(session.id);
+      if (!hasRemoteAuth) continue;
+
+      candidates.push(session);
+    }
+
+    const toRecover = candidates
+      .sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0))
+      .slice(0, limit);
+
+    global.__recoveringRemoteAuthSessions = true;
+    setImmediate(async () => {
+      const summary = [];
+      try {
+        for (const session of toRecover) {
+          const live = sessionManager.getSession(session.id);
+          if (live && live.status === 'connected') {
+            summary.push({ sessionId: session.id, status: 'already_connected' });
+            continue;
+          }
+
+          try {
+            console.log(`[RECOVER] Restaurando ${session.id} via RemoteAuth...`);
+            await db.updateSessionStatus(session.id, 'authenticated');
+            const recovered = await sessionManager.autoReconnectForSend(session.id);
+            summary.push({
+              sessionId: session.id,
+              status: recovered?.status || 'not_ready',
+              connected: recovered?.status === 'connected'
+            });
+          } catch (error) {
+            console.error(`[RECOVER] Falha ao restaurar ${session.id}: ${error.message}`);
+            summary.push({ sessionId: session.id, status: 'error', error: error.message });
+          }
+        }
+      } finally {
+        global.__recoveringRemoteAuthSessions = false;
+        console.log('[RECOVER] Fila concluida:', summary);
+      }
+    });
+
+    res.json({
+      success: true,
+      started: true,
+      candidates: candidates.length,
+      recovering: toRecover.map(s => ({
+        id: s.id,
+        user_id: s.user_id,
+        status: s.status,
+        updated_at: s.updated_at
+      })),
+      message: 'Recuperacao iniciada em fila controlada. Sessoes sem RemoteAuth exigem novo QR.'
+    });
+  } catch (error) {
+    global.__recoveringRemoteAuthSessions = false;
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/health', (req, res) => {
   // SEMPRE retorna 200 IMEDIATAMENTE para o Koyeb health check
   // Nunca faz queries ao banco — evita travar o health check
@@ -706,19 +794,17 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
     
     if (!session) {
       const dbSession = await db.getSession(sessionId);
-      if (!dbSession || ['qr_code', 'failed', 'disconnected', 'authenticated', 'connected'].includes(dbSession.status)) {
-        setImmediate(() => {
-          sessionManager.createSession(sessionId, req.userId).catch(error => {
-            console.error(`Erro ao preparar sessao ${sessionId}:`, error.message);
-          });
-        });
-      }
+      const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
       return res.json({
         success: true,
-        status: dbSession && needsLiveSessionReconnect(dbSession.status) ? 'reconnecting' : 'initializing',
+        sessionId,
+        status: dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status) ? 'saved_auth' : (dbSession?.status || 'not_created'),
         canSend: false,
+        hasRemoteAuth,
         dbStatus: dbSession?.status || null,
-        message: 'Sessao sendo preparada no Chromium. Aguarde aparecer como conectada.'
+        message: hasRemoteAuth
+          ? 'Sessao salva no RemoteAuth. Ela sera reconectada sob demanda no envio ou ao clicar em criar sessao.'
+          : 'Sessao ainda nao conectada. Clique em criar sessao para gerar QR.'
       });
     }
 
@@ -742,20 +828,17 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
     
     if (!session) {
       const dbSession = await db.getSession(sessionId);
-      if (!dbSession || ['qr_code', 'failed', 'disconnected', 'authenticated', 'connected'].includes(dbSession.status)) {
-        setImmediate(() => {
-          sessionManager.createSession(sessionId, req.userId).catch(error => {
-            console.error(`Erro ao preparar sessao ${sessionId}:`, error.message);
-          });
-        });
-      }
+      const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
       return res.json({
         success: true,
-        status: dbSession && needsLiveSessionReconnect(dbSession.status) ? 'reconnecting' : 'initializing',
+        status: dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status) ? 'saved_auth' : (dbSession?.status || 'not_created'),
         qrCode: null,
         canSend: false,
+        hasRemoteAuth,
         dbStatus: dbSession?.status || null,
-        message: 'Sessao sendo preparada. Aguarde o QR Code atualizar.'
+        message: hasRemoteAuth
+          ? 'Sessao salva no RemoteAuth; nao ha QR enquanto a reconexao sob demanda nao iniciar.'
+          : 'Sessao sem RemoteAuth; clique em criar sessao para gerar QR.'
       });
     }
 
@@ -859,20 +942,21 @@ app.get('/api/sessions', authMiddleware, async (req, res) => {
   try {
     const sessions = await db.getSessionsByUserId(req.userId);
 
-    const sessionsWithStatus = sessions.map(session => {
+    const sessionsWithStatus = await Promise.all(sessions.map(async session => {
       const liveSession = sessionManager.getSession(session.id);
-      if (!liveSession && needsLiveSessionReconnect(session.status)) {
-        kickSessionReconnect(session.id, 'sessions_list');
-      }
+      const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(session.id);
+      const recoverable = !liveSession && hasRemoteAuth && needsLiveSessionReconnect(session.status);
       return {
         ...session,
-        status: liveSession ? liveSession.status : (needsLiveSessionReconnect(session.status) ? 'reconnecting' : session.status),
+        status: liveSession ? liveSession.status : (recoverable ? 'saved_auth' : session.status),
         dbStatus: session.status,
+        hasRemoteAuth,
+        recoverable,
         canSend: liveSession ? liveSession.status === 'connected' : false,
         qrCode: liveSession ? liveSession.qrCode : null,
         info: liveSession ? liveSession.info : null
       };
-    });
+    }));
 
     res.json({ success: true, sessions: sessionsWithStatus });
   } catch (error) {
@@ -897,16 +981,17 @@ app.get('/api/sessions/:sessionId', authMiddleware, async (req, res) => {
     }
 
     const liveSession = sessionManager.getSession(sessionId);
-    if (!liveSession && needsLiveSessionReconnect(dbSession.status)) {
-      kickSessionReconnect(sessionId, 'session_detail');
-    }
+    const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
+    const recoverable = !liveSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
 
     res.json({
       success: true,
       session: {
         ...dbSession,
-        status: liveSession ? liveSession.status : (needsLiveSessionReconnect(dbSession.status) ? 'reconnecting' : dbSession.status),
+        status: liveSession ? liveSession.status : (recoverable ? 'saved_auth' : dbSession.status),
         dbStatus: dbSession.status,
+        hasRemoteAuth,
+        recoverable,
         canSend: liveSession ? liveSession.status === 'connected' : false,
         qrCode: liveSession ? liveSession.qrCode : null,
         info: liveSession ? liveSession.info : null

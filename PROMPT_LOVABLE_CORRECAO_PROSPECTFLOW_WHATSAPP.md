@@ -20,13 +20,12 @@ A API WhatsApp agora retorna campos padronizados. Use estes campos como fonte pr
 Regra obrigatória:
 
 - Marcar lead como `Enviado` quando qualquer condição for verdadeira:
-  - `success === true`
   - `confirmed === true`
   - `finalStatus === "sent"`
   - `shouldMarkLead === "sent"`
   - `status === "sent"`
   - existe `messageId`
-  - `duplicate === true`
+Observação obrigatória: `success === true` sozinho não basta se `finalStatus` ou `shouldMarkLead` for `pending`. `duplicate === true` nunca deve marcar como enviado; ele significa que a API bloqueou um reenvio para evitar duplicidade.
 
 - Marcar lead como `Número Inválido` somente quando:
   - `invalidNumber === true`
@@ -48,7 +47,8 @@ Unifique os dois botões para chamarem uma única função central, por exemplo 
 
 Regras:
 
-- Não faça retry que reenvia a mesma mensagem se a API retornou sucesso, `messageId`, `confirmed`, `shouldMarkLead: "sent"` ou `duplicate: true`.
+- Não faça retry que reenvia a mesma mensagem se a API retornou `messageId`, `confirmed`, `shouldMarkLead: "sent"` ou `duplicate: true`.
+- Use somente um endpoint de envio por tentativa. Preferir `POST /api/messages/send`. Não chamar fallback para `/api/sessions/:sessionId/message` ou `/api/sessions/:sessionId/messages` quando `/api/messages/send` retornar `202`, `pending`, `duplicate`, `session_reconnecting` ou erro temporário; isso foi uma causa direta de duplicidade e status errado.
 - Se a API retornar erro temporário/pending, não reenvie imediatamente em loop; mantenha o lead pendente e aplique backoff.
 - O botão `Disparo Automático` deve permitir vários usuários ao mesmo tempo, mas cada usuário deve ter sua fila local no frontend.
 - Não dispare vários `fetch` paralelos para o mesmo usuário/sessão. Envie um lead por vez por usuário.

@@ -28,6 +28,8 @@ const AUTO_RECONNECT_TIMEOUT_MS = 420000;         // 7 min máx para auto-recone
 const AUTHENTICATED_READY_TIMEOUT_MS = parseInt(process.env.AUTHENTICATED_READY_TIMEOUT_MS) || 180000;
 const STARTUP_RESTORE_LIMIT = parseInt(process.env.STARTUP_RESTORE_LIMIT) || Math.min(3, MAX_CONCURRENT_SESSIONS);
 const SESSION_INIT_MAX_ATTEMPTS = parseInt(process.env.SESSION_INIT_MAX_ATTEMPTS) || 2;
+const SESSION_INIT_CONCURRENCY = parseInt(process.env.SESSION_INIT_CONCURRENCY) || 1;
+const SESSION_INIT_STAGGER_MS = parseInt(process.env.SESSION_INIT_STAGGER_MS) || 15000;
 
 class SessionManager {
   constructor(database, io) {
@@ -48,6 +50,8 @@ class SessionManager {
     this.reconnectingSet = new Set();       // Sessões em processo de auto-reconexão
     this.reconnectPromises = new Map();     // Promises de reconexão em andamento
     this.reconnectCancelled = new Set();   // Sessões que tiveram reconnect cancelado
+    this.activeSessionInitializations = 0;
+    this.sessionInitQueue = [];
     this.remoteAuthSaveInFlight = new Set(); // Evita backups RemoteAuth simultaneos da mesma sessao
     this._contactCache = new Map();          // Cache de contatos: "session_phone" → timestamp (evita upsert repetido)
     this._contactCacheTTL = 10 * 60 * 1000; // 10 min TTL — mesmo contato não faz upsert de novo por 10 min
@@ -330,8 +334,10 @@ class SessionManager {
     this.lastMessageTime.delete(sessionId);
     this.sessionSendLock.delete(sessionId);
 
-    // Marca como disconnected no banco
-    await this.db.updateSessionStatus(sessionId, 'disconnected');
+    const hasRemoteAuth = await this.hasSavedRemoteAuth(sessionId);
+    const nextStatus = hasRemoteAuth ? 'authenticated' : 'disconnected';
+
+    await this.db.updateSessionStatus(sessionId, nextStatus);
 
     // Limpa arquivos do disco
     this.cleanupSessionFiles(sessionId);
@@ -340,6 +346,9 @@ class SessionManager {
     this.io.to(`user_${session.userId}`).emit('session_disconnected', {
       sessionId: sessionId,
       info: session.info,
+      status: nextStatus,
+      hasRemoteAuth,
+      recoverable: hasRemoteAuth,
       message: 'Sessão desconectada por inatividade. Crie uma nova sessão para reconectar.'
     });
 
@@ -572,6 +581,43 @@ class SessionManager {
   }
 
   async initializeClientInBackground(client, sessionData, attempt = 1) {
+    return this.withSessionInitLimit(
+      () => this._initializeClientInBackground(client, sessionData, attempt),
+      sessionData.id
+    );
+  }
+
+  withSessionInitLimit(fn, sessionId) {
+    return new Promise((resolve, reject) => {
+      this.sessionInitQueue.push({ fn, sessionId, resolve, reject });
+      console.log(`[INIT QUEUE] ${sessionId} enfileirada. Fila: ${this.sessionInitQueue.length} | Ativas: ${this.activeSessionInitializations}/${SESSION_INIT_CONCURRENCY}`);
+      this.runNextSessionInitialization();
+    });
+  }
+
+  runNextSessionInitialization() {
+    while (this.activeSessionInitializations < SESSION_INIT_CONCURRENCY && this.sessionInitQueue.length > 0) {
+      const item = this.sessionInitQueue.shift();
+      this.activeSessionInitializations++;
+
+      (async () => {
+        try {
+          if (SESSION_INIT_STAGGER_MS > 0) {
+            await new Promise(resolve => setTimeout(resolve, SESSION_INIT_STAGGER_MS));
+          }
+          const result = await item.fn();
+          item.resolve(result);
+        } catch (error) {
+          item.reject(error);
+        } finally {
+          this.activeSessionInitializations--;
+          this.runNextSessionInitialization();
+        }
+      })();
+    }
+  }
+
+  async _initializeClientInBackground(client, sessionData, attempt = 1) {
     try {
       console.log(`🚀 Inicializando cliente ${sessionData.id} em background... tentativa ${attempt}/${SESSION_INIT_MAX_ATTEMPTS}`);
       console.log(`⏱️ Timeout configurado: ${SESSION_INIT_TIMEOUT_MS / 1000} segundos`);
@@ -619,7 +665,7 @@ class SessionManager {
         this.sessionLastActivity.set(sessionData.id, Date.now());
         await this.db.updateSessionStatus(sessionData.id, 'initializing');
 
-        return this.initializeClientInBackground(retryClient, sessionData, attempt + 1);
+        return this._initializeClientInBackground(retryClient, sessionData, attempt + 1);
       }
 
       // Limpa recursos sem deletar do banco (permite tentar de novo)
@@ -974,18 +1020,25 @@ class SessionManager {
 
     client.on('disconnected', async (reason) => {
       console.log(`🔴 Desconectado: ${sessionData.id} - Motivo: ${reason}`);
-      sessionData.status = 'disconnected';
       sessionData.lastSeen = Date.now();
 
-      await this.db.updateSessionStatus(sessionData.id, 'disconnected');
+      const hasRemoteAuth = await this.hasSavedRemoteAuth(sessionData.id);
+      const shouldReconnect = reason !== 'LOGOUT' && reason !== 'CONFLICT' && hasRemoteAuth;
+      const nextStatus = shouldReconnect ? 'authenticated' : 'disconnected';
+      sessionData.status = nextStatus;
+
+      await this.db.updateSessionStatus(sessionData.id, nextStatus);
 
       this.io.to(`user_${sessionData.userId}`).emit('session_disconnected', {
         sessionId: sessionData.id,
-        reason
+        reason,
+        status: nextStatus,
+        hasRemoteAuth,
+        recoverable: shouldReconnect
       });
 
       // Tenta reconectar apenas se o motivo não for logout manual
-      if (reason !== 'LOGOUT' && reason !== 'CONFLICT') {
+      if (shouldReconnect) {
         await this.attemptReconnect(sessionData);
       } else {
         // Limpa recursos de Chromium
@@ -1769,7 +1822,7 @@ class SessionManager {
       if (!alive) {
         console.warn(`⚠️ [${sessionId}] Sessão marcada como connected, mas Chromium não respondeu. Reconectando antes do envio...`);
         await this.cleanupSession(sessionId);
-        await this.db.updateSessionStatus(sessionId, 'disconnected');
+        await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'authenticated' : 'disconnected');
         session = await this.autoReconnectForSend(sessionId);
         if (!session || !session.client || session.status !== 'connected') {
           throw new Error('Sessão conectada no banco, mas o Chromium não respondeu e a reconexão falhou. Tente novamente em 1 minuto.');
@@ -1789,7 +1842,7 @@ class SessionManager {
         numberId = await client.getNumberId(candidatePhone);
         if (numberId) {
           normalizedPhone = candidatePhone;
-          chatId = normalizedPhone.includes('@c.us') ? normalizedPhone : `${normalizedPhone}@c.us`;
+          chatId = numberId._serialized || (normalizedPhone.includes('@c.us') ? normalizedPhone : `${normalizedPhone}@c.us`);
           numberWasVerifiedBeforeSend = true;
           break;
         }
@@ -2119,7 +2172,7 @@ class SessionManager {
           } catch (cleanErr) {
             console.warn(`⚠️ [${sessionId}] Erro ao limpar sessão morta: ${cleanErr.message}`);
           }
-          await this.db.updateSessionStatus(sessionId, 'disconnected');
+          await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'authenticated' : 'disconnected');
 
           // Tenta reconexão automática ANTES de desistir
           try {
