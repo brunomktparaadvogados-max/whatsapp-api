@@ -270,6 +270,12 @@ class SessionManager {
     }, delayMs).unref?.();
   }
 
+  scheduleInitialRemoteAuthBackups(sessionData, reason) {
+    for (const delayMs of [5000, 15000, 30000, 60000, 120000, 180000]) {
+      this.scheduleRemoteAuthBackup(sessionData, delayMs, `${reason}_${delayMs / 1000}s`);
+    }
+  }
+
   async forceRemoteAuthBackup(sessionId, reason = 'manual') {
     if (!this.pgStore || !this.useRemoteAuth) return false;
     if (await this.hasSavedRemoteAuth(sessionId)) return true;
@@ -822,8 +828,7 @@ class SessionManager {
       this.sessionLastActivity.set(sessionData.id, Date.now());
 
       await this.db.updateSessionStatus(sessionData.id, 'authenticated');
-      this.scheduleRemoteAuthBackup(sessionData, 20000, 'authenticated');
-      this.scheduleRemoteAuthBackup(sessionData, 70000, 'authenticated_retry');
+      this.scheduleInitialRemoteAuthBackups(sessionData, 'authenticated');
 
       this.io.to(`user_${sessionData.userId}`).emit('session_authenticated', {
         sessionId: sessionData.id,
@@ -836,16 +841,35 @@ class SessionManager {
       setTimeout(async () => {
         const currentSession = this.sessions.get(sessionData.id);
         if (currentSession && currentSession.status === 'authenticated') {
-          console.warn(`⚠️ [${sessionData.id}] Sessão autenticada há 180s sem ficar 'ready'. Marcando como failed.`);
-          const nextStatus = await this.hasSavedRemoteAuth(sessionData.id) ? 'authenticated' : 'disconnected';
-          currentSession.status = nextStatus;
-          await this.db.updateSessionStatus(sessionData.id, nextStatus);
+          console.warn(`[${sessionData.id}] Sessao autenticada sem ready. Verificando RemoteAuth antes de limpar.`);
+          let hasAuth = await this.hasSavedRemoteAuth(sessionData.id);
+
+          if (!hasAuth) {
+            console.warn(`[${sessionData.id}] Sem RemoteAuth salvo. Tentando backup imediato e preservando Chromium para nao perder scan novo.`);
+            await this.forceRemoteAuthBackup(sessionData.id, 'authenticated_timeout_protect');
+            hasAuth = await this.hasSavedRemoteAuth(sessionData.id);
+          }
+
+          if (!hasAuth) {
+            currentSession.lastSeen = Date.now();
+            this.sessionLastActivity.set(sessionData.id, Date.now());
+            await this.db.updateSessionStatus(sessionData.id, 'authenticated');
+            this.scheduleInitialRemoteAuthBackups(currentSession, 'authenticated_timeout_retry');
+            this.io.to(`user_${sessionData.userId}`).emit('session_reconnecting', {
+              sessionId: sessionData.id,
+              error: 'WhatsApp autenticou. Protegendo a sessao antes de reiniciar a conexao.',
+              status: 'authenticated'
+            });
+            return;
+          }
+
+          currentSession.status = 'authenticated';
+          await this.db.updateSessionStatus(sessionData.id, 'authenticated');
           this.io.to(`user_${sessionData.userId}`).emit('session_reconnecting', {
             sessionId: sessionData.id,
-            error: 'WhatsApp autenticou mas demorou para conectar. Reconexão automática em andamento.',
+            error: 'WhatsApp autenticou mas demorou para conectar. Reconexao automatica em andamento.',
             status: 'reconnecting'
           });
-          // Limpa o Chromium travado
           await this.cleanupSession(sessionData.id);
           setTimeout(() => {
             this.autoReconnectForSend(sessionData.id).catch(err => {
@@ -883,8 +907,7 @@ class SessionManager {
         client.info.wid._serialized,
         client.info.pushname
       );
-      this.scheduleRemoteAuthBackup(sessionData, 10000, 'ready');
-      this.scheduleRemoteAuthBackup(sessionData, 60000, 'ready_retry');
+      this.scheduleInitialRemoteAuthBackups(sessionData, 'ready');
 
       console.log(`💾 Sessão ${sessionData.id} salva com status: connected`);
       console.log(`📞 Número: ${client.info.wid._serialized} | 👤 Nome: ${client.info.pushname}`);
