@@ -385,22 +385,12 @@ app.post('/api/auth/register', async (req, res) => {
 
     const sessionId = `user_${userId}`;
 
-    setImmediate(async () => {
-      try {
-        console.log(`🔄 Criando sessão automática para usuário ${userId}...`);
-        await sessionManager.createSession(sessionId, userId);
-        console.log(`✅ Sessão ${sessionId} criada com sucesso`);
-      } catch (error) {
-        console.error(`❌ Erro ao criar sessão automática para usuário ${userId}:`, error.message);
-      }
-    });
-
     res.json({
       success: true,
       token,
       user: { id: userId, email, name, company },
       sessionId: sessionId,
-      message: 'Usuário criado! Sua sessão WhatsApp está sendo inicializada em background.'
+      message: 'Usuário criado! Clique em criar sessão para gerar o QR Code quando estiver pronto para escanear.'
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -907,7 +897,9 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
     setImmediate(async () => {
       try {
         console.log(`🔄 Criando sessão ${targetSessionId} para usuário ${targetUserId}...`);
-        await sessionManager.createSession(targetSessionId, targetUserId);
+        await sessionManager.createSession(targetSessionId, targetUserId, {
+          priority: true
+        });
         console.log(`✅ Sessão ${targetSessionId} criada`);
       } catch (error) {
         console.error(`❌ Erro ao criar sessão ${targetSessionId}:`, error.message);

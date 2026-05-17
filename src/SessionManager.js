@@ -440,7 +440,7 @@ class SessionManager {
     return count;
   }
 
-  async createSession(sessionId, userId) {
+  async createSession(sessionId, userId, options = {}) {
     console.log(`🆕 Criando nova sessão: ${sessionId}`);
 
     // CANCELA qualquer reconnect pendente para esta sessão (evita race condition)
@@ -565,7 +565,9 @@ class SessionManager {
     console.log(`📊 Chromium ativos: ${this.getActiveChromiumCount()}/${MAX_CONCURRENT_SESSIONS}`);
 
     // Inicializa em background sem bloquear
-    this.initializeClientInBackground(client, sessionData);
+    this.initializeClientInBackground(client, sessionData, {
+      priority: options.priority === true
+    });
 
     return sessionData;
   }
@@ -580,16 +582,24 @@ class SessionManager {
       message.includes('timeout');
   }
 
-  async initializeClientInBackground(client, sessionData, attempt = 1) {
+  async initializeClientInBackground(client, sessionData, optionsOrAttempt = {}, maybeAttempt = 1) {
+    const options = typeof optionsOrAttempt === 'number' ? {} : optionsOrAttempt;
+    const attempt = typeof optionsOrAttempt === 'number' ? optionsOrAttempt : maybeAttempt;
     return this.withSessionInitLimit(
       () => this._initializeClientInBackground(client, sessionData, attempt),
-      sessionData.id
+      sessionData.id,
+      options
     );
   }
 
-  withSessionInitLimit(fn, sessionId) {
+  withSessionInitLimit(fn, sessionId, options = {}) {
     return new Promise((resolve, reject) => {
-      this.sessionInitQueue.push({ fn, sessionId, resolve, reject });
+      const item = { fn, sessionId, resolve, reject };
+      if (options.priority === true) {
+        this.sessionInitQueue.unshift(item);
+      } else {
+        this.sessionInitQueue.push(item);
+      }
       console.log(`[INIT QUEUE] ${sessionId} enfileirada. Fila: ${this.sessionInitQueue.length} | Ativas: ${this.activeSessionInitializations}/${SESSION_INIT_CONCURRENCY}`);
       this.runNextSessionInitialization();
     });
