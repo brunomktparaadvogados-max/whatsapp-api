@@ -30,6 +30,9 @@ const STARTUP_RESTORE_LIMIT = parseInt(process.env.STARTUP_RESTORE_LIMIT) || 1;
 const SESSION_INIT_MAX_ATTEMPTS = parseInt(process.env.SESSION_INIT_MAX_ATTEMPTS) || 2;
 const SESSION_INIT_CONCURRENCY = parseInt(process.env.SESSION_INIT_CONCURRENCY) || 1;
 const SESSION_INIT_STAGGER_MS = parseInt(process.env.SESSION_INIT_STAGGER_MS) || 15000;
+const REMOTE_AUTH_INIT_RETRIES = parseInt(process.env.REMOTE_AUTH_INIT_RETRIES) || 6;
+const REMOTE_AUTH_INIT_RETRY_DELAY_MS = parseInt(process.env.REMOTE_AUTH_INIT_RETRY_DELAY_MS) || 5000;
+const REQUIRE_REMOTE_AUTH = process.env.REQUIRE_REMOTE_AUTH !== 'false';
 
 class SessionManager {
   constructor(database, io) {
@@ -47,6 +50,8 @@ class SessionManager {
     this.recentErrors = [];                 // Log de erros recentes para diagnóstico
     this.pgStore = null;                    // PostgresStore para RemoteAuth (persistência de sessão)
     this.useRemoteAuth = false;             // Flag: usar RemoteAuth ou LocalAuth
+    this.remoteAuthInitError = null;
+    this.poolListenerRegistered = false;
     this.reconnectingSet = new Set();       // Sessões em processo de auto-reconexão
     this.reconnectPromises = new Map();     // Promises de reconexão em andamento
     this.reconnectCancelled = new Set();   // Sessões que tiveram reconnect cancelado
@@ -57,6 +62,46 @@ class SessionManager {
     this._contactCacheTTL = 10 * 60 * 1000; // 10 min TTL — mesmo contato não faz upsert de novo por 10 min
 
     this.init();
+  }
+
+  async initializePostgresStore(attempts = REMOTE_AUTH_INIT_RETRIES) {
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        if (!this.pgStore) {
+          this.pgStore = new PostgresStore({ pool: this.db.pool });
+        } else {
+          this.pgStore.pool = this.db.pool;
+        }
+
+        await this.pgStore.init();
+        this.useRemoteAuth = true;
+        this.remoteAuthInitError = null;
+
+        if (!this.poolListenerRegistered) {
+          this.db.onPoolChange((newPool) => {
+            console.log('Atualizando pool do PostgresStore apos recuperacao...');
+            if (this.pgStore) this.pgStore.pool = newPool;
+            console.log('PostgresStore agora usa o novo pool');
+          });
+          this.poolListenerRegistered = true;
+        }
+
+        return true;
+      } catch (error) {
+        lastError = error;
+        this.remoteAuthInitError = error;
+        this.useRemoteAuth = false;
+        console.warn(`PostgresStore indisponivel (tentativa ${attempt}/${attempts}): ${error.message}`);
+
+        if (attempt < attempts) {
+          await new Promise(resolve => setTimeout(resolve, REMOTE_AUTH_INIT_RETRY_DELAY_MS * attempt));
+        }
+      }
+    }
+
+    throw lastError;
   }
 
   async init() {
@@ -104,8 +149,16 @@ class SessionManager {
         console.warn('⚠️ Erro ao listar sessões RemoteAuth:', listErr.message);
       }
     } catch (pgStoreError) {
-      console.error('⚠️ Falha ao inicializar PostgresStore, usando LocalAuth:', pgStoreError.message);
+      console.error('⚠️ Falha ao inicializar PostgresStore. LocalAuth bloqueado para preservar RemoteAuth:', pgStoreError.message);
       this.useRemoteAuth = false;
+      this.remoteAuthInitError = pgStoreError;
+
+      try {
+        await this.initializePostgresStore();
+        console.log('PostgresStore recuperado apos retry; RemoteAuth ativo novamente.');
+      } catch (retryError) {
+        console.error('RemoteAuth indisponivel apos retries. Mantendo sessoes preservadas e bloqueando QR local:', retryError.message);
+      }
     }
 
     console.log('✅ Banco de dados principal: PostgreSQL (Supabase)');
@@ -116,8 +169,8 @@ class SessionManager {
       console.log('🔄 Restaurando sessões salvas do PostgreSQL...');
       await this.restoreSavedSessions();
     } else {
-      // Sem RemoteAuth, marca todas como desconectadas
-      await this.markAllSessionsDisconnected();
+      // Nunca cai para LocalAuth em producao: isso geraria QR novo e poderia sobrescrever sessoes salvas.
+      console.warn('RemoteAuth indisponivel no startup. Status das sessoes preservados; reconexao tentara novamente sob demanda.');
     }
 
     // Inicia limpeza automática inteligente
@@ -252,13 +305,26 @@ class SessionManager {
       console.log(`💡 Sessões aparecerão como "connected" em 30-120s sem precisar de QR`);
     } catch (error) {
       console.error('❌ Erro ao restaurar sessões:', error.message);
-      // Fallback: marca tudo como desconectado
-      await this.markAllSessionsDisconnected();
+      // Nao marca tudo como desconectado: RemoteAuth salvo deve ser preservado e reconectado sob demanda.
+      console.warn('Restauracao interrompida; sessoes salvas permanecem preservadas.');
     }
   }
 
   async hasSavedRemoteAuth(sessionId) {
-    if (!this.pgStore || !this.useRemoteAuth) return false;
+    if (!this.pgStore) {
+      try {
+        await this.initializePostgresStore(2);
+      } catch (error) {
+        console.warn(`RemoteAuth indisponivel ao verificar ${sessionId}: ${error.message}`);
+        return false;
+      }
+    } else if (!this.useRemoteAuth) {
+      try {
+        await this.initializePostgresStore(2);
+      } catch (error) {
+        console.warn(`RemoteAuth ainda indisponivel ao verificar ${sessionId}: ${error.message}`);
+      }
+    }
     try {
       return await this.pgStore.sessionExists({ session: `RemoteAuth-${sessionId}` });
     } catch (error) {
@@ -801,6 +867,15 @@ class SessionManager {
     }
 
     const actualExecPath = fs.existsSync(execPath) ? execPath : '/usr/bin/chromium';
+    if ((!this.useRemoteAuth || !this.pgStore) && REQUIRE_REMOTE_AUTH) {
+      try {
+        await this.initializePostgresStore(3);
+      } catch (error) {
+        throw new Error(`RemoteAuth/PostgresStore indisponivel temporariamente; sessao ${sessionId} preservada sem gerar QR local. Tente novamente em instantes. Detalhe: ${error.message}`);
+      }
+    }
+
+    const useRemoteAuthForClient = this.useRemoteAuth && this.pgStore;
 
     const clientConfig = {
       puppeteer: {
@@ -828,7 +903,7 @@ class SessionManager {
         executablePath: actualExecPath,
         timeout: SESSION_INIT_TIMEOUT_MS
       },
-      authStrategy: this.useRemoteAuth && this.pgStore
+      authStrategy: useRemoteAuthForClient
         ? new RemoteAuth({
             clientId: sessionId,
             store: this.pgStore,
@@ -2275,7 +2350,8 @@ class SessionManager {
       connectedSessions: 0,
       disconnectedSessions: 0,
       activeChromiums: this.getActiveChromiumCount(),
-      authStrategy: this.useRemoteAuth ? 'RemoteAuth (PostgreSQL)' : 'LocalAuth',
+      authStrategy: this.useRemoteAuth ? 'RemoteAuth (PostgreSQL)' : (REQUIRE_REMOTE_AUTH ? 'RemoteAuth indisponivel (LocalAuth bloqueado)' : 'LocalAuth'),
+      remoteAuthError: this.remoteAuthInitError?.message || null,
       maxConcurrent: MAX_CONCURRENT_SESSIONS,
       idleDisconnectMs: IDLE_DISCONNECT_MS,
       recentErrors: this.getRecentErrors(5),
