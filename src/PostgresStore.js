@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const MIN_AUTH_BLOB_BYTES = parseInt(process.env.MIN_REMOTE_AUTH_BLOB_BYTES) || 128 * 1024;
 
 /**
  * PostgresStore — substituto do MongoStore para wwebjs RemoteAuth
@@ -89,10 +90,11 @@ class PostgresStore {
     const sessionId = this._normalizeSessionId(options.session);
     try {
       const result = await this.pool.query(
-        'SELECT 1 FROM whatsapp_auth_sessions WHERE session_id = $1',
+        'SELECT length(data) AS data_size FROM whatsapp_auth_sessions WHERE session_id = $1',
         [sessionId]
       );
-      const exists = result.rows.length > 0;
+      const dataSize = Number(result.rows[0]?.data_size || 0);
+      const exists = dataSize >= MIN_AUTH_BLOB_BYTES;
       console.log(`🔍 PostgresStore.sessionExists("${sessionId}"): ${exists}`);
       return exists;
     } catch (err) {
