@@ -68,7 +68,9 @@ const recentWhatsAppSends = new Map();
 const SEND_DEDUPE_MS = parseInt(process.env.WHATSAPP_SEND_DEDUPE_MS) || 15 * 60 * 1000;
 const GLOBAL_SEND_CONCURRENCY = parseInt(process.env.WHATSAPP_GLOBAL_SEND_CONCURRENCY) || 2;
 const GLOBAL_SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_GLOBAL_SEND_TIMEOUT_MS) || 120000;
-const SEND_RECONNECT_WAIT_MS = parseInt(process.env.WHATSAPP_SEND_RECONNECT_WAIT_MS) || 90000;
+const SEND_RECONNECT_WAIT_MS = parseInt(process.env.WHATSAPP_SEND_RECONNECT_WAIT_MS) || 240000;
+const SESSION_CREATE_STALE_MS = parseInt(process.env.WHATSAPP_SESSION_CREATE_STALE_MS) || 180000;
+const QR_CREATE_STALE_MS = parseInt(process.env.WHATSAPP_QR_CREATE_STALE_MS) || 90000;
 let activeGlobalSends = 0;
 const globalSendQueue = [];
 
@@ -151,7 +153,20 @@ function isSessionReadyForImmediateSend(sessionId) {
 }
 
 function needsLiveSessionReconnect(dbStatus) {
-  return ['connected', 'authenticated', 'reconnecting', 'initializing'].includes(dbStatus);
+  return ['connected', 'authenticated', 'reconnecting', 'initializing', 'saved_auth', 'disconnected', 'failed'].includes(dbStatus);
+}
+
+function shouldReuseExistingSession(session) {
+  if (!session) return false;
+  if (session.status === 'connected') return true;
+
+  const ageMs = Date.now() - (session.lastSeen || session.createdAt || 0);
+  if (session.status === 'qr_code') return ageMs <= QR_CREATE_STALE_MS;
+  if (session.status === 'authenticated' || session.status === 'initializing') {
+    return ageMs <= SESSION_CREATE_STALE_MS;
+  }
+
+  return false;
 }
 
 function kickSessionReconnect(sessionId, reason = 'send') {
@@ -605,7 +620,7 @@ app.post('/api/admin/recover-auth-sessions', authMiddleware, async (req, res) =>
     const requestedIds = Array.isArray(req.body?.sessionIds)
       ? new Set(req.body.sessionIds.map(String))
       : null;
-    const limit = Math.max(1, Math.min(parseInt(req.body?.limit || '10', 10), 25));
+    const limit = Math.max(1, Math.min(parseInt(req.body?.limit || '10', 10), 30));
     const perSessionTimeoutMs = Math.max(60000, Math.min(parseInt(req.body?.timeoutMs || '180000', 10), 300000));
     const allSessions = await db.getAllSessionsFromDB();
     const candidates = [];
@@ -881,7 +896,7 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
     const existingSession = sessionManager.getSession(targetSessionId);
     if (existingSession) {
       // Se a sessão existe e está em estado ativo, retorna ela
-      if (['connected', 'authenticated', 'qr_code', 'initializing'].includes(existingSession.status)) {
+      if (shouldReuseExistingSession(existingSession)) {
         return res.json({
           success: true,
           sessionId: existingSession.id,

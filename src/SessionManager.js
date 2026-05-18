@@ -449,10 +449,14 @@ class SessionManager {
     // Se a sessão já existe na memória E tem cliente ativo, retorna ela
     if (this.sessions.has(sessionId)) {
       const existing = this.sessions.get(sessionId);
-      if (existing.client && existing.status === 'qr_code' && Date.now() - existing.lastSeen > 90 * 1000) {
+      const existingAgeMs = Date.now() - (existing.lastSeen || existing.createdAt || 0);
+      const freshQr = existing.status === 'qr_code' && existingAgeMs <= 90 * 1000;
+      const freshBoot = (existing.status === 'authenticated' || existing.status === 'initializing') &&
+        existingAgeMs <= AUTHENTICATED_READY_TIMEOUT_MS;
+      if (existing.client && existing.status === 'qr_code' && existingAgeMs > 90 * 1000) {
         console.log(`QR antigo para ${sessionId}; limpando para gerar QR novo`);
         await this.cleanupSession(sessionId);
-      } else if (existing.client && (existing.status === 'connected' || existing.status === 'authenticated' || existing.status === 'qr_code' || existing.status === 'initializing')) {
+      } else if (existing.client && (existing.status === 'connected' || freshQr || freshBoot)) {
         console.log(`⚠️ Sessão ${sessionId} já existe na memória com status ${existing.status}`);
         return existing;
       }
