@@ -797,19 +797,16 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
       const dbSession = await db.getSession(sessionId);
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
       const recoverable = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
-      if (recoverable) {
-        kickSessionReconnect(sessionId, 'my_session_access');
-      }
       return res.json({
         success: true,
         sessionId,
-        status: recoverable ? 'reconnecting' : (dbSession?.status || 'not_created'),
+        status: recoverable ? 'saved_auth' : (dbSession?.status || 'not_created'),
         canSend: false,
         hasRemoteAuth,
         recoverable: !!recoverable,
         dbStatus: dbSession?.status || null,
         message: recoverable
-          ? 'Sessao salva no RemoteAuth. Reconexao sob demanda iniciada.'
+          ? 'Sessao salva no RemoteAuth. Clique em criar sessao ou envie uma mensagem para reidratar.'
           : hasRemoteAuth
           ? 'Sessao salva no RemoteAuth. Clique em criar sessao para reidratar.'
           : 'Sessao ainda nao conectada. Clique em criar sessao para gerar QR.'
@@ -838,19 +835,16 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
       const dbSession = await db.getSession(sessionId);
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
       const recoverable = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
-      if (recoverable) {
-        kickSessionReconnect(sessionId, 'my_qr_access');
-      }
       return res.json({
         success: true,
-        status: recoverable ? 'reconnecting' : (dbSession?.status || 'not_created'),
+        status: recoverable ? 'saved_auth' : (dbSession?.status || 'not_created'),
         qrCode: null,
         canSend: false,
         hasRemoteAuth,
         recoverable: !!recoverable,
         dbStatus: dbSession?.status || null,
         message: recoverable
-          ? 'Sessao salva no RemoteAuth; reconexao sob demanda iniciada.'
+          ? 'Sessao salva no RemoteAuth; clique em criar sessao ou envie uma mensagem para reidratar.'
           : hasRemoteAuth
           ? 'Sessao salva no RemoteAuth; clique em criar sessao para reidratar.'
           : 'Sessao sem RemoteAuth; clique em criar sessao para gerar QR.'
@@ -1000,9 +994,6 @@ app.get('/api/sessions/:sessionId', authMiddleware, async (req, res) => {
     const liveSession = sessionManager.getSession(sessionId);
     const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
     const recoverable = !liveSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
-    if (recoverable) {
-      kickSessionReconnect(sessionId, 'session_detail_access');
-    }
 
     res.json({
       success: true,
