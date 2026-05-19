@@ -14,7 +14,7 @@ const path = require('path');
 // LIMITES DE MEMÓRIA — Sessões sob demanda para 20+ usuários
 // ═══════════════════════════════════════════════════════════════════
 const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 30; // Capacidade maxima de sessoes ativas; inicializacao continua sequencial para nao derrubar Chromium
-const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 650;                          // Limite seguro para evitar queda por memória
+const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 1400;                         // Alinhado ao HealthGuard; 650MB derrubava sessoes com poucos Chromiums
 const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
 const IDLE_DISCONNECT_MS = parseInt(process.env.IDLE_DISCONNECT_MS) || 5 * 60 * 60 * 1000; // 5 horas idle → desconecta sessão
 const EVICT_IDLE_AFTER_MS = parseInt(process.env.EVICT_IDLE_AFTER_MS) || 20 * 60 * 1000; // não expulsar sessão usada recentemente
@@ -26,7 +26,7 @@ const MIN_MESSAGE_INTERVAL_MS = 1500;             // 1.5 segundos entre mensagen
 const MAX_SEND_RETRIES = 0;                       // SEM retries — evita mensagens duplicadas
 const AUTO_RECONNECT_TIMEOUT_MS = 420000;         // 7 min máx para auto-reconexão no envio
 const AUTHENTICATED_READY_TIMEOUT_MS = parseInt(process.env.AUTHENTICATED_READY_TIMEOUT_MS) || 180000;
-const STARTUP_RESTORE_LIMIT = parseInt(process.env.STARTUP_RESTORE_LIMIT) || 1;
+const STARTUP_RESTORE_LIMIT = parseInt(process.env.STARTUP_RESTORE_LIMIT || '0', 10);
 const SESSION_INIT_MAX_ATTEMPTS = parseInt(process.env.SESSION_INIT_MAX_ATTEMPTS) || 2;
 const SESSION_INIT_CONCURRENCY = parseInt(process.env.SESSION_INIT_CONCURRENCY) || 1;
 const SESSION_INIT_STAGGER_MS = parseInt(process.env.SESSION_INIT_STAGGER_MS) || 15000;
@@ -250,7 +250,7 @@ class SessionManager {
 
       // Restaura um lote pequeno no boot, sequencialmente.
       // As demais preservam RemoteAuth e reconectam sob demanda para evitar pico de CPU/RAM.
-      const restoreLimit = Math.max(1, Math.min(STARTUP_RESTORE_LIMIT, MAX_CONCURRENT_SESSIONS));
+      const restoreLimit = Math.max(0, Math.min(STARTUP_RESTORE_LIMIT, MAX_CONCURRENT_SESSIONS));
       const toRestore = sessionsWithAuth.slice(0, restoreLimit);
       const remaining = sessionsWithAuth.slice(restoreLimit);
 
@@ -713,6 +713,7 @@ class SessionManager {
       this.reconnectAttempts.delete(sessionData.id);
     } catch (error) {
       console.error(`❌ Erro ao inicializar cliente ${sessionData.id} (tentativa ${attempt}/${SESSION_INIT_MAX_ATTEMPTS}):`, error.message);
+      this.logRecentError(sessionData.id, new Error(`init attempt ${attempt}/${SESSION_INIT_MAX_ATTEMPTS}: ${error.message}`));
 
       // Timeout NÃO deleta RemoteAuth — é condição temporária (CPU sobrecarregada),
       // NÃO corrupção de dados. Deletar forçaria todos a escanear QR de novo.
@@ -967,6 +968,18 @@ class SessionManager {
 
     client.on('qr', async (qr) => {
       console.log(`📱 QR Code gerado para sessão: ${sessionData.id}`);
+      try {
+        const hadSavedAuth = await this.hasSavedRemoteAuth(sessionData.id);
+        if (hadSavedAuth) {
+          this.logRecentError(
+            sessionData.id,
+            new Error('RemoteAuth salvo existe, mas o WhatsApp Web pediu QR. A sessao salva nao foi aceita para reativacao.')
+          );
+          console.warn(`[${sessionData.id}] RemoteAuth salvo existe, mas WhatsApp Web pediu QR; manter dados salvos e exigir novo scan.`);
+        }
+      } catch (authCheckError) {
+        console.warn(`[${sessionData.id}] Nao foi possivel verificar RemoteAuth durante QR: ${authCheckError.message}`);
+      }
       sessionData.qrCode = await QRCode.toDataURL(qr);
       sessionData.status = 'qr_code';
       sessionData.lastSeen = Date.now();
@@ -2250,37 +2263,48 @@ class SessionManager {
           throw error; // Propaga sem derrubar sessão
         }
 
-        // Se é um erro fatal do Chromium E ainda não tentamos reconectar
+        // Se e um erro fatal do Chromium E ainda nao tentamos reconectar
         if ((this.isFatalSessionError(error) || chromiumDead) && !isRetry) {
-          console.warn(`💀 [${sessionId}] Erro FATAL de Chromium — tentando reconexão transparente...`);
+          console.warn(`[${sessionId}] Erro fatal/ambíguo durante envio; sem reenvio automatico para evitar duplicidade.`);
 
-          // IMPORTANTE: Limpar sessão morta ANTES de tentar reconectar
-          try {
-            await this.cleanupSession(sessionId);
-            console.log(`🧹 [${sessionId}] Sessão morta limpa com sucesso`);
-          } catch (cleanErr) {
-            console.warn(`⚠️ [${sessionId}] Erro ao limpar sessão morta: ${cleanErr.message}`);
-          }
-          await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'authenticated' : 'disconnected');
-
-          // Tenta reconexão automática ANTES de desistir
-          try {
-            const reconSession = await this.autoReconnectForSend(sessionId);
-            if (reconSession && reconSession.client) {
-              console.log(`🔄 [${sessionId}] Reconexão OK — reenviando mensagem...`);
-              session = reconSession; // Atualiza referência local
-              return await attemptSend(reconSession.client, true); // Retry com novo client
+          setImmediate(async () => {
+            try {
+              await this.cleanupSession(sessionId);
+              await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'authenticated' : 'disconnected');
+              await this.autoReconnectForSend(sessionId);
+            } catch (reconErr) {
+              console.error(`Erro no reconnect em background apos envio ambiguo ${sessionId}: ${reconErr.message}`);
             }
-          } catch (reconErr) {
-            console.error(`❌ [${sessionId}] Reconexão falhou: ${reconErr.message}`);
-          }
+          });
 
-          // Se reconexão falhou, aí sim notifica o frontend
           this.io.to(`user_${session.userId}`).emit('session_disconnected', {
             sessionId: sessionId,
             reason: 'CHROMIUM_CRASH'
           });
-          throw new Error('Sessão WhatsApp desconectou durante envio. Reconexão automática em andamento. Aguarde 1 minuto e tente novamente. O contato não foi marcado como número inválido.');
+
+          await this.cachedUpsertContact(sessionId, normalizedPhone);
+          session.lastSeen = Date.now();
+          this.sessionLastActivity.set(sessionId, Date.now());
+
+          return {
+            attemptId: `unconfirmed_${sessionId}_${normalizedPhone}_${Date.now()}`,
+            success: false,
+            confirmed: false,
+            invalidNumber: false,
+            unconfirmed: true,
+            sessionId: sessionId,
+            contactPhone: normalizedPhone,
+            to: normalizedPhone,
+            phone: normalizedPhone,
+            messageType: mediaUrl ? 'media' : 'chat',
+            body: message,
+            mediaUrl: mediaUrl,
+            mediaMimetype: null,
+            fromMe: true,
+            timestamp: Math.floor(Date.now() / 1000),
+            status: 'pending',
+            note: 'WhatsApp Web caiu durante a tentativa. Reconnect iniciado em background e mensagem mantida pendente sem reenvio automatico.'
+          };
         }
 
         // Se é retry e falhou de novo, ou erro não-fatal — lança direto
