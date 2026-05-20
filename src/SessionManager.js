@@ -57,6 +57,7 @@ class SessionManager {
     this.reconnectCancelled = new Set();   // Sessões que tiveram reconnect cancelado
     this.activeSessionInitializations = 0;
     this.sessionInitQueue = [];
+    this.sessionInitFailures = new Map();
     this.remoteAuthSaveInFlight = new Set(); // Evita backups RemoteAuth simultaneos da mesma sessao
     this._contactCache = new Map();          // Cache de contatos: "session_phone" → timestamp (evita upsert repetido)
     this._contactCacheTTL = 10 * 60 * 1000; // 10 min TTL — mesmo contato não faz upsert de novo por 10 min
@@ -511,6 +512,7 @@ class SessionManager {
 
     // CANCELA qualquer reconnect pendente para esta sessão (evita race condition)
     this.cancelReconnect(sessionId);
+    this.sessionInitFailures.delete(sessionId);
 
     // Se a sessão já existe na memória E tem cliente ativo, retorna ela
     if (this.sessions.has(sessionId)) {
@@ -711,6 +713,7 @@ class SessionManager {
 
       console.log(`✅ Cliente ${sessionData.id} inicializado com sucesso`);
       this.reconnectAttempts.delete(sessionData.id);
+      this.sessionInitFailures.delete(sessionData.id);
     } catch (error) {
       console.error(`❌ Erro ao inicializar cliente ${sessionData.id} (tentativa ${attempt}/${SESSION_INIT_MAX_ATTEMPTS}):`, error.message);
       this.logRecentError(sessionData.id, new Error(`init attempt ${attempt}/${SESSION_INIT_MAX_ATTEMPTS}: ${error.message}`));
@@ -751,6 +754,10 @@ class SessionManager {
 
       // Limpa recursos sem deletar do banco (permite tentar de novo)
       const failedStatus = hasRemoteAuth ? 'authenticated' : 'failed';
+      this.sessionInitFailures.set(sessionData.id, {
+        message: error.message,
+        timestamp: Date.now()
+      });
       await this.cleanupSession(sessionData.id);
       await this.db.updateSessionStatus(sessionData.id, failedStatus);
 
@@ -1842,6 +1849,14 @@ class SessionManager {
           return null;
         }
         // 'authenticated' = progredindo, continua aguardando 'ready'
+      }
+      const initFailure = this.sessionInitFailures.get(sessionId);
+      if (initFailure) {
+        if (Date.now() - initFailure.timestamp < maxWaitMs) {
+          console.warn(`[${sessionId}] Falha de inicializacao detectada durante espera: ${initFailure.message}`);
+          return null;
+        }
+        this.sessionInitFailures.delete(sessionId);
       }
       await new Promise(resolve => setTimeout(resolve, pollInterval));
     }
