@@ -645,13 +645,33 @@ class SessionManager {
   }
 
   isTransientInitError(error) {
-    const message = (error?.message || '').toLowerCase();
+    const message = this.getErrorMessage(error).toLowerCase();
     return message.includes('execution context was destroyed') ||
       message.includes('runtime.callfunctionon') ||
       message.includes('target closed') ||
       message.includes('protocol error') ||
       message.includes('context was destroyed') ||
+      message.includes('navigating frame was detached') ||
+      message.includes('attempted to use detached frame') ||
+      message.includes('session closed') ||
+      message.includes('page has been closed') ||
       message.includes('timeout');
+  }
+
+  getErrorMessage(error) {
+    if (error?.message) {
+      return error.message;
+    }
+
+    if (typeof error === 'string') {
+      return error;
+    }
+
+    try {
+      return JSON.stringify(error);
+    } catch (_jsonError) {
+      return String(error || 'unknown error');
+    }
   }
 
   async initializeClientInBackground(client, sessionData, optionsOrAttempt = {}, maybeAttempt = 1) {
@@ -715,19 +735,22 @@ class SessionManager {
       this.reconnectAttempts.delete(sessionData.id);
       this.sessionInitFailures.delete(sessionData.id);
     } catch (error) {
-      console.error(`❌ Erro ao inicializar cliente ${sessionData.id} (tentativa ${attempt}/${SESSION_INIT_MAX_ATTEMPTS}):`, error.message);
-      this.logRecentError(sessionData.id, new Error(`init attempt ${attempt}/${SESSION_INIT_MAX_ATTEMPTS}: ${error.message}`));
+      const errorMessage = this.getErrorMessage(error);
+      console.error(`❌ Erro ao inicializar cliente ${sessionData.id} (tentativa ${attempt}/${SESSION_INIT_MAX_ATTEMPTS}):`, errorMessage);
+      this.logRecentError(sessionData.id, new Error(`init attempt ${attempt}/${SESSION_INIT_MAX_ATTEMPTS}: ${errorMessage}`));
 
       // Timeout NÃO deleta RemoteAuth — é condição temporária (CPU sobrecarregada),
       // NÃO corrupção de dados. Deletar forçaria todos a escanear QR de novo.
       // RemoteAuth só é deletado em: auth_failure (credenciais inválidas) ou deleteSession (explícito).
-      if (error.message.includes('Timeout')) {
+      if (errorMessage.includes('Timeout')) {
         console.warn(`⚠️ [${sessionData.id}] Timeout na inicialização — RemoteAuth PRESERVADO para próxima tentativa`);
       }
 
       const hasRemoteAuth = await this.hasSavedRemoteAuth(sessionData.id);
-      if (hasRemoteAuth && attempt < SESSION_INIT_MAX_ATTEMPTS && this.isTransientInitError(error)) {
-        console.warn(`[${sessionData.id}] Falha transiente do Chromium/WhatsApp Web. Recriando cliente sem perder RemoteAuth...`);
+      const isTransientError = this.isTransientInitError(error);
+      if (isTransientError && attempt < SESSION_INIT_MAX_ATTEMPTS) {
+        const retryMode = hasRemoteAuth ? 'sem perder RemoteAuth' : 'para liberar QR de nova sessão';
+        console.warn(`[${sessionData.id}] Falha transiente do Chromium/WhatsApp Web. Recriando cliente ${retryMode}...`);
 
         try {
           await client.destroy();
@@ -755,7 +778,7 @@ class SessionManager {
       // Limpa recursos sem deletar do banco (permite tentar de novo)
       const failedStatus = hasRemoteAuth ? 'authenticated' : 'failed';
       this.sessionInitFailures.set(sessionData.id, {
-        message: error.message,
+        message: errorMessage,
         timestamp: Date.now()
       });
       await this.cleanupSession(sessionData.id);
@@ -909,7 +932,8 @@ class SessionManager {
           '--window-size=1280,720'
         ],
         executablePath: actualExecPath,
-        timeout: SESSION_INIT_TIMEOUT_MS
+        timeout: SESSION_INIT_TIMEOUT_MS,
+        protocolTimeout: Math.max(SESSION_INIT_TIMEOUT_MS, 300000)
       },
       authStrategy: useRemoteAuthForClient
         ? new RemoteAuth({

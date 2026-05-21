@@ -65,11 +65,14 @@ class PostgresStore {
 
       // Carrega lista de sessões que JÁ existem no banco para saber quais já foram salvas
       try {
-        const existing = await this.pool.query('SELECT session_id FROM whatsapp_auth_sessions');
+        const existing = await this.pool.query('SELECT session_id, length(data) AS data_size FROM whatsapp_auth_sessions');
         for (const row of existing.rows) {
-          this._savedSessions.add(row.session_id);
+          const dataSize = Number(row.data_size || 0);
+          if (dataSize >= MIN_AUTH_BLOB_BYTES) {
+            this._savedSessions.add(row.session_id);
+          }
         }
-        console.log(`✅ PostgresStore: ${this._savedSessions.size} sessões existentes carregadas no rastreamento`);
+        console.log(`✅ PostgresStore: ${this._savedSessions.size} sessões válidas carregadas no rastreamento`);
       } catch (loadErr) {
         console.warn(`⚠️ PostgresStore: não conseguiu carregar sessões existentes: ${loadErr.message}`);
       }
@@ -230,6 +233,10 @@ class PostgresStore {
       }
 
       if (result.rows.length > 0 && result.rows[0].data) {
+        if (result.rows[0].data.length < MIN_AUTH_BLOB_BYTES) {
+          throw new Error(`RemoteAuth "${sessionId}" inválido ou vazio (${result.rows[0].data.length} bytes)`);
+        }
+
         // Garantir que o diretório pai existe
         const dir = path.dirname(options.path);
         if (!fs.existsSync(dir)) {
