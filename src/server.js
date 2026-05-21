@@ -15,7 +15,7 @@ const DatabaseManager = require('./database');
 const SessionManager = require('./SessionManager');
 const HealthGuard = require('./HealthGuard');
 const MetaWhatsAppAPI = require('./MetaAPI');
-const { generateToken, authMiddleware } = require('./auth');
+const { generateToken, verifyToken, authMiddleware } = require('./auth');
 
 const app = express();
 const server = http.createServer(app);
@@ -206,6 +206,28 @@ async function waitForSessionProgress(sessionId, waitMs) {
   }
 
   return sessionManager.getSession(sessionId) || null;
+}
+
+async function requireQueryAdmin(req, res) {
+  const token = req.query.token || req.query.authToken;
+  if (!token) {
+    res.status(401).json({ success: false, error: 'Token nao fornecido' });
+    return null;
+  }
+
+  const decoded = verifyToken(String(token));
+  if (!decoded) {
+    res.status(401).json({ success: false, error: 'Token invalido ou expirado' });
+    return null;
+  }
+
+  const user = await db.getUserById(decoded.userId);
+  if (!user || user.email !== 'admin@flow.com') {
+    res.status(403).json({ success: false, error: 'Acesso negado. Apenas administradores.' });
+    return null;
+  }
+
+  return user;
 }
 
 function kickSessionReconnect(sessionId, reason = 'send') {
@@ -730,6 +752,80 @@ app.post('/api/admin/recover-auth-sessions', authMiddleware, async (req, res) =>
   } catch (error) {
     global.__recoveringRemoteAuthSessions = false;
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/admin/reactivate-session/:sessionId', async (req, res) => {
+  try {
+    const admin = await requireQueryAdmin(req, res);
+    if (!admin) return;
+
+    const { sessionId } = req.params;
+    const waitMs = Math.max(0, Math.min(parseInt(req.query.waitMs || '20000', 10), 60000));
+    const dbSession = await db.getSession(sessionId);
+
+    if (!dbSession) {
+      return res.status(404).json({
+        success: false,
+        sessionId,
+        error: 'Sessao nao encontrada'
+      });
+    }
+
+    const liveSession = sessionManager.getSession(sessionId);
+    if (liveSession && liveSession.status === 'connected') {
+      return res.json({
+        success: true,
+        sessionId,
+        action: 'already_connected',
+        status: 'connected',
+        message: 'Sessao ja estava conectada; nada foi alterado.',
+        session: await getSessionView(sessionId, dbSession)
+      });
+    }
+
+    const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
+    if (!hasRemoteAuth) {
+      return res.status(409).json({
+        success: false,
+        sessionId,
+        action: 'qr_required',
+        status: liveSession?.status || dbSession.status,
+        dbStatus: dbSession.status,
+        hasRemoteAuth: false,
+        message: 'Sessao sem RemoteAuth valido; precisa escanear QR Code.'
+      });
+    }
+
+    console.log(`[ADMIN REACTIVATE] Reativando ${sessionId} via RemoteAuth (sem apagar auth)`);
+    await db.updateSessionStatus(sessionId, 'authenticated');
+    const reconnectPromise = sessionManager.autoReconnectForSend(sessionId);
+    const progressed = await Promise.race([
+      reconnectPromise,
+      new Promise(resolve => setTimeout(() => resolve(null), waitMs))
+    ]);
+
+    const view = await getSessionView(sessionId);
+    const status = progressed?.status || view?.status || dbSession.status;
+
+    res.status(status === 'connected' ? 200 : 202).json({
+      success: status === 'connected' || status === 'authenticated' || status === 'initializing' || status === 'saved_auth',
+      sessionId,
+      action: 'reactivate_saved_auth',
+      status,
+      hasRemoteAuth: true,
+      canSend: view?.canSend || false,
+      message: status === 'connected'
+        ? 'Sessao reativada e pronta para disparo.'
+        : 'Reativacao em andamento; acompanhe o status.',
+      session: view
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      action: 'admin_reactivate_error',
+      error: error.message
+    });
   }
 });
 
