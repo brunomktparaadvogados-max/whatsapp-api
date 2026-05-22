@@ -47,6 +47,30 @@ class PostgresStore {
     return path.basename(String(session));
   }
 
+  _toBuffer(data) {
+    if (!data) return Buffer.alloc(0);
+    return Buffer.isBuffer(data) ? data : Buffer.from(data);
+  }
+
+  _zipSignature(data) {
+    return this._toBuffer(data).subarray(0, 4).toString('hex') || 'empty';
+  }
+
+  _isValidZipBuffer(data, dataSize = null) {
+    const buffer = this._toBuffer(data);
+    const size = dataSize === null ? buffer.length : Number(dataSize || 0);
+
+    if (size < MIN_AUTH_BLOB_BYTES || buffer.length < 4) return false;
+
+    const isZipPrefix = buffer[0] === 0x50 && buffer[1] === 0x4b; // "PK"
+    const isKnownZipHeader =
+      (buffer[2] === 0x03 && buffer[3] === 0x04) ||
+      (buffer[2] === 0x05 && buffer[3] === 0x06) ||
+      (buffer[2] === 0x07 && buffer[3] === 0x08);
+
+    return isZipPrefix && isKnownZipHeader;
+  }
+
   /**
    * Cria a tabela se não existir
    */
@@ -65,11 +89,15 @@ class PostgresStore {
 
       // Carrega lista de sessões que JÁ existem no banco para saber quais já foram salvas
       try {
-        const existing = await this.pool.query('SELECT session_id, length(data) AS data_size FROM whatsapp_auth_sessions');
+        const existing = await this.pool.query(
+          'SELECT session_id, length(data) AS data_size, substring(data from 1 for 4) AS data_prefix FROM whatsapp_auth_sessions'
+        );
         for (const row of existing.rows) {
           const dataSize = Number(row.data_size || 0);
-          if (dataSize >= MIN_AUTH_BLOB_BYTES) {
+          if (this._isValidZipBuffer(row.data_prefix, dataSize)) {
             this._savedSessions.add(row.session_id);
+          } else if (dataSize >= MIN_AUTH_BLOB_BYTES) {
+            console.warn(`PostgresStore: "${row.session_id}" ignorada no rastreamento; zip corrompido ou assinatura invalida (${dataSize} bytes, sig=${this._zipSignature(row.data_prefix)})`);
           }
         }
         console.log(`✅ PostgresStore: ${this._savedSessions.size} sessões válidas carregadas no rastreamento`);
@@ -93,12 +121,15 @@ class PostgresStore {
     const sessionId = this._normalizeSessionId(options.session);
     try {
       const result = await this.pool.query(
-        'SELECT length(data) AS data_size FROM whatsapp_auth_sessions WHERE session_id = $1',
+        'SELECT length(data) AS data_size, substring(data from 1 for 4) AS data_prefix FROM whatsapp_auth_sessions WHERE session_id = $1',
         [sessionId]
       );
       const dataSize = Number(result.rows[0]?.data_size || 0);
-      const exists = dataSize >= MIN_AUTH_BLOB_BYTES;
+      const exists = this._isValidZipBuffer(result.rows[0]?.data_prefix, dataSize);
       console.log(`🔍 PostgresStore.sessionExists("${sessionId}"): ${exists}`);
+      if (!exists && dataSize >= MIN_AUTH_BLOB_BYTES) {
+        console.warn(`PostgresStore.sessionExists("${sessionId}"): blob existe, mas ZIP invalido (${dataSize} bytes, sig=${this._zipSignature(result.rows[0]?.data_prefix)})`);
+      }
       return exists;
     } catch (err) {
       console.error(`❌ PostgresStore.sessionExists error for "${sessionId}":`, err.message);
@@ -174,6 +205,11 @@ class PostgresStore {
       // LIMITE DE TAMANHO: Blobs > 15MB são cache acumulado que sobrecarrega o Supabase.
       // O banco Micro (1GB RAM) não suporta muitos blobs grandes — cada save de 78MB
       // consome RAM do banco e bloqueia conexões. Sessões normais têm 2-5MB.
+      if (!this._isValidZipBuffer(data)) {
+        console.error(`PostgresStore.save: zip corrompido para "${sessionId}" (${data.length} bytes, sig=${this._zipSignature(data)}) - preservando ultimo RemoteAuth valido no banco`);
+        return;
+      }
+
       if (data.length > this._maxSaveBytes) {
         const maxMB = (this._maxSaveBytes / 1024 / 1024).toFixed(0);
         console.warn(`⚠️ PostgresStore.save: "${sessionId}" tem ${sizeMB}MB (máx ${maxMB}MB) — pulando save para proteger o banco`);
@@ -233,18 +269,23 @@ class PostgresStore {
       }
 
       if (result.rows.length > 0 && result.rows[0].data) {
-        if (result.rows[0].data.length < MIN_AUTH_BLOB_BYTES) {
+        const data = this._toBuffer(result.rows[0].data);
+        if (data.length < MIN_AUTH_BLOB_BYTES) {
           throw new Error(`RemoteAuth "${sessionId}" inválido ou vazio (${result.rows[0].data.length} bytes)`);
         }
 
         // Garantir que o diretório pai existe
+        if (!this._isValidZipBuffer(data)) {
+          throw new Error(`RemoteAuth "${sessionId}" corrompido: ZIP invalido (${data.length} bytes, sig=${this._zipSignature(data)})`);
+        }
+
         const dir = path.dirname(options.path);
         if (!fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true });
         }
 
-        fs.writeFileSync(options.path, result.rows[0].data);
-        const sizeMB = (result.rows[0].data.length / 1024 / 1024).toFixed(2);
+        fs.writeFileSync(options.path, data);
+        const sizeMB = (data.length / 1024 / 1024).toFixed(2);
         console.log(`📦 PostgresStore: sessão "${sessionId}" extraída para ${options.path} (${sizeMB}MB)`);
       } else {
         throw new Error(`Session "${sessionId}" not found in database`);
@@ -281,9 +322,13 @@ class PostgresStore {
     await this.init();
     try {
       const result = await this.pool.query(
-        'SELECT session_id, length(data) as data_size, updated_at FROM whatsapp_auth_sessions ORDER BY updated_at DESC'
+        'SELECT session_id, length(data) as data_size, substring(data from 1 for 4) AS data_prefix, updated_at FROM whatsapp_auth_sessions ORDER BY updated_at DESC'
       );
-      return result.rows;
+      return result.rows.map(row => ({
+        ...row,
+        valid_zip: this._isValidZipBuffer(row.data_prefix, row.data_size),
+        signature: this._zipSignature(row.data_prefix)
+      }));
     } catch (err) {
       console.error('❌ PostgresStore.listSessions error:', err.message);
       return [];

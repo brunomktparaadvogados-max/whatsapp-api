@@ -156,6 +156,14 @@ function needsLiveSessionReconnect(dbStatus) {
   return ['connected', 'authenticated', 'reconnecting', 'initializing', 'saved_auth', 'disconnected', 'failed'].includes(dbStatus);
 }
 
+function normalizeStatusWithoutRemoteAuth(dbStatus) {
+  if (!dbStatus || dbStatus === 'not_created') return dbStatus || 'not_created';
+  if (['connected', 'authenticated', 'reconnecting', 'initializing', 'saved_auth', 'qr_code', 'failed'].includes(dbStatus)) {
+    return 'disconnected';
+  }
+  return dbStatus;
+}
+
 function shouldReuseExistingSession(session) {
   if (!session) return false;
   if (session.status === 'connected') return true;
@@ -176,7 +184,9 @@ async function getSessionView(sessionId, dbSession = null) {
   const liveSession = sessionManager.getSession(sessionId);
   const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
   const recoverable = !liveSession && hasRemoteAuth && needsLiveSessionReconnect(savedDbSession.status);
-  const status = liveSession ? liveSession.status : (recoverable ? 'saved_auth' : savedDbSession.status);
+  const status = liveSession
+    ? liveSession.status
+    : (recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(savedDbSession.status));
 
   return {
     ...savedDbSession,
@@ -510,7 +520,7 @@ app.post('/api/auth/login', async (req, res) => {
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
       sessionStatus = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status)
         ? 'saved_auth'
-        : (dbSession?.status || 'not_created');
+        : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
     }
 
     res.json({
@@ -861,7 +871,9 @@ app.get('/api/remote-auth-status', async (req, res) => {
       sessions: sessions.map(s => ({
         id: s.session_id,
         sizeMB: (s.data_size / 1024 / 1024).toFixed(2),
-        updatedAt: s.updated_at
+        updatedAt: s.updated_at,
+        validZip: s.valid_zip,
+        signature: s.signature
       }))
     });
   } catch (err) {
@@ -932,10 +944,11 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
       const dbSession = await db.getSession(sessionId);
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
       const recoverable = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
+      const status = recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
       return res.json({
         success: true,
         sessionId,
-        status: recoverable ? 'saved_auth' : (dbSession?.status || 'not_created'),
+        status,
         canSend: false,
         hasRemoteAuth,
         recoverable: !!recoverable,
@@ -970,9 +983,10 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
       const dbSession = await db.getSession(sessionId);
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
       const recoverable = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
+      const status = recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
       return res.json({
         success: true,
-        status: recoverable ? 'saved_auth' : (dbSession?.status || 'not_created'),
+        status,
         qrCode: null,
         canSend: false,
         hasRemoteAuth,
