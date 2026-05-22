@@ -818,8 +818,12 @@ class SessionManager {
     const paths = [
       path.join(__dirname, '..', '.wwebjs_auth', `session-${sessionId}`),
       path.join(__dirname, '..', '.wwebjs_cache', `session-${sessionId}`),
+      path.join(__dirname, '..', '.wwebjs_auth', `RemoteAuth-${sessionId}`),
+      path.join(__dirname, '..', '.wwebjs_auth', `RemoteAuth-${sessionId}.zip`),
       path.join('/app', '.wwebjs_auth', `session-${sessionId}`),
       path.join('/app', '.wwebjs_cache', `session-${sessionId}`),
+      path.join('/app', '.wwebjs_auth', `RemoteAuth-${sessionId}`),
+      path.join('/app', '.wwebjs_auth', `RemoteAuth-${sessionId}.zip`),
     ];
     for (const p of paths) {
       try {
@@ -949,9 +953,8 @@ class SessionManager {
       syncFullHistory: false,
       disableAutoSeen: true,
       webVersionCache: {
-        type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/nicedayzhu/wwebjs-chrome-data/master/stable/2.3000.json',
-        strict: false  // Não falha se o cache remoto estiver offline
+        type: 'local',
+        strict: false
       }
     };
 
