@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Central de Leads CNH</title>
+  <style>
+    :root {
+      --ink: #102033;
+      --muted: #5c6978;
+      --line: #d7dee8;
+      --bg: #eef3f7;
+      --blue: #1769c2;
+      --green: #087a4a;
+      --dark: #334155;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; color: var(--ink); background: var(--bg); }
+    header { background: #fff; border-bottom: 1px solid var(--line); padding: 34px; }
+    h1 { margin: 0 0 10px; font-size: 34px; line-height: 1.08; }
+    p { margin: 0; color: var(--muted); line-height: 1.45; max-width: 980px; }
+    main { padding: 28px 34px 48px; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+    .card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 20px; box-shadow: 0 2px 10px rgba(16,32,51,.06); }
+    .card strong { display: block; font-size: 20px; margin-bottom: 8px; }
+    .card span { display: block; color: var(--muted); font-size: 14px; line-height: 1.4; min-height: 58px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+    a { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 9px 12px; border-radius: 8px; color: #fff; text-decoration: none; font-weight: 700; }
+    .primary { background: var(--green); }
+    .secondary { background: var(--blue); }
+    .dark { background: var(--dark); }
+    .note { margin: 0 34px 34px; background: #fff7ed; border: 1px solid #fed7aa; color: #7c2d12; border-radius: 10px; padding: 14px 16px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Central de Leads CNH</h1>
+    <p>Painéis compartilháveis para análise de oportunidades em CNH, bafômetro, cassação, suspensão e direito de dirigir. Abra em qualquer navegador pelo link público.</p>
+  </header>
+  <main>
+    <section class="card">
+      <strong>Leads Validados</strong>
+      <span>Versão recomendada. Mostra botões diretos somente quando telefone, Instagram, Facebook ou site foram encontrados de forma explícita.</span>
+      <div class="actions">
+        <a class="primary" href="/leads-cnh-validado.html">Abrir painel</a>
+      </div>
+    </section>
+    <section class="card">
+      <strong>Busca Google</strong>
+      <span>Lista enriquecida com resultados públicos encontrados no Google: telefones, Instagram, Facebook e sites quando disponíveis.</span>
+      <div class="actions">
+        <a class="secondary" href="/leads-cnh-google.html">Abrir painel</a>
+      </div>
+    </section>
+    <section class="card">
+      <strong>Base Completa</strong>
+      <span>Arquivo bruto reorganizado com todos os leads processados ontem e hoje. Use para auditoria e comparação.</span>
+      <div class="actions">
+        <a class="dark" href="/leads-cnh-completo.html">Abrir base</a>
+      </div>
+    </section>
+  </main>
+  <div class="note">Atenção: os dados são públicos e devem ser revalidados antes de qualquer campanha comercial.</div>
+</body>
+</html>
