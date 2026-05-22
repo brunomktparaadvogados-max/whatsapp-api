@@ -166,8 +166,8 @@ class PostgresStore {
       const data = fs.readFileSync(zipPath);
       const sizeMB = (data.length / 1024 / 1024).toFixed(2);
 
-      if (data.length === 0) {
-        console.error(`❌ PostgresStore.save: zip vazio para "${sessionId}"`);
+      if (data.length < MIN_AUTH_BLOB_BYTES) {
+        console.error(`PostgresStore.save: zip invalido para "${sessionId}" (${data.length} bytes; minimo ${MIN_AUTH_BLOB_BYTES})`);
         return;
       }
 
