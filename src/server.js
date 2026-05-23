@@ -807,6 +807,18 @@ app.get('/api/admin/reactivate-session/:sessionId', async (req, res) => {
       });
     }
 
+    if (dbSession.status === 'auth_failure') {
+      return res.status(409).json({
+        success: false,
+        sessionId,
+        action: 'qr_required',
+        status: 'auth_failure',
+        dbStatus: dbSession.status,
+        hasRemoteAuth: true,
+        message: 'O WhatsApp rejeitou a autenticacao salva. Use Criar Sessao para gerar um novo QR Code sem apagar o registro do usuario.'
+      });
+    }
+
     console.log(`[ADMIN REACTIVATE] Reativando ${sessionId} via RemoteAuth (sem apagar auth)`);
     await db.updateSessionStatus(sessionId, 'authenticated');
     const reconnectPromise = sessionManager.autoReconnectForSend(sessionId);
@@ -1087,8 +1099,10 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       });
     }
 
+    const canTrustSavedAuth = hasRemoteAuth && dbSession?.status !== 'auth_failure';
+
     if (dbSession) {
-      await db.updateSessionStatus(targetSessionId, hasRemoteAuth ? 'authenticated' : 'initializing');
+      await db.updateSessionStatus(targetSessionId, canTrustSavedAuth ? 'authenticated' : 'initializing');
     }
 
     setImmediate(async () => {
@@ -1102,7 +1116,7 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
         console.error(`❌ Erro ao criar sessão ${targetSessionId}:`, error.message);
         // Marca como 'failed' no banco para que o polling do frontend detecte
         try {
-          await db.updateSessionStatus(targetSessionId, hasRemoteAuth ? 'authenticated' : 'failed');
+          await db.updateSessionStatus(targetSessionId, canTrustSavedAuth ? 'authenticated' : 'failed');
         } catch (_) { /* ignora */ }
         // Emite erro via Socket.IO (caso frontend suporte no futuro)
         io.to(`user_${targetUserId}`).emit('session_error', {
@@ -1126,12 +1140,12 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       canSend: view?.canSend || false,
       hasRemoteAuth: view?.hasRemoteAuth || hasRemoteAuth,
       recoverable: view?.recoverable || false,
-      action: hasRemoteAuth ? 'reactivate_saved_auth' : 'create_qr',
+      action: canTrustSavedAuth ? 'reactivate_saved_auth' : 'create_qr',
       message: isReady
         ? 'Sessao pronta para disparo.'
         : needsQr
           ? 'QR Code disponivel para escanear.'
-          : hasRemoteAuth
+          : canTrustSavedAuth
             ? 'Reativacao iniciada pela sessao salva; acompanhe o status.'
             : 'Criacao de QR iniciada; acompanhe o status.',
       session: view || { id: targetSessionId, status, qrCode: null }
@@ -1197,9 +1211,10 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
     }
 
     const targetUserId = dbSession.user_id || parseInt(sessionId.replace('user_', ''), 10);
-    const action = hasRemoteAuth ? 'reactivate_saved_auth' : 'create_qr';
+    const canTrustSavedAuth = hasRemoteAuth && dbSession.status !== 'auth_failure';
+    const action = canTrustSavedAuth ? 'reactivate_saved_auth' : 'create_qr';
 
-    await db.updateSessionStatus(sessionId, hasRemoteAuth ? 'authenticated' : 'initializing');
+    await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'authenticated' : 'initializing');
 
     setImmediate(async () => {
       try {
@@ -1208,7 +1223,7 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
       } catch (error) {
         console.error(`[REACTIVATE] Falha ao reativar ${sessionId}:`, error.message);
         try {
-          await db.updateSessionStatus(sessionId, hasRemoteAuth ? 'authenticated' : 'failed');
+          await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'authenticated' : 'failed');
         } catch (_) { /* ignore */ }
         io.to(`user_${targetUserId}`).emit('session_error', {
           sessionId,
@@ -1237,7 +1252,7 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
         ? 'Sessao reativada e pronta para disparo.'
         : needsQr
           ? 'QR Code disponivel para escanear.'
-          : hasRemoteAuth
+          : canTrustSavedAuth
             ? 'Reativacao iniciada pela sessao salva; acompanhe o status.'
             : 'Criacao de QR iniciada; acompanhe o status.',
       session: view

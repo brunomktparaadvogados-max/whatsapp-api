@@ -1131,9 +1131,9 @@ class SessionManager {
       sessionData.status = 'auth_failure';
       sessionData.lastSeen = Date.now();
 
-      await this.db.updateSessionStatus(sessionData.id, 'authenticated');
+      await this.db.updateSessionStatus(sessionData.id, 'auth_failure');
 
-      // Auth falhou — RemoteAuth data está corrompido, deletar para forçar novo QR
+      // Auth falhou: preserva o registro e exige novo QR sem deletar dados automaticamente.
       if (this.pgStore) {
         try {
           const authSessionId = `RemoteAuth-${sessionData.id}`;
@@ -1149,7 +1149,7 @@ class SessionManager {
 
       this.io.to(`user_${sessionData.userId}`).emit('session_error', {
         sessionId: sessionData.id,
-        error: 'Falha na autenticação. Delete a sessão e crie novamente.',
+        error: 'Falha na autenticação. Gere um novo QR Code para reativar este usuário.',
         status: 'auth_failure'
       });
     });

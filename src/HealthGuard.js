@@ -211,7 +211,7 @@ class HealthGuard {
       const isActive = session && ['connected', 'authenticated', 'initializing', 'qr_code'].includes(session.status);
       if (isActive) {
         console.warn(`⚠️ [HealthGuard] ${sessionId} (${sizeMB}MB) oversized MAS ATIVA (${session.status}) — NÃO deletar`);
-        return;
+        return false;
       }
 
       // PROTEÇÃO 2: Blob atualizado recentemente — pode ser restart/deploy temporário
@@ -225,12 +225,12 @@ class HealthGuard {
           const hoursAgo = (Date.now() - updatedAt.getTime()) / (1000 * 60 * 60);
           if (hoursAgo < 24 * 7) {
             console.warn(`⚠️ [HealthGuard] ${sessionId} (${sizeMB}MB) atualizado há ${hoursAgo.toFixed(1)}h — NÃO deletar (proteção anti-perda por restart)`);
-            return;
+            return false;
           }
         }
       } catch (e) {
         console.warn(`⚠️ [HealthGuard] Erro ao verificar updated_at de ${sessionId}: ${e.message}`);
-        return; // Na dúvida, NÃO deleta
+        return false; // Na dúvida, NÃO deleta
       }
 
       // PROTEÇÃO 3: Sessão existe na tabela sessions (usuário ativo) — preservar
@@ -238,11 +238,11 @@ class HealthGuard {
         const dbSession = await this.db.getSession(shortId);
         if (dbSession) {
           console.warn(`⚠️ [HealthGuard] ${sessionId} (${sizeMB}MB) sessão ativa no banco (${dbSession.status}) — NÃO deletar`);
-          return;
+          return false;
         }
       } catch (e) {
         // Erro ao verificar = proteção, não deleta
-        return;
+        return false;
       }
 
       // Todas as proteções passaram — blob é de sessão desconectada há mais de 2h
@@ -253,8 +253,10 @@ class HealthGuard {
       );
       console.log(`🗑️ [HealthGuard] Blob oversized ${sessionId} (${sizeMB}MB) deletado (desconectada há >2h)`);
       this._stats.blobsCleaned++;
+      return true;
     } catch (err) {
       console.error(`❌ [HealthGuard] Erro ao limpar blob ${sessionId}:`, err.message);
+      return false;
     }
   }
 
@@ -272,8 +274,10 @@ class HealthGuard {
       const sizeMB = s.data_size / 1024 / 1024;
       if (sizeMB < 3) break; // Não mexe em blobs < 3MB (são normais)
 
-      await this._cleanOversizedBlob(s.session_id, sizeMB);
-      currentTotal -= sizeMB;
+      const removed = await this._cleanOversizedBlob(s.session_id, sizeMB);
+      if (removed) {
+        currentTotal -= sizeMB;
+      }
     }
 
     console.log(`🛡️ [HealthGuard] Limpeza agressiva concluída: ${totalSizeMB.toFixed(1)}MB → ~${currentTotal.toFixed(1)}MB`);
