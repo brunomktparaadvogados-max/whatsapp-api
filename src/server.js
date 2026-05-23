@@ -1054,16 +1054,41 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
     if (existingSession) {
       // Se a sessão existe e está em estado ativo, retorna ela
       if (shouldReuseExistingSession(existingSession)) {
+        const view = await getSessionView(targetSessionId);
         return res.json({
           success: true,
           sessionId: existingSession.id,
           status: existingSession.status,
           qrCode: existingSession.qrCode || null,
+          canSend: view?.canSend || false,
+          hasRemoteAuth: view?.hasRemoteAuth || false,
+          recoverable: view?.recoverable || false,
+          session: view || existingSession,
           message: existingSession.status === 'connected' ? 'WhatsApp já está conectado!' : 'Sessão já existe. Aguarde o QR Code.'
         });
       }
       // Se está em estado morto (failed, disconnected, auth_failure), limpa e recria
       console.log(`🔄 Sessão ${targetSessionId} está em estado '${existingSession.status}', recriando...`);
+    }
+
+    const dbSession = await db.getSession(targetSessionId);
+    const remoteAuthAvailable = !!(sessionManager.useRemoteAuth && sessionManager.pgStore);
+    const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(targetSessionId);
+
+    if (!remoteAuthAvailable && dbSession && needsLiveSessionReconnect(dbSession.status)) {
+      return res.status(503).json({
+        success: false,
+        sessionId: targetSessionId,
+        status: dbSession.status,
+        action: 'remote_auth_unavailable',
+        hasRemoteAuth: false,
+        recoverable: false,
+        message: 'RemoteAuth ainda nao esta disponivel. Aguarde alguns segundos e tente novamente.'
+      });
+    }
+
+    if (dbSession) {
+      await db.updateSessionStatus(targetSessionId, hasRemoteAuth ? 'authenticated' : 'initializing');
     }
 
     setImmediate(async () => {
@@ -1077,7 +1102,7 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
         console.error(`❌ Erro ao criar sessão ${targetSessionId}:`, error.message);
         // Marca como 'failed' no banco para que o polling do frontend detecte
         try {
-          await db.updateSessionStatus(targetSessionId, 'failed');
+          await db.updateSessionStatus(targetSessionId, hasRemoteAuth ? 'authenticated' : 'failed');
         } catch (_) { /* ignora */ }
         // Emite erro via Socket.IO (caso frontend suporte no futuro)
         io.to(`user_${targetUserId}`).emit('session_error', {
@@ -1087,11 +1112,29 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       }
     });
 
-    res.json({
+    const progressedSession = await waitForSessionProgress(targetSessionId, req.body?.waitMs || 30000);
+    const view = await getSessionView(targetSessionId);
+    const status = progressedSession ? progressedSession.status : (view?.status || 'initializing');
+    const isReady = status === 'connected';
+    const needsQr = status === 'qr_code';
+
+    res.status(isReady || needsQr ? 200 : 202).json({
       success: true,
       sessionId: targetSessionId,
-      status: 'initializing',
-      message: 'Sessão sendo criada. QR Code estará disponível em 30-60 segundos.'
+      status,
+      qrCode: view?.qrCode || null,
+      canSend: view?.canSend || false,
+      hasRemoteAuth: view?.hasRemoteAuth || hasRemoteAuth,
+      recoverable: view?.recoverable || false,
+      action: hasRemoteAuth ? 'reactivate_saved_auth' : 'create_qr',
+      message: isReady
+        ? 'Sessao pronta para disparo.'
+        : needsQr
+          ? 'QR Code disponivel para escanear.'
+          : hasRemoteAuth
+            ? 'Reativacao iniciada pela sessao salva; acompanhe o status.'
+            : 'Criacao de QR iniciada; acompanhe o status.',
+      session: view || { id: targetSessionId, status, qrCode: null }
     });
   } catch (error) {
     res.status(400).json({ error: error.message });

@@ -1315,6 +1315,66 @@
             }
         }
 
+        function renderUserSessionPanel(userId, sessionId, session) {
+            const contentDiv = document.getElementById(`session-content-${userId}`);
+            const status = session?.status || 'not_created';
+            const qrCode = session?.qrCode || session?.qr_code || null;
+
+            if (status === 'qr_code' || status === 'initializing') {
+                contentDiv.innerHTML = `
+                    <p><strong>Status:</strong> ${getStatusText(status)}</p>
+                    <p>Escaneie o QR Code abaixo com o WhatsApp do usuario:</p>
+                    <div class="session-qr">
+                        ${qrCode ? `<img src="${qrCode}" alt="QR Code">` : '<div class="loading">Gerando QR Code...</div>'}
+                    </div>
+                    <button onclick="refreshUserSession(${userId})">Atualizar</button>
+                    <button onclick="createUserSession(${userId})" style="margin-left: 10px;">Reativar agora</button>
+                    <button onclick="disconnectUserSession('${sessionId}')" class="btn-danger" style="margin-left: 10px;">
+                        Desconectar
+                    </button>
+                `;
+
+                if (!qrCode) {
+                    setTimeout(() => refreshUserSession(userId), 5000);
+                }
+                return;
+            }
+
+            if (status === 'connected' || status === 'authenticated') {
+                contentDiv.innerHTML = `
+                    <div class="success-box">
+                        <h4>WhatsApp Conectado!</h4>
+                        ${session.info ? `
+                            <p><strong>Telefone:</strong> ${session.info.wid?.user || 'N/A'}</p>
+                            <p><strong>Nome:</strong> ${session.info.pushname || 'N/A'}</p>
+                        ` : ''}
+                    </div>
+                    <button onclick="disconnectUserSession('${sessionId}')" class="btn-danger" style="margin-top: 10px;">
+                        Desconectar WhatsApp
+                    </button>
+                `;
+                return;
+            }
+
+            if (status === 'saved_auth') {
+                contentDiv.innerHTML = `
+                    <p><strong>Status:</strong> ${getStatusText(status)}</p>
+                    <p>Sessao salva encontrada. Clique para tentar recuperar sem QR Code.</p>
+                    <button onclick="createUserSession(${userId})" style="margin-top: 10px;">
+                        Reativar sessao salva
+                    </button>
+                `;
+                return;
+            }
+
+            contentDiv.innerHTML = `
+                <p><strong>Status:</strong> ${getStatusText(status)}</p>
+                <button onclick="createUserSession(${userId})" style="margin-top: 10px;">
+                    Reativar / gerar QR Code
+                </button>
+            `;
+        }
+
         async function toggleUserSession(userId) {
             const sessionDiv = document.getElementById(`session-${userId}`);
             const contentDiv = document.getElementById(`session-content-${userId}`);
@@ -1346,111 +1406,93 @@
                 const data = await response.json();
                 const session = data.session;
 
-                if (session.status === 'qr_code' || session.status === 'initializing') {
-                    contentDiv.innerHTML = `
-                        <p><strong>Status:</strong> ${getStatusText(session.status)}</p>
-                        <p>Escaneie o QR Code abaixo com o WhatsApp do usuário:</p>
-                        <div class="session-qr">
-                            ${session.qrCode ? `<img src="${session.qrCode}" alt="QR Code">` : '<div class="loading">Gerando QR Code...</div>'}
-                        </div>
-                        <button onclick="refreshUserSession(${userId})">🔄 Atualizar</button>
-                        <button onclick="disconnectUserSession('${sessionId}')" class="btn-danger" style="margin-left: 10px;">
-                            🔌 Desconectar
-                        </button>
-                    `;
-
-                    if (!session.qrCode) {
-                        setTimeout(() => refreshUserSession(userId), 2000);
-                    }
-                } else if (session.status === 'connected' || session.status === 'authenticated') {
-                    contentDiv.innerHTML = `
-                        <div class="success-box">
-                            <h4>✅ WhatsApp Conectado!</h4>
-                            ${session.info ? `
-                                <p><strong>Telefone:</strong> ${session.info.wid?.user || 'N/A'}</p>
-                                <p><strong>Nome:</strong> ${session.info.pushname || 'N/A'}</p>
-                            ` : ''}
-                        </div>
-                        <button onclick="disconnectUserSession('${sessionId}')" class="btn-danger" style="margin-top: 10px;">
-                            🔌 Desconectar WhatsApp
-                        </button>
-                    `;
-                } else {
-                    contentDiv.innerHTML = `
-                        <p><strong>Status:</strong> ${getStatusText(session.status)}</p>
-                        <button onclick="createUserSession(${userId})" style="margin-top: 10px;">
-                            📱 Criar Nova Sessão
-                        </button>
-                    `;
-                }
+                renderUserSessionPanel(userId, sessionId, session);
             } catch (error) {
                 contentDiv.innerHTML = `<p>❌ Erro: ${error.message}</p>`;
             }
         }
 
         async function createUserSession(userId) {
+            const sessionDiv = document.getElementById(`session-${userId}`);
             const contentDiv = document.getElementById(`session-content-${userId}`);
-            contentDiv.innerHTML = '<div class="loading">Criando sessão...</div>';
+            if (sessionDiv) {
+                sessionDiv.classList.add('active');
+            }
+            contentDiv.innerHTML = '<div class="loading">Reativando sessao ou gerando QR Code...</div>';
 
             try {
                 const sessionId = `user_${userId}`;
-                const response = await fetch(`${API_URL}/api/sessions`, {
+                let response = await fetch(`${API_URL}/api/sessions/${sessionId}/reactivate`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                     },
-                    body: JSON.stringify({ sessionId })
+                    body: JSON.stringify({ waitMs: 60000 })
                 });
+
+                if (response.status === 404) {
+                    response = await fetch(`${API_URL}/api/sessions`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                        },
+                        body: JSON.stringify({ sessionId, waitMs: 60000 })
+                    });
+                }
 
                 const data = await response.json();
 
                 if (data.success) {
-                    alert('✅ Sessão criada! Aguarde o QR Code...');
-                    setTimeout(() => refreshUserSession(userId), 2000);
+                    const session = data.session || {
+                        id: sessionId,
+                        status: data.status,
+                        qrCode: data.qrCode,
+                        canSend: data.canSend,
+                        hasRemoteAuth: data.hasRemoteAuth,
+                        recoverable: data.recoverable
+                    };
+                    renderUserSessionPanel(userId, sessionId, session);
+                    if (['initializing', 'authenticated', 'saved_auth'].includes(session.status)) {
+                        setTimeout(() => refreshUserSession(userId), 5000);
+                    }
                 } else {
-                    alert('❌ Erro: ' + (data.error || 'Erro ao criar sessão'));
-                    contentDiv.innerHTML = `<p>❌ ${data.error}</p>`;
+                    contentDiv.innerHTML = `
+                        <p>Erro: ${data.message || data.error || 'Erro ao iniciar sessao'}</p>
+                        <button onclick="createUserSession(${userId})" style="margin-top: 10px;">Tentar novamente</button>
+                    `;
                 }
             } catch (error) {
-                alert('❌ Erro: ' + error.message);
-                contentDiv.innerHTML = `<p>❌ ${error.message}</p>`;
+                contentDiv.innerHTML = `
+                    <p>Erro: ${error.message}</p>
+                    <button onclick="createUserSession(${userId})" style="margin-top: 10px;">Tentar novamente</button>
+                `;
             }
         }
 
         async function adminCreateUserSession(userId, userName) {
-            if (!confirm(`Criar sessão WhatsApp para ${userName}?`)) {
+            if (!confirm(`Reativar ou criar sessão WhatsApp para ${userName}?`)) {
                 return;
             }
 
             try {
-                const sessionId = `user_${userId}`;
-                const response = await fetch(`${API_URL}/api/sessions`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
-                    },
-                    body: JSON.stringify({ sessionId })
-                });
-
-                const data = await response.json();
-
-                if (data.success) {
-                    alert(`✅ Sessão criada para ${userName}!\n\nAguarde alguns segundos e clique em "📱 Sessão" para ver o QR Code.`);
-                    await loadAllUsers();
-                } else {
-                    alert('❌ Erro: ' + (data.error || 'Erro ao criar sessão'));
+                const sessionDiv = document.getElementById(`session-${userId}`);
+                if (sessionDiv && !sessionDiv.classList.contains('active')) {
+                    sessionDiv.classList.add('active');
                 }
+                await createUserSession(userId);
+                setTimeout(() => loadAllUsers(), 3000);
             } catch (error) {
                 alert('❌ Erro: ' + error.message);
             }
         }
 
         async function refreshUserSession(userId) {
-            await toggleUserSession(userId);
             const sessionDiv = document.getElementById(`session-${userId}`);
-            sessionDiv.classList.add('active');
+            if (sessionDiv && sessionDiv.classList.contains('active')) {
+                sessionDiv.classList.remove('active');
+            }
             await toggleUserSession(userId);
         }
 
