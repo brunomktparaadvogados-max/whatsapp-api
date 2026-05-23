@@ -467,6 +467,9 @@
             <button onclick="showDebugInfo()" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); margin-left: 10px;">
                 🔍 Ver Debug de Sessões
             </button>
+            <button onclick="recoverSavedSessions()" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); margin-left: 10px;">
+                Reativar sessoes salvas
+            </button>
             <div id="cleanupResult" style="margin-top: 15px; display: none;"></div>
             <div id="debugResult" style="margin-top: 15px; display: none;"></div>
         </div>
@@ -1629,6 +1632,56 @@
                 resultDiv.innerHTML = `
                     <div style="background: #f8d7da; border-left: 4px solid #721c24; padding: 15px; border-radius: 5px;">
                         <p style="color: #721c24;"><strong>❌ Erro:</strong> ${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+
+        async function recoverSavedSessions() {
+            if (!confirm('Reativar sessoes salvas em fila controlada?\\n\\nSessoes ja conectadas nao serao alteradas. Sessoes sem RemoteAuth valido continuarao exigindo QR Code.')) {
+                return;
+            }
+
+            const resultDiv = document.getElementById('cleanupResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = '<p style="color: #059669;"><strong>Reativando sessoes salvas em fila...</strong></p>';
+
+            try {
+                const response = await fetch(`${API_URL}/api/admin/recover-auth-sessions`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    },
+                    body: JSON.stringify({ limit: 30, timeoutMs: 240000 })
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    const items = (data.recovering || []).map(s => `<li>${s.id} - ${s.status || 'salva'}</li>`).join('');
+                    resultDiv.innerHTML = `
+                        <div class="success-box">
+                            <h3>Recuperacao iniciada</h3>
+                            <p>${data.message}</p>
+                            <p><strong>Candidatas:</strong> ${data.candidates || 0}</p>
+                            ${items ? `<ul>${items}</ul>` : '<p>Nenhuma sessao salva valida pendente.</p>'}
+                        </div>
+                    `;
+                    setTimeout(() => {
+                        loadAllUsers();
+                        loadAllSessions();
+                    }, 5000);
+                } else {
+                    resultDiv.innerHTML = `
+                        <div style="background: #f8d7da; border-left: 4px solid #721c24; padding: 15px; border-radius: 5px;">
+                            <p style="color: #721c24;"><strong>Erro:</strong> ${data.message || data.error || 'Erro ao recuperar sessoes'}</p>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <div style="background: #f8d7da; border-left: 4px solid #721c24; padding: 15px; border-radius: 5px;">
+                        <p style="color: #721c24;"><strong>Erro:</strong> ${error.message}</p>
                     </div>
                 `;
             }

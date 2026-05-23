@@ -702,6 +702,7 @@ app.post('/api/admin/recover-auth-sessions', authMiddleware, async (req, res) =>
 
       const live = sessionManager.getSession(session.id);
       if (live && live.status === 'connected') continue;
+      if (session.status === 'auth_failure') continue;
 
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(session.id);
       if (!hasRemoteAuth) continue;
@@ -726,6 +727,10 @@ app.post('/api/admin/recover-auth-sessions', authMiddleware, async (req, res) =>
 
           try {
             console.log(`[RECOVER] Restaurando ${session.id} via RemoteAuth...`);
+            if (session.status === 'auth_failure') {
+              summary.push({ sessionId: session.id, status: 'qr_required', skipped: true });
+              continue;
+            }
             await db.updateSessionStatus(session.id, 'authenticated');
             const recovered = await Promise.race([
               sessionManager.autoReconnectForSend(session.id),
