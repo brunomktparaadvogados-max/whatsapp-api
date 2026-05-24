@@ -1,4 +1,4 @@
-const { Client, LocalAuth, RemoteAuth } = require('whatsapp-web.js');
+const { Client, RemoteAuth } = require('whatsapp-web.js');
 const PostgresStore = require('./PostgresStore');
 const QRCode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
@@ -49,7 +49,7 @@ class SessionManager {
     this.lastMessageTime = new Map();       // Controle de rate-limit por sessão
     this.recentErrors = [];                 // Log de erros recentes para diagnóstico
     this.pgStore = null;                    // PostgresStore para RemoteAuth (persistência de sessão)
-    this.useRemoteAuth = false;             // Flag: usar RemoteAuth ou LocalAuth
+    this.useRemoteAuth = false;             // Flag: RemoteAuth disponivel
     this.remoteAuthInitError = null;
     this.poolListenerRegistered = false;
     this.reconnectingSet = new Set();       // Sessões em processo de auto-reconexão
@@ -215,6 +215,11 @@ class SessionManager {
       const sessionsWithAuth = [];
       for (const session of validSessions) {
         try {
+          if (session.status === 'auth_failure') {
+            console.log(`${session.id}: RemoteAuth rejeitado anteriormente; QR necessario, sem restore automatico.`);
+            continue;
+          }
+
           const authId = `RemoteAuth-${session.id}`;
           const hasAuth = await this.pgStore.sessionExists({ session: authId });
           if (hasAuth) {
@@ -911,6 +916,9 @@ class SessionManager {
     }
 
     const useRemoteAuthForClient = this.useRemoteAuth && this.pgStore;
+    if (!useRemoteAuthForClient) {
+      throw new Error(`RemoteAuth/PostgresStore indisponivel; LocalAuth bloqueado para preservar sessoes salvas (${sessionId}).`);
+    }
 
     const clientConfig = {
       puppeteer: {
@@ -939,16 +947,11 @@ class SessionManager {
         timeout: SESSION_INIT_TIMEOUT_MS,
         protocolTimeout: Math.max(SESSION_INIT_TIMEOUT_MS, 300000)
       },
-      authStrategy: useRemoteAuthForClient
-        ? new RemoteAuth({
-            clientId: sessionId,
-            store: this.pgStore,
-            backupSyncIntervalMs: 60 * 1000 // Salva frequentemente para proteger novos scans contra deploy/restart
-          })
-        : new LocalAuth({
-            clientId: sessionId,
-            dataPath: path.join(__dirname, '..', '.wwebjs_auth')
-          }),
+      authStrategy: new RemoteAuth({
+        clientId: sessionId,
+        store: this.pgStore,
+        backupSyncIntervalMs: 60 * 1000 // Salva frequentemente para proteger novos scans contra deploy/restart
+      }),
       markOnlineAvailable: false,
       syncFullHistory: false,
       disableAutoSeen: true,
@@ -1002,8 +1005,9 @@ class SessionManager {
 
     client.on('qr', async (qr) => {
       console.log(`📱 QR Code gerado para sessão: ${sessionData.id}`);
+      let hadSavedAuth = false;
       try {
-        const hadSavedAuth = await this.hasSavedRemoteAuth(sessionData.id);
+        hadSavedAuth = await this.hasSavedRemoteAuth(sessionData.id);
         if (hadSavedAuth) {
           this.logRecentError(
             sessionData.id,
@@ -1020,7 +1024,10 @@ class SessionManager {
       // NÃO atualizar sessionLastActivity aqui — cada QR gerado renovava o timer
       // e o timeout de 5 minutos nunca disparava, causando loop infinito de QR
 
-      await this.db.updateSessionStatus(sessionData.id, 'qr_code');
+      // Se havia RemoteAuth e mesmo assim o WhatsApp pediu QR, a credencial salva
+      // foi rejeitada. O QR segue vivo em memoria para escanear, mas o banco fica
+      // em auth_failure para nao prometer "reconectar sob demanda" depois.
+      await this.db.updateSessionStatus(sessionData.id, hadSavedAuth ? 'auth_failure' : 'qr_code');
 
       this.io.to(`user_${sessionData.userId}`).emit('qr_code', {
         sessionId: sessionData.id,
@@ -1792,6 +1799,11 @@ class SessionManager {
     const dbSession = await this.db.getSession(sessionId);
     if (!dbSession) {
       console.log(`❌ [${sessionId}] Sessão não existe no banco`);
+      return null;
+    }
+
+    if (dbSession.status === 'auth_failure') {
+      console.log(`[${sessionId}] Auth salva rejeitada anteriormente; auto-reconexao bloqueada ate novo QR.`);
       return null;
     }
 

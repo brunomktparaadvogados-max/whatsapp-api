@@ -294,6 +294,33 @@ function respondSessionReconnecting(res, sessionId, to, reason = 'Sessao nao car
   });
 }
 
+function respondSessionQrRequired(res, sessionId, to, reason = 'Sessao WhatsApp precisa de novo QR Code') {
+  return res.status(409).json({
+    success: false,
+    status: 'pending',
+    finalStatus: 'pending',
+    shouldMarkLead: 'pending',
+    confirmed: false,
+    invalidNumber: false,
+    unconfirmed: true,
+    queued: false,
+    sessionId,
+    to,
+    errorType: 'qr_required',
+    action: 'scan_qr',
+    message: `${reason}. Mantenha o lead pendente e reative a sessao antes de disparar.`,
+    data: {
+      status: 'pending',
+      finalStatus: 'pending',
+      shouldMarkLead: 'pending',
+      confirmed: false,
+      invalidNumber: false,
+      unconfirmed: true,
+      action: 'scan_qr'
+    }
+  });
+}
+
 function withGlobalWhatsAppSendLimit(fn, meta = {}) {
   return new Promise((resolve, reject) => {
     globalSendQueue.push({ fn, resolve, reject, meta, queuedAt: Date.now() });
@@ -332,6 +359,11 @@ function respondQueued(res, sessionId) {
 }
 
 async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null) {
+  const dbSession = await db.getSession(sessionId);
+  if (dbSession?.status === 'auth_failure') {
+    return respondSessionQrRequired(res, sessionId, to, 'A autenticacao salva foi rejeitada pelo WhatsApp');
+  }
+
   const readyForSend = await ensureSessionReadyForSend(sessionId);
   if (!readyForSend) {
     kickSessionReconnect(sessionId, 'send_requested');
@@ -1092,11 +1124,11 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
     const remoteAuthAvailable = !!(sessionManager.useRemoteAuth && sessionManager.pgStore);
     const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(targetSessionId);
 
-    if (!remoteAuthAvailable && dbSession && needsLiveSessionReconnect(dbSession.status)) {
+    if (!remoteAuthAvailable) {
       return res.status(503).json({
         success: false,
         sessionId: targetSessionId,
-        status: dbSession.status,
+        status: dbSession?.status || 'not_created',
         action: 'remote_auth_unavailable',
         hasRemoteAuth: false,
         recoverable: false,

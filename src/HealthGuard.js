@@ -452,8 +452,12 @@ class HealthGuard {
     for (const sid of zombies) {
       console.warn(`🧟 [HealthGuard] Sessão zombie detectada: ${sid} — limpando`);
       try {
+        const previousStatus = this.sessionManager.sessions.get(sid)?.status;
         await this.sessionManager.cleanupSession(sid);
-        await this.db.updateSessionStatus(sid, await this.sessionManager.hasSavedRemoteAuth(sid) ? 'authenticated' : 'disconnected');
+        const nextStatus = previousStatus === 'auth_failure'
+          ? 'auth_failure'
+          : (await this.sessionManager.hasSavedRemoteAuth(sid) ? 'authenticated' : 'disconnected');
+        await this.db.updateSessionStatus(sid, nextStatus);
       } catch (e) {
         console.error(`❌ [HealthGuard] Erro ao limpar zombie ${sid}:`, e.message);
       }
