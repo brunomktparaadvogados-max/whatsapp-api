@@ -927,6 +927,11 @@ app.get('/api/remote-auth-status', async (req, res) => {
         sizeMB: (s.data_size / 1024 / 1024).toFixed(2),
         updatedAt: s.updated_at,
         validZip: s.valid_zip,
+        mainValidZip: s.main_valid_zip,
+        recoverableFromBackup: s.recoverable_from_backup,
+        backupCount: Number(s.backup_count || 0),
+        latestBackupAt: s.latest_backup_at,
+        needsQr: !s.valid_zip && !s.recoverable_from_backup,
         signature: s.signature
       }))
     });
