@@ -349,7 +349,7 @@ class SessionManager {
   }
 
   scheduleInitialRemoteAuthBackups(sessionData, reason) {
-    for (const delayMs of [5000, 15000, 30000, 60000, 120000, 180000]) {
+    for (const delayMs of [1000, 5000, 15000, 30000, 60000, 120000, 180000]) {
       this.scheduleRemoteAuthBackup(sessionData, delayMs, `${reason}_${delayMs / 1000}s`);
     }
   }
@@ -543,6 +543,10 @@ class SessionManager {
     if (existingDbSession) {
       console.log(`🔄 Sessão ${sessionId} existe no banco com status '${existingDbSession.status}', reutilizando registro...`);
       await this.db.updateSessionStatus(sessionId, 'initializing');
+    }
+
+    if (options.forceFreshAuth && this.pgStore) {
+      this.pgStore.suppressExistingAuth({ session: `RemoteAuth-${sessionId}` });
     }
 
     // RemoteAuth: NÃO deleta dados de auth — permite reconexão sem QR code
@@ -781,7 +785,7 @@ class SessionManager {
       }
 
       // Limpa recursos sem deletar do banco (permite tentar de novo)
-      const failedStatus = hasRemoteAuth ? 'authenticated' : 'failed';
+      const failedStatus = hasRemoteAuth ? 'auth_failure' : 'failed';
       this.sessionInitFailures.set(sessionData.id, {
         message: errorMessage,
         timestamp: Date.now()
@@ -1020,14 +1024,15 @@ class SessionManager {
       }
       sessionData.qrCode = await QRCode.toDataURL(qr);
       sessionData.status = 'qr_code';
+      sessionData.qrFromRejectedAuth = hadSavedAuth;
       sessionData.lastSeen = Date.now();
       // NÃO atualizar sessionLastActivity aqui — cada QR gerado renovava o timer
       // e o timeout de 5 minutos nunca disparava, causando loop infinito de QR
 
-      // Se havia RemoteAuth e mesmo assim o WhatsApp pediu QR, a credencial salva
-      // foi rejeitada. O QR segue vivo em memoria para escanear, mas o banco fica
-      // em auth_failure para nao prometer "reconectar sob demanda" depois.
-      await this.db.updateSessionStatus(sessionData.id, hadSavedAuth ? 'auth_failure' : 'qr_code');
+      // Enquanto o QR esta vivo, o banco precisa refletir isso para a interface
+      // mostrar o QR imediatamente. Se ele expirar sem scan, o cleanup marca
+      // auth_failure quando a origem foi uma credencial salva rejeitada.
+      await this.db.updateSessionStatus(sessionData.id, 'qr_code');
 
       this.io.to(`user_${sessionData.userId}`).emit('qr_code', {
         sessionId: sessionData.id,
@@ -1121,6 +1126,24 @@ class SessionManager {
         client.info.wid._serialized,
         client.info.pushname
       );
+
+      let authProtected = await this.hasSavedRemoteAuth(sessionData.id);
+      if (!authProtected) {
+        console.warn(`[${sessionData.id}] Ready sem RemoteAuth validado. Forcando backup antes de liberar como recuperavel.`);
+        authProtected = await this.forceRemoteAuthBackup(sessionData.id, 'ready_protect_scan');
+      }
+
+      if (!authProtected) {
+        this.logRecentError(
+          sessionData.id,
+          new Error('Sessao conectou, mas RemoteAuth ainda nao foi confirmado no PostgreSQL. Backups agendados continuam tentando.')
+        );
+        this.io.to(`user_${sessionData.userId}`).emit('session_warning', {
+          sessionId: sessionData.id,
+          warning: 'WhatsApp conectado, mas a persistencia da sessao ainda esta sendo confirmada. Evite reiniciar a API nos proximos minutos.'
+        });
+      }
+
       this.scheduleInitialRemoteAuthBackups(sessionData, 'ready');
 
       console.log(`💾 Sessão ${sessionData.id} salva com status: connected`);
@@ -2661,7 +2684,14 @@ class SessionManager {
       for (const { sid, reason } of toDestroy) {
         console.log(`🧹 Auto-limpeza: "${sid}" — ${reason}`);
         try {
+          const sess = this.sessions.get(sid);
+          const nextStatus = sess?.status === 'qr_code' && sess?.qrFromRejectedAuth
+            ? 'auth_failure'
+            : (sess?.status === 'qr_code' ? 'disconnected' : null);
           await this.cleanupSession(sid);
+          if (nextStatus) {
+            await this.db.updateSessionStatus(sid, nextStatus);
+          }
         } catch (e) {
           console.error(`Erro ao auto-limpar ${sid}:`, e.message);
           this.sessions.delete(sid);

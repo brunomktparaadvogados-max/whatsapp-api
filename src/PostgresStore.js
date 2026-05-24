@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const MIN_AUTH_BLOB_BYTES = parseInt(process.env.MIN_REMOTE_AUTH_BLOB_BYTES) || 128 * 1024;
 
 /**
@@ -34,6 +35,7 @@ class PostgresStore {
     this._lastSaveTime = new Map();  // Throttle: evita saves muito frequentes
     this._savedSessions = new Set(); // Sessões que JÁ foram salvas pelo menos 1x (proteção contra perda)
     this._forceSaveSessions = new Set(); // Proximo save deve ignorar throttle/HealthGuard
+    this._freshAuthSessions = new Set(); // Sessao marcada para ignorar auth antigo e liberar QR fresco
     this._minSaveInterval = 30 * 60 * 1000; // Mínimo 30 minutos entre saves (reduz carga no Supabase durante disparos)
     this._maxSaveBytes = 15 * 1024 * 1024;  // Máximo 15MB por sessão — blobs maiores são cache acumulado
   }
@@ -85,6 +87,21 @@ class PostgresStore {
           updated_at TIMESTAMPTZ DEFAULT NOW()
         )
       `);
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS whatsapp_auth_session_backups (
+          id BIGSERIAL PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          data BYTEA NOT NULL,
+          data_hash TEXT NOT NULL,
+          data_size INTEGER NOT NULL,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(session_id, data_hash)
+        )
+      `);
+      await this.pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_whatsapp_auth_backups_session_created
+        ON whatsapp_auth_session_backups (session_id, created_at DESC)
+      `);
       this._initialized = true;
 
       // Carrega lista de sessões que JÁ existem no banco para saber quais já foram salvas
@@ -119,6 +136,10 @@ class PostgresStore {
   async sessionExists(options) {
     await this.init();
     const sessionId = this._normalizeSessionId(options.session);
+    if (this._freshAuthSessions.has(sessionId)) {
+      console.warn(`PostgresStore.sessionExists("${sessionId}"): auth antigo suprimido para gerar QR fresco`);
+      return false;
+    }
     try {
       const result = await this.pool.query(
         'SELECT length(data) AS data_size, substring(data from 1 for 4) AS data_prefix FROM whatsapp_auth_sessions WHERE session_id = $1',
@@ -130,16 +151,75 @@ class PostgresStore {
       if (!exists && dataSize >= MIN_AUTH_BLOB_BYTES) {
         console.warn(`PostgresStore.sessionExists("${sessionId}"): blob existe, mas ZIP invalido (${dataSize} bytes, sig=${this._zipSignature(result.rows[0]?.data_prefix)})`);
       }
-      return exists;
+      if (exists) return true;
+
+      const backup = await this._findValidBackup(sessionId, { includeData: false });
+      if (backup) {
+        console.warn(`PostgresStore.sessionExists("${sessionId}"): principal invalido/ausente, mas backup valido existe (${backup.sizeMB}MB)`);
+        return true;
+      }
+
+      return false;
     } catch (err) {
       console.error(`❌ PostgresStore.sessionExists error for "${sessionId}":`, err.message);
       return false;
     }
   }
 
+  async _findValidBackup(sessionId, { includeData = true } = {}) {
+    const dataSelect = includeData ? ', data' : '';
+    const result = await this.pool.query(
+      `SELECT id, session_id, data_size, substring(data from 1 for 4) AS data_prefix, created_at${dataSelect}
+       FROM whatsapp_auth_session_backups
+       WHERE session_id = $1
+       ORDER BY created_at DESC
+       LIMIT 5`,
+      [sessionId]
+    );
+
+    for (const row of result.rows) {
+      if (this._isValidZipBuffer(row.data_prefix, row.data_size)) {
+        return {
+          ...row,
+          sizeMB: (Number(row.data_size || 0) / 1024 / 1024).toFixed(2)
+        };
+      }
+    }
+
+    return null;
+  }
+
+  async _saveVerifiedBackup(client, sessionId, data, dataHash) {
+    await client.query(
+      `INSERT INTO whatsapp_auth_session_backups (session_id, data, data_hash, data_size, created_at)
+       VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (session_id, data_hash) DO NOTHING`,
+      [sessionId, data, dataHash, data.length]
+    );
+
+    await client.query(
+      `DELETE FROM whatsapp_auth_session_backups
+       WHERE session_id = $1
+         AND id NOT IN (
+           SELECT id
+           FROM whatsapp_auth_session_backups
+           WHERE session_id = $1
+           ORDER BY created_at DESC
+           LIMIT 3
+         )`,
+      [sessionId]
+    );
+  }
+
   forceNextSave(session) {
     const sessionId = this._normalizeSessionId(session);
     this._forceSaveSessions.add(sessionId);
+  }
+
+  suppressExistingAuth(session) {
+    const sessionId = this._normalizeSessionId(session);
+    this._freshAuthSessions.add(sessionId);
+    console.warn(`PostgresStore: RemoteAuth antigo de "${sessionId}" sera ignorado nesta inicializacao para liberar QR fresco`);
   }
 
   /**
@@ -217,11 +297,15 @@ class PostgresStore {
         return;
       }
 
+      const dataHash = crypto.createHash('sha256').update(data).digest('hex');
+
       // SET statement_timeout maior para blobs (são queries pesadas de 2-10MB)
       // O pool global tem 15s, mas blobs precisam de mais tempo
       const client = await this.pool.connect();
+      let committed = false;
       try {
         await client.query('SET statement_timeout = 45000'); // 45s para blobs
+        await client.query('BEGIN');
         await client.query(
           `INSERT INTO whatsapp_auth_sessions (session_id, data, updated_at)
            VALUES ($1, $2, NOW())
@@ -229,12 +313,21 @@ class PostgresStore {
            DO UPDATE SET data = $2, updated_at = NOW()`,
           [sessionId, data]
         );
+        await this._saveVerifiedBackup(client, sessionId, data, dataHash);
+        await client.query('COMMIT');
+        committed = true;
       } finally {
+        if (!committed) {
+          try {
+            await client.query('ROLLBACK');
+          } catch (_) { /* ignore */ }
+        }
         client.release();
       }
 
       this._lastSaveTime.set(sessionId, now);
       this._savedSessions.add(sessionId);  // Marca: essa sessão já foi salva pelo menos 1x
+      this._freshAuthSessions.delete(sessionId);
       console.log(`💾 PostgresStore: sessão "${sessionId}" salva (${sizeMB}MB)${isFirstSave ? ' ★ PRIMEIRO SAVE — sessão protegida!' : ''}`);
     } catch (err) {
       // CRÍTICO: NÃO relançar! RemoteAuth chama save() em setInterval sem try/catch.
@@ -254,6 +347,9 @@ class PostgresStore {
   async extract(options) {
     await this.init();
     const sessionId = this._normalizeSessionId(options.session);
+    if (this._freshAuthSessions.has(sessionId)) {
+      throw new Error(`RemoteAuth "${sessionId}" suprimido para gerar QR fresco`);
+    }
     try {
       // SET statement_timeout maior para extract de blobs (podem ser 5-10MB)
       const client = await this.pool.connect();
@@ -271,11 +367,21 @@ class PostgresStore {
       if (result.rows.length > 0 && result.rows[0].data) {
         const data = this._toBuffer(result.rows[0].data);
         if (data.length < MIN_AUTH_BLOB_BYTES) {
+          const backup = await this._findValidBackup(sessionId);
+          if (backup?.data) {
+            console.warn(`PostgresStore.extract: principal invalido para "${sessionId}", usando backup valido (${backup.sizeMB}MB)`);
+            return await this._writeExtractedBackup(sessionId, backup, options.path);
+          }
           throw new Error(`RemoteAuth "${sessionId}" inválido ou vazio (${result.rows[0].data.length} bytes)`);
         }
 
         // Garantir que o diretório pai existe
         if (!this._isValidZipBuffer(data)) {
+          const backup = await this._findValidBackup(sessionId);
+          if (backup?.data) {
+            console.warn(`PostgresStore.extract: principal corrompido para "${sessionId}", usando backup valido (${backup.sizeMB}MB)`);
+            return await this._writeExtractedBackup(sessionId, backup, options.path);
+          }
           throw new Error(`RemoteAuth "${sessionId}" corrompido: ZIP invalido (${data.length} bytes, sig=${this._zipSignature(data)})`);
         }
 
@@ -288,12 +394,43 @@ class PostgresStore {
         const sizeMB = (data.length / 1024 / 1024).toFixed(2);
         console.log(`📦 PostgresStore: sessão "${sessionId}" extraída para ${options.path} (${sizeMB}MB)`);
       } else {
+        const backup = await this._findValidBackup(sessionId);
+        if (backup?.data) {
+          console.warn(`PostgresStore.extract: principal ausente para "${sessionId}", usando backup valido (${backup.sizeMB}MB)`);
+          return await this._writeExtractedBackup(sessionId, backup, options.path);
+        }
         throw new Error(`Session "${sessionId}" not found in database`);
       }
     } catch (err) {
       console.error(`❌ PostgresStore.extract error for "${sessionId}":`, err.message);
       throw err; // RemoteAuth trata: cria diretório vazio → novo QR
     }
+  }
+
+  async _writeExtractedBackup(sessionId, backup, targetPath) {
+    const data = this._toBuffer(backup.data);
+    if (!this._isValidZipBuffer(data)) {
+      throw new Error(`Backup RemoteAuth "${sessionId}" invalido (${data.length} bytes)`);
+    }
+
+    const dir = path.dirname(targetPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    fs.writeFileSync(targetPath, data);
+
+    // Auto-repara o registro principal com o ultimo backup bom.
+    await this.pool.query(
+      `INSERT INTO whatsapp_auth_sessions (session_id, data, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (session_id)
+       DO UPDATE SET data = $2, updated_at = NOW()`,
+      [sessionId, data]
+    );
+
+    const sizeMB = (data.length / 1024 / 1024).toFixed(2);
+    console.log(`📦 PostgresStore: sessão "${sessionId}" extraída de backup para ${targetPath} (${sizeMB}MB)`);
   }
 
   /**
@@ -308,6 +445,7 @@ class PostgresStore {
         'DELETE FROM whatsapp_auth_sessions WHERE session_id = $1',
         [sessionId]
       );
+      this._freshAuthSessions.delete(sessionId);
       console.log(`🗑️ PostgresStore: sessão "${sessionId}" removida`);
     } catch (err) {
       console.error(`❌ PostgresStore.delete error for "${sessionId}":`, err.message);
@@ -322,13 +460,33 @@ class PostgresStore {
     await this.init();
     try {
       const result = await this.pool.query(
-        'SELECT session_id, length(data) as data_size, substring(data from 1 for 4) AS data_prefix, updated_at FROM whatsapp_auth_sessions ORDER BY updated_at DESC'
+        `SELECT s.session_id,
+                length(s.data) as data_size,
+                substring(s.data from 1 for 4) AS data_prefix,
+                s.updated_at,
+                COALESCE(b.backup_count, 0) AS backup_count,
+                b.latest_backup_at
+         FROM whatsapp_auth_sessions s
+         LEFT JOIN (
+           SELECT session_id, COUNT(*) AS backup_count, MAX(created_at) AS latest_backup_at
+           FROM whatsapp_auth_session_backups
+           GROUP BY session_id
+         ) b ON b.session_id = s.session_id
+         ORDER BY s.updated_at DESC`
       );
-      return result.rows.map(row => ({
-        ...row,
-        valid_zip: this._isValidZipBuffer(row.data_prefix, row.data_size),
-        signature: this._zipSignature(row.data_prefix)
-      }));
+      const rows = [];
+      for (const row of result.rows) {
+        const validZip = this._isValidZipBuffer(row.data_prefix, row.data_size);
+        const backup = validZip ? null : await this._findValidBackup(row.session_id, { includeData: false });
+        rows.push({
+          ...row,
+          valid_zip: validZip || !!backup,
+          main_valid_zip: validZip,
+          recoverable_from_backup: !validZip && !!backup,
+          signature: this._zipSignature(row.data_prefix)
+        });
+      }
+      return rows;
     } catch (err) {
       console.error('❌ PostgresStore.listSessions error:', err.message);
       return [];

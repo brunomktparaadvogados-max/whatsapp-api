@@ -364,6 +364,11 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
     return respondSessionQrRequired(res, sessionId, to, 'A autenticacao salva foi rejeitada pelo WhatsApp');
   }
 
+  const liveSession = sessionManager.getSession(sessionId);
+  if (liveSession?.status === 'qr_code' || dbSession?.status === 'qr_code') {
+    return respondSessionQrRequired(res, sessionId, to, 'A sessao WhatsApp esta aguardando leitura do QR Code');
+  }
+
   const readyForSend = await ensureSessionReadyForSend(sessionId);
   if (!readyForSend) {
     kickSessionReconnect(sessionId, 'send_requested');
@@ -1146,7 +1151,8 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       try {
         console.log(`🔄 Criando sessão ${targetSessionId} para usuário ${targetUserId}...`);
         await sessionManager.createSession(targetSessionId, targetUserId, {
-          priority: true
+          priority: true,
+          forceFreshAuth: hasRemoteAuth && !canTrustSavedAuth
         });
         console.log(`✅ Sessão ${targetSessionId} criada`);
       } catch (error) {
@@ -1256,7 +1262,10 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
     setImmediate(async () => {
       try {
         console.log(`[REACTIVATE] ${action} para ${sessionId}`);
-        await sessionManager.createSession(sessionId, targetUserId, { priority: true });
+        await sessionManager.createSession(sessionId, targetUserId, {
+          priority: true,
+          forceFreshAuth: hasRemoteAuth && !canTrustSavedAuth
+        });
       } catch (error) {
         console.error(`[REACTIVATE] Falha ao reativar ${sessionId}:`, error.message);
         try {
