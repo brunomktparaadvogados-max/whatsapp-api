@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Apify Prospecção CNH</title>
+  <style>
+    :root {
+      --ink: #0f2033;
+      --muted: #5b6878;
+      --bg: #eef4f8;
+      --card: #ffffff;
+      --line: #d7e1ea;
+      --blue: #1769c2;
+      --green: #087a4a;
+      --dark: #2f3b4e;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; color: var(--ink); background: var(--bg); }
+    header { background: #fff; border-bottom: 1px solid var(--line); padding: 34px 38px 28px; }
+    h1 { margin: 0 0 10px; font-size: 34px; line-height: 1.08; max-width: 1120px; }
+    h2 { margin: 4px 0 0; font-size: 22px; }
+    p { color: var(--muted); line-height: 1.48; }
+    header p { margin: 0; max-width: 1120px; }
+    .stats { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+    .stat { border: 1px solid #bdd7f7; background: #e8f3ff; border-radius: 8px; padding: 9px 12px; font-weight: 700; }
+    .layout { display: grid; grid-template-columns: minmax(280px, 360px) 1fr; gap: 18px; padding: 24px 38px 44px; }
+    aside, .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 2px 10px rgba(15,32,51,.06); }
+    aside { padding: 20px; align-self: start; position: sticky; top: 16px; }
+    aside h2 { font-size: 18px; margin-bottom: 10px; }
+    ol { margin: 0; padding-left: 20px; color: #334155; line-height: 1.5; }
+    li + li { margin-top: 8px; }
+    main { display: grid; gap: 16px; }
+    .card { padding: 20px; border-left: 6px solid var(--green); }
+    .card-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+    .eyebrow { color: var(--muted); font-size: 13px; font-weight: 700; }
+    .status { white-space: nowrap; background: #eef6ff; border: 1px solid #c7def8; padding: 7px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; color: #164f91; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+    a, button { border: 0; border-radius: 8px; min-height: 38px; padding: 9px 12px; color: #fff; background: var(--blue); text-decoration: none; font-weight: 700; cursor: pointer; font-size: 14px; }
+    .actions a:nth-child(2n) { background: var(--dark); }
+    .actions a:nth-child(3n) { background: var(--green); }
+    button { background: var(--green); }
+    .code-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-top: 12px; }
+    pre { margin: 10px 0 0; max-height: 360px; overflow: auto; background: #0b1220; color: #d6e7ff; border-radius: 10px; padding: 14px; font-size: 12px; line-height: 1.45; }
+    .rules { margin-top: 16px; padding: 14px; border: 1px solid #fed7aa; background: #fff7ed; border-radius: 10px; color: #7c2d12; }
+    .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+    .chip { background: #f8fafc; border: 1px solid #dbe4ed; border-radius: 999px; padding: 6px 9px; color: #334155; font-size: 12px; }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; padding: 18px; }
+      header { padding: 26px 18px; }
+      aside { position: static; }
+      h1 { font-size: 28px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Sistema Apify de Prospecção CNH</h1>
+    <p>Controle operacional para encontrar anunciantes de CNH, bafômetro, Lei Seca, suspensão, cassação e direito de dirigir usando Biblioteca de Anúncios da Meta, Google Search, Google Maps e Instagram. O fluxo preserva a regra principal: nada fictício, só contato com evidência.</p>
+    <div class="stats">
+      <div class="stat">3 atores Apify conectados</div>
+      <div class="stat">10 buscas Meta</div>
+      <div class="stat">9 buscas Google</div>
+      <div class="stat">18 termos de nicho</div>
+    </div>
+  </header>
+  <div class="layout">
+    <aside>
+      <h2>Fluxo do agente</h2>
+      <ol><li>Coletar anúncios ativos na Biblioteca da Meta com as variações do nicho.</li><li>Normalizar nome do anunciante e remover quem já consta em leads.jsonl, CSVs e documentos anteriores.</li><li>Enriquecer cada anunciante novo no Google Search para achar site, Instagram, Facebook e snippets com telefone.</li><li>Validar no Google Maps quando houver indício de Google Meu Negócio.</li><li>Validar Instagram por handle ou busca de perfil.</li><li>Pontuar lead, anexar evidência e só liberar botão WhatsApp quando houver WhatsApp explícito ou celular declarado como WhatsApp.</li></ol>
+      <div class="rules"><strong>Regra crítica:</strong> telefone fixo não vira WhatsApp. Se houver mais de um WhatsApp válido, fica no mesmo card do lead.</div>
+      <h2>Filtros de nicho</h2>
+      <div class="chips"><span class="chip">cnh</span><span class="chip">bafômetro</span><span class="chip">bafometro</span><span class="chip">lei seca</span><span class="chip">recusa ao bafômetro</span><span class="chip">recusa bafometro</span><span class="chip">suspensão da cnh</span><span class="chip">cnh suspensa</span><span class="chip">cassação cnh</span><span class="chip">cnh cassada</span><span class="chip">direito de dirigir</span><span class="chip">recurso de multa</span><span class="chip">recurso de multas</span><span class="chip">multa de trânsito</span><span class="chip">multas de trânsito</span><span class="chip">detran</span><span class="chip">pontuação cnh</span><span class="chip">regularizar cnh</span></div>
+      <h2>Exclusões</h2>
+      <div class="chips"><span class="chip">casamento</span><span class="chip">festa</span><span class="chip">kombucha</span><span class="chip">segurança do trabalho</span><span class="chip">instrumentos de medição</span><span class="chip">etilômetro venda</span><span class="chip">laboratório</span><span class="chip">toxicológico</span><span class="chip">medicina diagnóstica</span><span class="chip">placa mercosul</span><span class="chip">insulfilm</span><span class="chip">auto som</span><span class="chip">moto peças</span><span class="chip">autopeças</span><span class="chip">seminovos</span></div>
+    </aside>
+    <main>
+  <section class="card">
+    <div class="card-head">
+      <div>
+        <span class="eyebrow">Descoberta por anúncios ativos</span>
+        <h2>1. Meta Ads Library</h2>
+      </div>
+      <span class="status">pipeline atual</span>
+    </div>
+    <p>Use as variações abaixo para capturar anunciantes ativos. Depois normalize nome, ID do anúncio, copy, URL de evidência e remova quem já está na memória.</p>
+    <div class="actions">
+  <a href="https://pt-br.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=multa+cnh&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions" target="_blank" rel="noopener">multa cnh</a>
+
+  <a href="https://pt-br.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=direito+de+dirigir&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions" target="_blank" rel="noopener">direito de dirigir</a>
+
+  <a href="https://pt-br.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=cnh+suspensa&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions" target="_blank" rel="noopener">cnh suspensa</a>
+
+  <a href="https://pt-br.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=cassa%C3%A7%C3%A3o+cnh&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions" target="_blank" rel="noopener">cassação cnh</a>
+
+  <a href="https://pt-br.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=bafometro&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions" target="_blank" rel="noopener">bafometro</a>
+
+  <a href="https://pt-br.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=lei+seca+recurso&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions" target="_blank" rel="noopener">lei seca recurso</a>
+
+  <a href="https://pt-br.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=recusa+bafometro&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions" target="_blank" rel="noopener">recusa bafometro</a>
+
+  <a href="https://pt-br.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=recurso+de+multa+cnh&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions" target="_blank" rel="noopener">recurso de multa cnh</a>
+
+  <a href="https://pt-br.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=regularizar+cnh&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions" target="_blank" rel="noopener">regularizar cnh</a>
+
+  <a href="https://pt-br.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=pontua%C3%A7%C3%A3o+cnh&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions" target="_blank" rel="noopener">pontuação cnh</a>
+</div>
+    <div class="code-head">
+      <strong>Input pronto</strong>
+      <button type="button" data-copy="code-0">Copiar JSON</button>
+    </div>
+    <pre id="code-0"><code>{
+  &quot;active_status&quot;: &quot;active&quot;,
+  &quot;country&quot;: &quot;BR&quot;,
+  &quot;sort&quot;: &quot;total_impressions_desc&quot;,
+  &quot;queries&quot;: [
+    &quot;multa cnh&quot;,
+    &quot;direito de dirigir&quot;,
+    &quot;cnh suspensa&quot;,
+    &quot;cassação cnh&quot;,
+    &quot;bafometro&quot;,
+    &quot;lei seca recurso&quot;,
+    &quot;recusa bafometro&quot;,
+    &quot;recurso de multa cnh&quot;,
+    &quot;regularizar cnh&quot;,
+    &quot;pontuação cnh&quot;
+  ],
+  &quot;include&quot;: [
+    &quot;cnh&quot;,
+    &quot;bafômetro&quot;,
+    &quot;bafometro&quot;,
+    &quot;lei seca&quot;,
+    &quot;recusa ao bafômetro&quot;,
+    &quot;recusa bafometro&quot;,
+    &quot;suspensão da cnh&quot;,
+    &quot;cnh suspensa&quot;,
+    &quot;cassação cnh&quot;,
+    &quot;cnh cassada&quot;,
+    &quot;direito de dirigir&quot;,
+    &quot;recurso de multa&quot;,
+    &quot;recurso de multas&quot;,
+    &quot;multa de trânsito&quot;,
+    &quot;multas de trânsito&quot;,
+    &quot;detran&quot;,
+    &quot;pontuação cnh&quot;,
+    &quot;regularizar cnh&quot;
+  ],
+  &quot;exclude&quot;: [
+    &quot;casamento&quot;,
+    &quot;festa&quot;,
+    &quot;kombucha&quot;,
+    &quot;segurança do trabalho&quot;,
+    &quot;instrumentos de medição&quot;,
+    &quot;etilômetro venda&quot;,
+    &quot;laboratório&quot;,
+    &quot;toxicológico&quot;,
+    &quot;medicina diagnóstica&quot;,
+    &quot;placa mercosul&quot;,
+    &quot;insulfilm&quot;,
+    &quot;auto som&quot;,
+    &quot;moto peças&quot;,
+    &quot;autopeças&quot;,
+    &quot;seminovos&quot;
+  ]
+}</code></pre>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <div>
+        <span class="eyebrow">apify/google-search-scraper</span>
+        <h2>2. Google Search Results Scraper</h2>
+      </div>
+      <span class="status">Apify</span>
+    </div>
+    <p>Busca pública para descobrir contatos, Instagram, Facebook, site e sinais de intenção. A extração deve registrar apenas o que aparecer em snippet ou página validada.</p>
+    <div class="actions"><a href="https://console.apify.com/actors/nFJndFXA5zjCTuudP/input" target="_blank" rel="noopener">Abrir ator</a></div>
+    <div class="code-head">
+      <strong>Input pronto</strong>
+      <button type="button" data-copy="code-1">Copiar JSON</button>
+    </div>
+    <pre id="code-1"><code>{
+  &quot;chatGptSearch&quot;: {
+    &quot;enableChatGpt&quot;: false
+  },
+  &quot;copilotSearch&quot;: {
+    &quot;enableCopilot&quot;: false
+  },
+  &quot;disableGoogleSearchResults&quot;: false,
+  &quot;focusOnPaidAds&quot;: true,
+  &quot;forceExactMatch&quot;: false,
+  &quot;geminiSearch&quot;: {
+    &quot;enableGemini&quot;: false
+  },
+  &quot;includeIcons&quot;: false,
+  &quot;includeUnfilteredResults&quot;: false,
+  &quot;maxPagesPerQuery&quot;: 2,
+  &quot;maximumLeadsEnrichmentRecords&quot;: 0,
+  &quot;mobileResults&quot;: false,
+  &quot;perplexitySearch&quot;: {
+    &quot;enablePerplexity&quot;: false,
+    &quot;returnImages&quot;: false,
+    &quot;returnRelatedQuestions&quot;: false
+  },
+  &quot;queries&quot;: &quot;advogado bafometro whatsapp instagram facebook\nadvogado lei seca whatsapp instagram facebook\nadvogado cnh suspensa whatsapp instagram facebook\nadvogado cassação cnh whatsapp instagram facebook\nrecurso multa cnh whatsapp instagram facebook\nassessoria trânsito cnh whatsapp instagram facebook\nregularizar cnh suspensa whatsapp instagram facebook\ndefesa multa bafometro whatsapp\nadvogado direito de trânsito cnh suspensa&quot;,
+  &quot;saveHtml&quot;: false,
+  &quot;saveHtmlToKeyValueStore&quot;: true
+}</code></pre>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <div>
+        <span class="eyebrow">compass/crawler-google-places</span>
+        <h2>3. Google Maps Scraper</h2>
+      </div>
+      <span class="status">Apify</span>
+    </div>
+    <p>Valida Google Meu Negócio, endereço, telefone e site. Telefone só vira WhatsApp quando o resultado ou o perfil declarar WhatsApp explicitamente.</p>
+    <div class="actions"><a href="https://console.apify.com/actors/nwua9Gu5YrADL7ZDj/input" target="_blank" rel="noopener">Abrir ator</a></div>
+    <div class="code-head">
+      <strong>Input pronto</strong>
+      <button type="button" data-copy="code-2">Copiar JSON</button>
+    </div>
+    <pre id="code-2"><code>{
+  &quot;searchString&quot;: &quot;advogado bafometro&quot;,
+  &quot;searchStringsArray&quot;: [
+    &quot;advogado bafometro&quot;,
+    &quot;advogado lei seca&quot;,
+    &quot;advogado direito de trânsito&quot;,
+    &quot;recurso de multa cnh&quot;,
+    &quot;cnh suspensa cassada&quot;,
+    &quot;assessoria de trânsito&quot;,
+    &quot;regularizar cnh&quot;
+  ],
+  &quot;locationQuery&quot;: &quot;Brasil&quot;,
+  &quot;maxCrawledPlaces&quot;: 50,
+  &quot;maxCrawledPlacesPerSearch&quot;: 50,
+  &quot;language&quot;: &quot;pt-BR&quot;,
+  &quot;countryCode&quot;: &quot;br&quot;,
+  &quot;includeWebResults&quot;: true,
+  &quot;scrapeContacts&quot;: true,
+  &quot;scrapeReviews&quot;: false,
+  &quot;maxReviews&quot;: 0,
+  &quot;proxyConfig&quot;: {
+    &quot;useApifyProxy&quot;: true
+  }
+}</code></pre>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <div>
+        <span class="eyebrow">apify/instagram-scraper</span>
+        <h2>4. Instagram Scraper</h2>
+      </div>
+      <span class="status">Apify</span>
+    </div>
+    <p>Valida perfis e bios. Use primeiro os handles descobertos no Google/Meta; depois rode a busca por termos para novos perfis.</p>
+    <div class="actions"><a href="https://console.apify.com/actors/shu8hvrXbJbY3Eb9W/input" target="_blank" rel="noopener">Abrir ator</a></div>
+    <div class="code-head">
+      <strong>Input pronto</strong>
+      <button type="button" data-copy="code-3">Copiar JSON</button>
+    </div>
+    <pre id="code-3"><code>{
+  &quot;directUrls&quot;: [],
+  &quot;search&quot;: &quot;advogado bafometro, advogado lei seca, cnh suspensa, recurso multa cnh, cassação cnh, direito de trânsito&quot;,
+  &quot;searchType&quot;: &quot;user&quot;,
+  &quot;resultsType&quot;: &quot;details&quot;,
+  &quot;resultsLimit&quot;: 100,
+  &quot;proxyConfig&quot;: {
+    &quot;useApifyProxy&quot;: true
+  }
+}</code></pre>
+  </section>
+</main>
+  </div>
+  <script>
+    document.querySelectorAll("[data-copy]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const id = button.getAttribute("data-copy");
+        const text = document.getElementById(id)?.innerText || "";
+        await navigator.clipboard.writeText(text);
+        const old = button.textContent;
+        button.textContent = "Copiado";
+        setTimeout(() => button.textContent = old, 1200);
+      });
+    });
+  </script>
+</body>
+</html>
