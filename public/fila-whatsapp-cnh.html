@@ -6,12 +6,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Fila WhatsApp CNH - Revisao manual</title>
   <style>
-    :root { --ink:#102033; --line:#d7dee8; --bg:#eef3f7; --muted:#5c6978; --green:#087a4a; --blue:#1769c2; --orange:#c2410c; --dark:#334155; }
+    :root { --ink:#102033; --line:#d7dee8; --bg:#eef3f7; --muted:#5c6978; --green:#087a4a; --blue:#1769c2; --orange:#c2410c; --dark:#334155; --red:#b42318; --purple:#7e22ce; --yellow:#a16207; }
     * { box-sizing: border-box; }
     body { margin:0; font-family: Arial, sans-serif; background:var(--bg); color:var(--ink); }
     header { background:#fff; border-bottom:1px solid var(--line); padding:28px 34px; position:sticky; top:0; z-index:2; }
     h1 { margin:0 0 8px; font-size:30px; }
     .sub { color:var(--muted); line-height:1.45; max-width:1040px; }
+    .operator { display:flex; flex-wrap:wrap; align-items:end; gap:14px; margin-top:16px; }
+    .operator label { color:#334155; font-size:12px; font-weight:700; display:grid; gap:6px; }
+    .operator input { height:40px; min-width:270px; border:1px solid var(--line); border-radius:8px; padding:0 12px; font-size:14px; }
+    .summary { display:flex; flex-wrap:wrap; gap:8px; }
+    .pill { background:#e8f3ff; border:1px solid #bdd7f7; padding:10px 12px; border-radius:8px; font-size:13px; }
     .warn { margin-top:12px; background:#fff7ed; border:1px solid #fed7aa; color:#7c2d12; padding:12px; border-radius:8px; }
     section { padding:24px 34px 10px; }
     .section-title { margin:0 0 6px; font-size:22px; }
@@ -19,15 +24,31 @@
     .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px; }
     .card { background:#fff; border:1px solid var(--line); border-left:6px solid var(--green); border-radius:10px; padding:16px; box-shadow:0 2px 10px rgba(16,32,51,.06); }
     .new-lead { border-left-color:var(--orange); }
+    .card.status-approached { border-left-color:var(--red); background:#fffafa; }
+    .card.status-replied { border-left-color:var(--purple); }
+    .card.status-meeting { border-left-color:var(--blue); }
+    .card.status-researching { border-left-color:var(--yellow); }
+    .card.status-discarded { opacity:.68; border-left-color:#64748b; }
     .top span { color:#64748b; font-size:12px; font-weight:700; }
     h2 { margin:5px 0; font-size:18px; }
     b { display:inline-block; background:#f1f5f9; padding:6px 9px; border-radius:999px; font-size:12px; }
     .actions { display:flex; flex-wrap:wrap; gap:8px; margin:13px 0; }
     a { color:#fff; text-decoration:none; font-weight:700; font-size:13px; padding:8px 11px; border-radius:7px; }
     .whatsapp { background:var(--green); }
+    .card.status-approached .whatsapp { background:var(--red); }
     .google { background:var(--blue); }
     .meta { background:var(--orange); }
     .dark { background:var(--dark); }
+    .tracking { display:flex; flex-wrap:wrap; gap:7px; margin:4px 0 11px; }
+    .mark { border:1px solid var(--line); background:#fff; color:#334155; padding:7px 9px; min-height:34px; border-radius:7px; cursor:pointer; font-weight:700; }
+    .mark.approached { color:var(--red); border-color:#f1b5ae; }
+    .mark.replied { color:var(--purple); }
+    .mark.meeting { color:var(--blue); }
+    .mark.researching { color:var(--yellow); }
+    .mark.discarded { color:#64748b; }
+    .status-line { color:#64748b; font-size:12px; font-weight:700; margin:3px 0 9px; }
+    #notice { display:none; margin-top:10px; font-size:13px; font-weight:700; color:var(--green); }
+    #notice.error { color:var(--red); }
     p { font-size:13px; line-height:1.4; color:#334155; }
     details { margin-top:8px; color:#475569; font-size:12px; }
     summary { cursor:pointer; font-weight:700; }
@@ -35,397 +56,597 @@
 </head>
 <body>
   <header>
-    <h1>Fila WhatsApp CNH - Revisao manual</h1>
-    <div class="sub">27 leads com WhatsApp validado no topo. Quando houver mais de um WhatsApp, todos aparecem como botoes no mesmo card. Abaixo ficam 11 novos anunciantes da busca multa cnh para pesquisa e enriquecimento, separados da prospeccao ja iniciada.</div>
-    <div class="warn">Use apenas apos validar base legal/consentimento e conferir o contato no Google. Nao ha disparo automatico nesta pagina.</div>
+    <h1>Operação SDR CNH - fila compartilhada</h1>
+    <div class="sub">27 leads com WhatsApp validado permanecem primeiro e na ordem original. A nova lista de pesquisa aparece abaixo com 11 anunciantes para enriquecimento e validação.</div>
+    <div class="operator">
+      <label>Seu nome (obrigatório para registrar ação)
+        <input id="operatorName" autocomplete="name" placeholder="Ex.: SDR 01">
+      </label>
+      <div class="summary">
+        <span class="pill"><strong id="countApproached">0</strong> abordados</span>
+        <span class="pill"><strong id="countResearching">0</strong> em pesquisa</span>
+        <span class="pill"><strong id="countPending">38</strong> pendentes</span>
+      </div>
+    </div>
+    <div id="notice"></div>
+    <div class="warn">Ao registrar a abordagem, o botão de WhatsApp fica vermelho para toda a equipe. Nenhuma mensagem é enviada automaticamente por esta página.</div>
   </header>
   <section>
-    <h2 class="section-title">Prospecção iniciada - WhatsApp validado</h2>
-    <p class="section-note">Cards prontos para revisão manual. Se um lead tiver dois WhatsApps encontrados, os dois botões ficam juntos no mesmo card.</p>
+    <h2 class="section-title">Lista 1 - Prospecção iniciada: WhatsApp validado</h2>
+    <p class="section-note">Os cards ficam sempre nesta ordem. Se um lead tiver mais de um WhatsApp confirmado, os botões permanecem juntos no mesmo card.</p>
     <div class="grid">
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="anti-1" data-lead-name="Anti Multas Soluções em CNH" data-order="1" data-status="pending">
     <div class="top">
       <span>#1</span>
       <h2>Anti Multas Soluções em CNH</h2>
       <b>2 WhatsApps encontrados</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5519999969192&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (19) 99996-9192</a><a class="whatsapp" href="https://api.whatsapp.com/send?phone=5519974125620&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (19) 97412-5620</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5519999969192&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (19) 99996-9192</a><a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5519974125620&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (19) 97412-5620</a>
       <a class="google" href="https://www.google.com/search?q=Anti%20Multas%20Solu%C3%A7%C3%B5es%20em%20CNH%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="doutor-2" data-lead-name="Doutor Multas" data-order="2" data-status="pending">
     <div class="top">
       <span>#2</span>
       <h2>Doutor Multas</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5511935350152&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (11) 93535-0152</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5511935350152&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (11) 93535-0152</a>
       <a class="google" href="https://www.google.com/search?q=Doutor%20Multas%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="easy-3" data-lead-name="Easy Multas" data-order="3" data-status="pending">
     <div class="top">
       <span>#3</span>
       <h2>Easy Multas</h2>
       <b>2 WhatsApps encontrados</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5549991912364&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (49) 99191-2364</a><a class="whatsapp" href="https://api.whatsapp.com/send?phone=5521995267744&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (21) 99526-7744</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5549991912364&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (49) 99191-2364</a><a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5521995267744&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (21) 99526-7744</a>
       <a class="google" href="https://www.google.com/search?q=Easy%20Multas%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="elite-4" data-lead-name="Elite Trânsito" data-order="4" data-status="pending">
     <div class="top">
       <span>#4</span>
       <h2>Elite Trânsito</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5547996156027&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (47) 99615-6027</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5547996156027&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (47) 99615-6027</a>
       <a class="google" href="https://www.google.com/search?q=Elite%20Tr%C3%A2nsito%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="facilite-5" data-lead-name="Facilite Multas" data-order="5" data-status="pending">
     <div class="top">
       <span>#5</span>
       <h2>Facilite Multas</h2>
       <b>3 WhatsApps encontrados</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5519994676813&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (19) 99467-6813</a><a class="whatsapp" href="https://api.whatsapp.com/send?phone=5511994187695&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (11) 99418-7695</a><a class="whatsapp" href="https://api.whatsapp.com/send?phone=5515996989110&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (15) 99698-9110</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5519994676813&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (19) 99467-6813</a><a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5511994187695&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (11) 99418-7695</a><a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5515996989110&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (15) 99698-9110</a>
       <a class="google" href="https://www.google.com/search?q=Facilite%20Multas%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="garage-garagem-6" data-lead-name="Garage Multas / Garagem Multas" data-order="6" data-status="pending">
     <div class="top">
       <span>#6</span>
       <h2>Garage Multas / Garagem Multas</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5546999300432&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (46) 99930-0432</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5546999300432&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (46) 99930-0432</a>
       <a class="google" href="https://www.google.com/search?q=Garage%20Multas%20%2F%20Garagem%20Multas%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="habilitrans-7" data-lead-name="Habilitrans Recursos de Trânsito" data-order="7" data-status="pending">
     <div class="top">
       <span>#7</span>
       <h2>Habilitrans Recursos de Trânsito</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5521965308350&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (21) 96530-8350</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5521965308350&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (21) 96530-8350</a>
       <a class="google" href="https://www.google.com/search?q=Habilitrans%20Recursos%20de%20Tr%C3%A2nsito%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="help-balneario-camboriu-8" data-lead-name="Help Multas Balneário Camboriú" data-order="8" data-status="pending">
     <div class="top">
       <span>#8</span>
       <h2>Help Multas Balneário Camboriú</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5542999839160&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (42) 99983-9160</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5542999839160&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (42) 99983-9160</a>
       <a class="google" href="https://www.google.com/search?q=Help%20Multas%20Balne%C3%A1rio%20Cambori%C3%BA%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="help-criciuma-9" data-lead-name="Help Multas Criciúma" data-order="9" data-status="pending">
     <div class="top">
       <span>#9</span>
       <h2>Help Multas Criciúma</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5549998010943&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (49) 99801-0943</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5549998010943&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (49) 99801-0943</a>
       <a class="google" href="https://www.google.com/search?q=Help%20Multas%20Crici%C3%BAma%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="help-curitiba-centro-10" data-lead-name="Help Multas Curitiba Centro" data-order="10" data-status="pending">
     <div class="top">
       <span>#10</span>
       <h2>Help Multas Curitiba Centro</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5541992753736&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (41) 99275-3736</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5541992753736&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (41) 99275-3736</a>
       <a class="google" href="https://www.google.com/search?q=Help%20Multas%20Curitiba%20Centro%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="help-pato-branco-11" data-lead-name="Help Multas Pato Branco" data-order="11" data-status="pending">
     <div class="top">
       <span>#11</span>
       <h2>Help Multas Pato Branco</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5519991276167&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (19) 99127-6167</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5519991276167&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (19) 99127-6167</a>
       <a class="google" href="https://www.google.com/search?q=Help%20Multas%20Pato%20Branco%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="help-sao-jose-sc-12" data-lead-name="Help Multas São José SC" data-order="12" data-status="pending">
     <div class="top">
       <span>#12</span>
       <h2>Help Multas São José SC</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5548991949006&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (48) 99194-9006</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5548991949006&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (48) 99194-9006</a>
       <a class="google" href="https://www.google.com/search?q=Help%20Multas%20S%C3%A3o%20Jos%C3%A9%20SC%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="jenny-scremim-13" data-lead-name="Jenny Scremim Assessoria de Trânsito" data-order="13" data-status="pending">
     <div class="top">
       <span>#13</span>
       <h2>Jenny Scremim Assessoria de Trânsito</h2>
       <b>2 WhatsApps encontrados</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5541991655813&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (41) 99165-5813</a><a class="whatsapp" href="https://api.whatsapp.com/send?phone=5544988580965&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (44) 98858-0965</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5541991655813&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (41) 99165-5813</a><a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5544988580965&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (44) 98858-0965</a>
       <a class="google" href="https://www.google.com/search?q=Jenny%20Scremim%20Assessoria%20de%20Tr%C3%A2nsito%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="luan-nunes-14" data-lead-name="Luan Nunes Advogado" data-order="14" data-status="pending">
     <div class="top">
       <span>#14</span>
       <h2>Luan Nunes Advogado</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5575999309462&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (75) 99930-9462</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5575999309462&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (75) 99930-9462</a>
       <a class="google" href="https://www.google.com/search?q=Luan%20Nunes%20Advogado%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="marcia-brum-15" data-lead-name="Marcia Brum" data-order="15" data-status="pending">
     <div class="top">
       <span>#15</span>
       <h2>Marcia Brum</h2>
       <b>2 WhatsApps encontrados</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5521984380987&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (21) 98438-0987</a><a class="whatsapp" href="https://api.whatsapp.com/send?phone=5549991609293&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (49) 99160-9293</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5521984380987&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (21) 98438-0987</a><a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5549991609293&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (49) 99160-9293</a>
       <a class="google" href="https://www.google.com/search?q=Marcia%20Brum%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="mascarenhas-sanches-advogados-formulario-fb-16" data-lead-name="Mascarenhas Sanches Advogados - formulário FB" data-order="16" data-status="pending">
     <div class="top">
       <span>#16</span>
       <h2>Mascarenhas Sanches Advogados - formulário FB</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5517991492934&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (17) 99149-2934</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5517991492934&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (17) 99149-2934</a>
       <a class="google" href="https://www.google.com/search?q=Mascarenhas%20Sanches%20Advogados%20-%20formul%C3%A1rio%20FB%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="mega-17" data-lead-name="Mega Soluções em CNH" data-order="17" data-status="pending">
     <div class="top">
       <span>#17</span>
       <h2>Mega Soluções em CNH</h2>
       <b>3 WhatsApps encontrados</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5511985912970&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (11) 98591-2970</a><a class="whatsapp" href="https://api.whatsapp.com/send?phone=5511966567802&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (11) 96656-7802</a><a class="whatsapp" href="https://api.whatsapp.com/send?phone=5515996598838&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (15) 99659-8838</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5511985912970&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (11) 98591-2970</a><a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5511966567802&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (11) 96656-7802</a><a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5515996598838&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (15) 99659-8838</a>
       <a class="google" href="https://www.google.com/search?q=Mega%20Solu%C3%A7%C3%B5es%20em%20CNH%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="mg-18" data-lead-name="MG Multas" data-order="18" data-status="pending">
     <div class="top">
       <span>#18</span>
       <h2>MG Multas</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5519994676813&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (19) 99467-6813</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5519994676813&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (19) 99467-6813</a>
       <a class="google" href="https://www.google.com/search?q=MG%20Multas%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="multiplas-resolucoes-19" data-lead-name="Múltiplas Resoluções Assessoria" data-order="19" data-status="pending">
     <div class="top">
       <span>#19</span>
       <h2>Múltiplas Resoluções Assessoria</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5549999744418&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (49) 99974-4418</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5549999744418&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (49) 99974-4418</a>
       <a class="google" href="https://www.google.com/search?q=M%C3%BAltiplas%20Resolu%C3%A7%C3%B5es%20Assessoria%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="queiroz-direito-20" data-lead-name="Queiróz - Consultoria em Direito de Trânsito" data-order="20" data-status="pending">
     <div class="top">
       <span>#20</span>
       <h2>Queiróz - Consultoria em Direito de Trânsito</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5531994004123&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (31) 99400-4123</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5531994004123&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (31) 99400-4123</a>
       <a class="google" href="https://www.google.com/search?q=Queir%C3%B3z%20-%20Consultoria%20em%20Direito%20de%20Tr%C3%A2nsito%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="suspensao-sturmer-21" data-lead-name="Recursos De Suspensão Da CNH - Stürmer Recursos De Multas" data-order="21" data-status="pending">
     <div class="top">
       <span>#21</span>
       <h2>Recursos De Suspensão Da CNH - Stürmer Recursos De Multas</h2>
       <b>2 WhatsApps encontrados</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5549988504498&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (49) 98850-4498</a><a class="whatsapp" href="https://api.whatsapp.com/send?phone=5549999467573&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (49) 99946-7573</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5549988504498&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (49) 98850-4498</a><a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5549999467573&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (49) 99946-7573</a>
       <a class="google" href="https://www.google.com/search?q=Recursos%20De%20Suspens%C3%A3o%20Da%20CNH%20-%20St%C3%BCrmer%20Recursos%20De%20Multas%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="regularize-mt-22" data-lead-name="Regularize Multas MT" data-order="22" data-status="pending">
     <div class="top">
       <span>#22</span>
       <h2>Regularize Multas MT</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5519994676813&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (19) 99467-6813</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5519994676813&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (19) 99467-6813</a>
       <a class="google" href="https://www.google.com/search?q=Regularize%20Multas%20MT%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="rios-23" data-lead-name="Rios Advocacia" data-order="23" data-status="pending">
     <div class="top">
       <span>#23</span>
       <h2>Rios Advocacia</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5592984748242&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (92) 98474-8242</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5592984748242&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (92) 98474-8242</a>
       <a class="google" href="https://www.google.com/search?q=Rios%20Advocacia%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="rodrigues-oliveira-24" data-lead-name="Rodrigues &amp; Oliveira Soluções em CNH" data-order="24" data-status="pending">
     <div class="top">
       <span>#24</span>
       <h2>Rodrigues &amp; Oliveira Soluções em CNH</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5515988257193&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (15) 98825-7193</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5515988257193&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (15) 98825-7193</a>
       <a class="google" href="https://www.google.com/search?q=Rodrigues%20%26%20Oliveira%20Solu%C3%A7%C3%B5es%20em%20CNH%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="auto-angelus-25" data-lead-name="Auto Angelus Soluções De Trânsito" data-order="25" data-status="pending">
     <div class="top">
       <span>#25</span>
       <h2>Auto Angelus Soluções De Trânsito</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5521960195522&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (21) 96019-5522</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5521960195522&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (21) 96019-5522</a>
       <a class="google" href="https://www.google.com/search?q=Auto%20Angelus%20Solu%C3%A7%C3%B5es%20De%20Tr%C3%A2nsito%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="borges-advogados-26" data-lead-name="Borges Advogados" data-order="26" data-status="pending">
     <div class="top">
       <span>#26</span>
       <h2>Borges Advogados</h2>
       <b>1 WhatsApp encontrado</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5544999426597&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (44) 99942-6597</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5544999426597&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (44) 99942-6597</a>
       <a class="google" href="https://www.google.com/search?q=Borges%20Advogados%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Telefone encontrado em resultado publico do Google</p>
   </article>
 
 
-  <article class="card">
+  <article class="card" data-list-id="cnh-abordagem-validada-2026-05" data-lead-key="castro-co-defesas-administrativas-27" data-lead-name="Castro &amp; CO. Defesas Administrativas" data-order="27" data-status="pending">
     <div class="top">
       <span>#27</span>
       <h2>Castro &amp; CO. Defesas Administrativas</h2>
       <b>2 WhatsApps encontrados</b>
     </div>
     <div class="actions">
-      <a class="whatsapp" href="https://api.whatsapp.com/send?phone=5544999426597&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (44) 99942-6597</a><a class="whatsapp" href="https://api.whatsapp.com/send?phone=5542999839160&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (42) 99983-9160</a>
+      <a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5544999426597&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (44) 99942-6597</a><a class="whatsapp tracked-whatsapp" href="https://api.whatsapp.com/send?phone=5542999839160&amp;text=Ol%C3%A1%2C%20tudo%20bem%3F%20Encontrei%20seu%20contato%20no%20Google%20Meu%20Neg%C3%B3cio.%0A%0ASei%20que%20voc%C3%AA%20deve%20receber%20mensagens%20de%20diversas%20ag%C3%AAncias%20oferecendo%20tr%C3%A1fego%2C%20que%20s%C3%B3%20atrai%20curiosos%2C%20mas%20n%C3%A3o%20%C3%A9%20sobre%20isso%20que%20gostaria%20de%20falar%20com%20voc%C3%AA.%0A%0ACriamos%20e%20validamos%20em%20v%C3%A1rios%20escrit%C3%B3rios%20um%20Ecossistema%20de%20IA%20Vertical%20que%20transforma%20a%20prospec%C3%A7%C3%A3o%20para%20advogados%20de%20tr%C3%A2nsito.%20Nossa%20IA%20%C3%A9%20capaz%20de%20usar%20editais%20p%C3%BAblicos%20e%20Big%20Data%20para%20cruzar%20dados%20de%20pessoas%20que%20ser%C3%A3o%20penalizadas%2C%20gerando%20um%20fluxo%20di%C3%A1rio%20de%20no%20m%C3%ADnimo%2020%20mensagens%20no%20seu%20WhatsApp.%0A%0AZero%20Depend%C3%AAncia%20de%20Tr%C3%A1fego%2C%20a%20IA%20qualifica%20e%20organiza%20no%20CRM%2C%20voc%C3%AA%20s%C3%B3%20atende%20quem%20ir%C3%A1%20fechar%20contrato.%0A%0ASe%20tiver%20interesse%2C%20posso%20te%20mostrar%20um%20estudo%20de%20caso%20para%20compreender%20como%20funciona%20na%20pr%C3%A1tica.%20Al%C3%A9m%20da%20condi%C3%A7%C3%A3o%20exclusiva%20com%20um%20%C3%BAnico%20investimento%20para%20ter%20todos%20os%20recursos%20do%20sistema%20liberados%20e%20ter%20uma%20fonte%20de%20prospec%C3%A7%C3%A3o%20de%20clientes." target="_blank" rel="noopener noreferrer">WhatsApp (42) 99983-9160</a>
       <a class="google" href="https://www.google.com/search?q=Castro%20%26%20CO.%20Defesas%20Administrativas%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook&amp;hl=pt-BR&amp;pws=0" target="_blank" rel="noopener noreferrer">Conferir no Google</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark approached" data-set-status="approached">Marcar abordado</button>
+      <button type="button" class="mark replied" data-set-status="replied">Respondeu</button>
+      <button type="button" class="mark meeting" data-set-status="meeting">Reunião</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Pendente de abordagem</div>
     <p>Em qualquer idioma</p>
   </article>
 </div>
   </section>
   <section>
-    <h2 class="section-title">Novos anunciantes encontrados agora - pesquisar contato</h2>
-    <p class="section-note">Resultado da varredura Meta Ads por multa cnh. Estes nomes ainda não aparecem na fila acima; primeiro valide o contato correto no Google/Meta e depois mova para abordagem.</p>
+    <h2 class="section-title">Lista 2 - Nova pesquisa de anunciantes: validar contato</h2>
+    <p class="section-note">Anunciantes localizados nos anúncios da Meta que ainda não entraram na prospecção acima. Marque o que já está em pesquisa para nenhum SDR duplicar trabalho.</p>
     <div class="grid">
-  <article class="card new-lead">
+  <article class="card new-lead" data-list-id="cnh-nova-pesquisa-2026-05-25" data-lead-key="br-1" data-lead-name="BR Multas" data-order="1" data-status="pending">
     <div class="top">
       <span>Novo #1</span>
       <h2>BR Multas</h2>
@@ -436,6 +657,12 @@
       <a class="google" href="https://www.google.com/search?q=BR%20Multas%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Buscar contato no Google</a>
       <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=BR%20Multas&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando pesquisa de contato</div>
     <p>Ativo Identificação da biblioteca: 1793283458029533 Veiculação iniciada em 8 de dez de 2025 Plataformas ​ ​ Abrir menu suspenso ​ Ver detalhes do anúncio BR Multas Patrocinado Tudo por um detalhe que muita gente nem percebe no dia a dia. Fique atento ao volante e, se a multa chegar, o BR Multas recorre por você! 😉 #TrânsitoConsciente #ProteçãoDeCNH #BRMultas 0:00 / 0:36 INSTAGRAM.COM BR Multas Acessar o perfil do Instagram ​</p>
     <details>
       <summary>IDs capturados</summary>
@@ -444,7 +671,7 @@
   </article>
 
 
-  <article class="card new-lead">
+  <article class="card new-lead" data-list-id="cnh-nova-pesquisa-2026-05-25" data-lead-key="adv-julia-ribas-2" data-lead-name="Adv. Julia Ribas" data-order="2" data-status="pending">
     <div class="top">
       <span>Novo #2</span>
       <h2>Adv. Julia Ribas</h2>
@@ -455,6 +682,12 @@
       <a class="google" href="https://www.google.com/search?q=Adv.%20Julia%20Ribas%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Buscar contato no Google</a>
       <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Adv.%20Julia%20Ribas&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando pesquisa de contato</div>
     <p>Ativo Identificação da biblioteca: 3883789801751398 Veiculação iniciada em 1 de mai de 2026 Plataformas ​ ​ Abrir menu suspenso ​ Ver detalhes do anúncio Adv. Julia Ribas Patrocinado CNH perdida por UMA multa! a maioria dos motoristas acredita que a suspensão só acontece quando há acúmulo de pontos… mas não é bem assim. existem infrações que, por si só, já abrem processo de suspensão do direito de dirigir e é exatamente por isso que tantas pessoas se assustam quando recebem a notificação fica o alerta 🚨 pois enten</p>
     <details>
       <summary>IDs capturados</summary>
@@ -463,7 +696,7 @@
   </article>
 
 
-  <article class="card new-lead">
+  <article class="card new-lead" data-list-id="cnh-nova-pesquisa-2026-05-25" data-lead-key="sem-3" data-lead-name="CNH sem multas" data-order="3" data-status="pending">
     <div class="top">
       <span>Novo #3</span>
       <h2>CNH sem multas</h2>
@@ -474,6 +707,12 @@
       <a class="google" href="https://www.google.com/search?q=CNH%20sem%20multas%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Buscar contato no Google</a>
       <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=CNH%20sem%20multas&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando pesquisa de contato</div>
     <p>Ativo Identificação da biblioteca: 2481990042319441 Veiculação iniciada em 27 de fev de 2026 Plataformas ​ ​ Abrir menu suspenso ​ Ver detalhes do anúncio CNH sem multas Patrocinado Motorista, você tem algum problema ou dúvidas sobre a sua CNH? 👉👉 segue o @cnh.sem.multas 0:00 / 0:33 INSTAGRAM.COM CNH sem multas Acessar o perfil do Instagram ​</p>
     <details>
       <summary>IDs capturados</summary>
@@ -482,7 +721,7 @@
   </article>
 
 
-  <article class="card new-lead">
+  <article class="card new-lead" data-list-id="cnh-nova-pesquisa-2026-05-25" data-lead-key="despachante-beto-dehon-4" data-lead-name="Despachante Beto Dehon" data-order="4" data-status="pending">
     <div class="top">
       <span>Novo #4</span>
       <h2>Despachante Beto Dehon</h2>
@@ -493,6 +732,12 @@
       <a class="google" href="https://www.google.com/search?q=Despachante%20Beto%20Dehon%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Buscar contato no Google</a>
       <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Despachante%20Beto%20Dehon&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando pesquisa de contato</div>
     <p>Ativo Identificação da biblioteca: 2098136940745237 Veiculação iniciada em 30 de abr de 2026 Plataformas ​ ​ Abrir menu suspenso ​ Ver detalhes do anúncio Despachante Beto Dehon Patrocinado Licenciamento atrasado? 🚗⚠️ Cuidado: isso pode gerar multa, pontos na CNH e até apreensão do veículo! Não deixe pra última hora. Venha no Despachante Beto Dehon ou entre em contato conosco que a gente resolve tudo pra você! 💼✅#despachante#tubarao#licenciamento#betodehon#veiculo 0:00 / 0:27 INSTAGRAM.COM Despachante Beto Dehon </p>
     <details>
       <summary>IDs capturados</summary>
@@ -501,7 +746,7 @@
   </article>
 
 
-  <article class="card new-lead">
+  <article class="card new-lead" data-list-id="cnh-nova-pesquisa-2026-05-25" data-lead-key="despachante-nilsinho-5" data-lead-name="Despachante Nilsinho" data-order="5" data-status="pending">
     <div class="top">
       <span>Novo #5</span>
       <h2>Despachante Nilsinho</h2>
@@ -512,6 +757,12 @@
       <a class="google" href="https://www.google.com/search?q=Despachante%20Nilsinho%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Buscar contato no Google</a>
       <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Despachante%20Nilsinho&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando pesquisa de contato</div>
     <p>Ativo Identificação da biblioteca: 2021749852025062 Veiculação iniciada em 18 de mar de 2026 Plataformas ​ ​ Abrir menu suspenso ​ Ver detalhes do anúncio Despachante Nilsinho Patrocinado Muitos motoristas só descobrem pendências quando já é tarde demais. Multas “invisíveis” se acumulam silenciosamente até virar problema. 🚫 Abordagem 🚫 Multa 🚫 Pontos na CNH 🚫 Veículo retido Com mais de 20 anos de experiência, o Despachante Nilsinho identifica riscos antes que eles cheguem até você. 📲 Regularize com antecedênci</p>
     <details>
       <summary>IDs capturados</summary>
@@ -520,7 +771,7 @@
   </article>
 
 
-  <article class="card new-lead">
+  <article class="card new-lead" data-list-id="cnh-nova-pesquisa-2026-05-25" data-lead-key="dso-6" data-lead-name="Dso soluçoes" data-order="6" data-status="pending">
     <div class="top">
       <span>Novo #6</span>
       <h2>Dso soluçoes</h2>
@@ -531,6 +782,12 @@
       <a class="google" href="https://www.google.com/search?q=Dso%20solu%C3%A7oes%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Buscar contato no Google</a>
       <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Dso%20solu%C3%A7oes&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando pesquisa de contato</div>
     <p>Ativo Identificação da biblioteca: 929332873195522 Veiculação iniciada em 7 de abr de 2026 Plataformas ​ ​ ​ ​ Abrir menu suspenso ​ Ver detalhes do anúncio Dso soluçoes Patrocinado Você sabia que algumas multas podem ser anuladas por erro do próprio sistema? 😳 Isso mesmo. Milhares de motoristas estão conseguindo cancelar penalidades e evitar a suspensão da CNH. NÃO PAGUE MULTA SEM VER ISSO! 🔧 DESCRIÇÃO COMPLETA DOS SERVIÇOS Oferecemos assessoria especializada na análise e defesa de multas de trânsito e processos</p>
     <details>
       <summary>IDs capturados</summary>
@@ -539,7 +796,7 @@
   </article>
 
 
-  <article class="card new-lead">
+  <article class="card new-lead" data-list-id="cnh-nova-pesquisa-2026-05-25" data-lead-key="jr-recursomulta-7" data-lead-name="Jr.RecursoMulta" data-order="7" data-status="pending">
     <div class="top">
       <span>Novo #7</span>
       <h2>Jr.RecursoMulta</h2>
@@ -550,6 +807,12 @@
       <a class="google" href="https://www.google.com/search?q=Jr.RecursoMulta%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Buscar contato no Google</a>
       <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Jr.RecursoMulta&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando pesquisa de contato</div>
     <p>Ativo Identificação da biblioteca: 798647719317374 Veiculação iniciada em 26 de set de 2025 Plataformas ​ ​ ​ ​ ​ 2 anúncios usam esse criativo e esse texto Abrir menu suspenso ​ Ver resumo Jr.RecursoMulta Patrocinado 🚫 RECUSOU O BAFÔMETRO? TEM COMO RECORRER! 🔴 Multa de R$ 2.934,70 🔴 Suspensão da CNH por 1 ano ⚠️ Você tem direito à defesa. 0:00 / 1:01 ​</p>
     <details>
       <summary>IDs capturados</summary>
@@ -558,7 +821,7 @@
   </article>
 
 
-  <article class="card new-lead">
+  <article class="card new-lead" data-list-id="cnh-nova-pesquisa-2026-05-25" data-lead-key="ml-8" data-lead-name="ML. Multas" data-order="8" data-status="pending">
     <div class="top">
       <span>Novo #8</span>
       <h2>ML. Multas</h2>
@@ -569,6 +832,12 @@
       <a class="google" href="https://www.google.com/search?q=ML.%20Multas%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Buscar contato no Google</a>
       <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=ML.%20Multas&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando pesquisa de contato</div>
     <p>Ativo Identificação da biblioteca: 4461262470782966 Veiculação iniciada em 27 de abr de 2026 Plataformas ​ ​ ​ ​ ​ 3 anúncios usam esse criativo e esse texto Abrir menu suspenso ​ Ver resumo ML. Multas Patrocinado Procura-se motorista que levou multa da lei seca ⚠ Se quiser saber como reverter essa situação é só nos chamar pelo botão abaixo! 0:00 / 0:24 ​</p>
     <details>
       <summary>IDs capturados</summary>
@@ -577,7 +846,7 @@
   </article>
 
 
-  <article class="card new-lead">
+  <article class="card new-lead" data-list-id="cnh-nova-pesquisa-2026-05-25" data-lead-key="novakoski-arruda-advogados-9" data-lead-name="Novakoski arruda - Advogados" data-order="9" data-status="pending">
     <div class="top">
       <span>Novo #9</span>
       <h2>Novakoski arruda - Advogados</h2>
@@ -588,6 +857,12 @@
       <a class="google" href="https://www.google.com/search?q=Novakoski%20arruda%20-%20Advogados%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Buscar contato no Google</a>
       <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Novakoski%20arruda%20-%20Advogados&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando pesquisa de contato</div>
     <p>Ativo Identificação da biblioteca: 1255230226774870 Veiculação iniciada em 27 de mar de 2026 Plataformas ​ 2 anúncios usam esse criativo e esse texto Abrir menu suspenso ​ Ver resumo Novakoski arruda - Advogados Patrocinado 🚫 Sua CNH foi suspensa e você não sabe o que fazer? Se você recebeu uma notificação de suspensão, saiba que ainda é possível recorrer — inclusive por vias judiciais — com apoio de um advogado especializado. Cada caso deve ser analisado de forma individual. 🔎 No link abaixo, você pode iniciar u</p>
     <details>
       <summary>IDs capturados</summary>
@@ -596,7 +871,7 @@
   </article>
 
 
-  <article class="card new-lead">
+  <article class="card new-lead" data-list-id="cnh-nova-pesquisa-2026-05-25" data-lead-key="prof-rodrigo-lima-10" data-lead-name="Prof. Rodrigo Lima" data-order="10" data-status="pending">
     <div class="top">
       <span>Novo #10</span>
       <h2>Prof. Rodrigo Lima</h2>
@@ -607,6 +882,12 @@
       <a class="google" href="https://www.google.com/search?q=Prof.%20Rodrigo%20Lima%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Buscar contato no Google</a>
       <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Prof.%20Rodrigo%20Lima&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando pesquisa de contato</div>
     <p>Ativo Identificação da biblioteca: 1396479764987339 Veiculação iniciada em 19 de fev de 2026 Plataformas ​ ​ ​ ​ ​ 3 anúncios usam esse criativo e esse texto Abrir menu suspenso ​ Ver resumo Prof. Rodrigo Lima Patrocinado 🚨 Recusou o bafômetro? Isso não significa que você perdeu tudo. ❌ O maior erro é perder prazo ou fazer recurso genérico. ✅ O certo é avaliar o processo com quem entende. Ficou com dúvida sobre o seu caso? Me chama no direct. 0:00 / 1:07 ​</p>
     <details>
       <summary>IDs capturados</summary>
@@ -615,7 +896,7 @@
   </article>
 
 
-  <article class="card new-lead">
+  <article class="card new-lead" data-list-id="cnh-nova-pesquisa-2026-05-25" data-lead-key="tiago-tocchetto-11" data-lead-name="Transito - Tiago Tocchetto Advogado" data-order="11" data-status="pending">
     <div class="top">
       <span>Novo #11</span>
       <h2>Transito - Tiago Tocchetto Advogado</h2>
@@ -626,6 +907,12 @@
       <a class="google" href="https://www.google.com/search?q=Transito%20-%20Tiago%20Tocchetto%20Advogado%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Buscar contato no Google</a>
       <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Transito%20-%20Tiago%20Tocchetto%20Advogado&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
     </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando pesquisa de contato</div>
     <p>Ativo Identificação da biblioteca: 1209084684773701 Veiculação iniciada em 6 de fev de 2026 Plataformas ​ ​ 3 anúncios usam esse criativo e esse texto Abrir menu suspenso ​ Ver resumo Transito - Tiago Tocchetto Advogado Patrocinado Pagar a multa com 20% de desconto não faz você perder o direito de recorrer. A lei permite os dois: você pode pagar com desconto e ainda apresentar recurso. Se o recurso for aceito, o valor é devolvido com juros e correção. Aproveitar o desconto não significa abrir mão da defesa — é agir</p>
     <details>
       <summary>IDs capturados</summary>
@@ -634,5 +921,113 @@
   </article>
 </div>
   </section>
+  <script>
+    const operatorInput = document.getElementById("operatorName");
+    const statusLabels = {
+      pending: "Pendente",
+      researching: "Em pesquisa",
+      approached: "Abordado",
+      replied: "Respondeu",
+      meeting: "Reunião agendada",
+      discarded: "Descartado"
+    };
+    operatorInput.value = localStorage.getItem("cnhSdrName") || "";
+    operatorInput.addEventListener("change", () => localStorage.setItem("cnhSdrName", operatorInput.value.trim()));
+
+    function showNotice(text, error = false) {
+      const notice = document.getElementById("notice");
+      notice.textContent = text;
+      notice.className = error ? "error" : "";
+      notice.style.display = "block";
+      window.setTimeout(() => notice.style.display = "none", 3500);
+    }
+
+    function responsibleName() {
+      const name = operatorInput.value.trim();
+      if (!name) {
+        operatorInput.focus();
+        showNotice("Informe seu nome antes de registrar uma ação.", true);
+        return "";
+      }
+      localStorage.setItem("cnhSdrName", name);
+      return name;
+    }
+
+    function refreshCounts() {
+      const statuses = [...document.querySelectorAll(".card")].map(card => card.dataset.status || "pending");
+      document.getElementById("countApproached").textContent = statuses.filter(status => ["approached", "replied", "meeting"].includes(status)).length;
+      document.getElementById("countResearching").textContent = statuses.filter(status => status === "researching").length;
+      document.getElementById("countPending").textContent = statuses.filter(status => status === "pending").length;
+    }
+
+    function applyStatus(card, record) {
+      const status = record?.status || "pending";
+      card.classList.remove("status-pending", "status-researching", "status-approached", "status-replied", "status-meeting", "status-discarded");
+      card.classList.add("status-" + status);
+      card.dataset.status = status;
+      const owner = record?.owner_name ? " · " + record.owner_name : "";
+      const time = record?.updated_at ? " · " + new Date(record.updated_at).toLocaleString("pt-BR") : "";
+      card.querySelector(".status-line").textContent = (statusLabels[status] || status) + owner + time;
+      refreshCounts();
+    }
+
+    async function saveStatus(card, status) {
+      const ownerName = responsibleName();
+      if (!ownerName) return false;
+      const previousStatus = card.dataset.status || "pending";
+      applyStatus(card, { status, owner_name: ownerName, updated_at: new Date().toISOString() });
+      try {
+        const url = "/api/prospecting/lists/" + encodeURIComponent(card.dataset.listId) + "/leads/" + encodeURIComponent(card.dataset.leadKey) + "/status";
+        const response = await fetch(url, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status, leadName: card.dataset.leadName, ownerName })
+        });
+        if (!response.ok) throw new Error("Não foi possível salvar");
+        const saved = await response.json();
+        applyStatus(card, saved.lead);
+        showNotice("Status compartilhado atualizado.");
+        return true;
+      } catch (error) {
+        applyStatus(card, { status: previousStatus });
+        showNotice("Não foi possível salvar o status. Tente novamente.", true);
+        return false;
+      }
+    }
+
+    async function loadStatuses() {
+      const listIds = [...new Set([...document.querySelectorAll(".card")].map(card => card.dataset.listId))];
+      await Promise.all(listIds.map(async listId => {
+        try {
+          const response = await fetch("/api/prospecting/lists/" + encodeURIComponent(listId) + "/statuses");
+          if (!response.ok) return;
+          const result = await response.json();
+          const byKey = new Map((result.statuses || []).map(item => [item.lead_key, item]));
+          document.querySelectorAll('.card[data-list-id="' + listId + '"]').forEach(card => {
+            const saved = byKey.get(card.dataset.leadKey);
+            if (saved) applyStatus(card, saved);
+          });
+        } catch (error) {
+          showNotice("Não foi possível carregar os status compartilhados.", true);
+        }
+      }));
+      refreshCounts();
+    }
+
+    document.querySelectorAll("[data-set-status]").forEach(button => {
+      button.addEventListener("click", () => saveStatus(button.closest(".card"), button.dataset.setStatus));
+    });
+    document.querySelectorAll(".tracked-whatsapp").forEach(link => {
+      link.addEventListener("click", event => {
+        if (!responsibleName()) {
+          event.preventDefault();
+          return;
+        }
+        saveStatus(link.closest(".card"), "approached");
+      });
+    });
+    refreshCounts();
+    loadStatuses();
+  </script>
 </body>
 </html>

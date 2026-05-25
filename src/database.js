@@ -295,6 +295,21 @@ class DatabaseManager {
       )
     `);
 
+    await this.run(`
+      CREATE TABLE IF NOT EXISTS prospecting_lead_status (
+        list_id TEXT NOT NULL,
+        lead_key TEXT NOT NULL,
+        lead_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        owner_name TEXT,
+        notes TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (list_id, lead_key)
+      )
+    `);
+
+    await this.run(`CREATE INDEX IF NOT EXISTS idx_prospecting_lead_status_updated ON prospecting_lead_status(updated_at DESC)`);
     await this.run(`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)`);
 
     const adminExists = await this.get('SELECT id FROM users WHERE email = $1', ['admin@flow.com']);

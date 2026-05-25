@@ -913,6 +913,88 @@ app.get('/health', (req, res) => {
 });
 
 // Diagnóstico do RemoteAuth — lista sessões salvas no PostgreSQL
+let prospectingTableReady;
+async function ensureProspectingTable() {
+  if (!prospectingTableReady) {
+    prospectingTableReady = db.run(`
+      CREATE TABLE IF NOT EXISTS prospecting_lead_status (
+        list_id TEXT NOT NULL,
+        lead_key TEXT NOT NULL,
+        lead_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        owner_name TEXT,
+        notes TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (list_id, lead_key)
+      )
+    `).catch(error => {
+      prospectingTableReady = null;
+      throw error;
+    });
+  }
+  return prospectingTableReady;
+}
+
+function isSafeProspectingId(value) {
+  return typeof value === 'string' && /^[a-zA-Z0-9:_-]{1,120}$/.test(value);
+}
+
+// Shared board state stores only operational status, SDR and displayed business name.
+app.get('/api/prospecting/lists/:listId/statuses', async (req, res) => {
+  try {
+    const { listId } = req.params;
+    if (!isSafeProspectingId(listId)) {
+      return res.status(400).json({ error: 'Lista invalida' });
+    }
+    await ensureProspectingTable();
+    const statuses = await db.all(
+      `SELECT lead_key, lead_name, status, owner_name, notes, updated_at
+       FROM prospecting_lead_status
+       WHERE list_id = $1`,
+      [listId]
+    );
+    res.json({ success: true, listId, statuses });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/prospecting/lists/:listId/leads/:leadKey/status', async (req, res) => {
+  try {
+    const { listId, leadKey } = req.params;
+    const allowedStatuses = ['pending', 'researching', 'approached', 'replied', 'meeting', 'discarded'];
+    const status = String(req.body.status || '');
+    const leadName = String(req.body.leadName || '').trim().slice(0, 180);
+    const ownerName = String(req.body.ownerName || '').trim().slice(0, 80);
+    const notes = String(req.body.notes || '').trim().slice(0, 500);
+
+    if (!isSafeProspectingId(listId) || !isSafeProspectingId(leadKey)) {
+      return res.status(400).json({ error: 'Lista ou lead invalido' });
+    }
+    if (!allowedStatuses.includes(status) || !leadName || !ownerName) {
+      return res.status(400).json({ error: 'Informe status, nome do lead e SDR responsavel' });
+    }
+
+    await ensureProspectingTable();
+    const result = await db.query(
+      `INSERT INTO prospecting_lead_status (list_id, lead_key, lead_name, status, owner_name, notes, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+       ON CONFLICT (list_id, lead_key) DO UPDATE SET
+         lead_name = EXCLUDED.lead_name,
+         status = EXCLUDED.status,
+         owner_name = EXCLUDED.owner_name,
+         notes = EXCLUDED.notes,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING lead_key, lead_name, status, owner_name, notes, updated_at`,
+      [listId, leadKey, leadName, status, ownerName, notes]
+    );
+    res.json({ success: true, listId, lead: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/remote-auth-status', async (req, res) => {
   try {
     if (!sessionManager.pgStore) {

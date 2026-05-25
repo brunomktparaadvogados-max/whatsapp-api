@@ -58,7 +58,7 @@
     <h1>Sistema Apify de Prospecção CNH</h1>
     <p>Controle operacional para encontrar anunciantes de CNH, bafômetro, Lei Seca, suspensão, cassação e direito de dirigir usando Biblioteca de Anúncios da Meta, Google Search, Google Maps e Instagram. O fluxo preserva a regra principal: nada fictício, só contato com evidência.</p>
     <div class="stats">
-      <div class="stat">3 atores Apify conectados</div>
+      <div class="stat">4 atores Apify conectados</div>
       <div class="stat">10 buscas Meta</div>
       <div class="stat">9 buscas Google</div>
       <div class="stat">18 termos de nicho</div>
@@ -68,7 +68,7 @@
     <aside>
       <h2>Fluxo do agente</h2>
       <ol><li>Coletar anúncios ativos na Biblioteca da Meta com as variações do nicho.</li><li>Normalizar nome do anunciante e remover quem já consta em leads.jsonl, CSVs e documentos anteriores.</li><li>Enriquecer cada anunciante novo no Google Search para achar site, Instagram, Facebook e snippets com telefone.</li><li>Validar no Google Maps quando houver indício de Google Meu Negócio.</li><li>Validar Instagram por handle ou busca de perfil.</li><li>Pontuar lead, anexar evidência e só liberar botão WhatsApp quando houver WhatsApp explícito ou celular declarado como WhatsApp.</li></ol>
-      <div class="rules"><strong>Regra crítica:</strong> telefone fixo não vira WhatsApp. Se houver mais de um WhatsApp válido, fica no mesmo card do lead.</div>
+      <div class="rules"><strong>Regra crítica:</strong> telefone fixo não vira WhatsApp. Instagram não descobre leads por palavra-chave: só valida perfil confirmado. Se houver mais de um WhatsApp válido, fica no mesmo card do lead. O ator da Meta cobra por anúncio capturado; valide o lote piloto antes de ampliar.</div>
       <h2>Filtros de nicho</h2>
       <div class="chips"><span class="chip">cnh</span><span class="chip">bafômetro</span><span class="chip">bafometro</span><span class="chip">lei seca</span><span class="chip">recusa ao bafômetro</span><span class="chip">recusa bafometro</span><span class="chip">suspensão da cnh</span><span class="chip">cnh suspensa</span><span class="chip">cassação cnh</span><span class="chip">cnh cassada</span><span class="chip">direito de dirigir</span><span class="chip">recurso de multa</span><span class="chip">recurso de multas</span><span class="chip">multa de trânsito</span><span class="chip">multas de trânsito</span><span class="chip">detran</span><span class="chip">pontuação cnh</span><span class="chip">regularizar cnh</span></div>
       <h2>Exclusões</h2>
@@ -78,13 +78,13 @@
   <section class="card">
     <div class="card-head">
       <div>
-        <span class="eyebrow">Descoberta por anúncios ativos</span>
+        <span class="eyebrow">apify/facebook-ads-scraper</span>
         <h2>1. Meta Ads Library</h2>
       </div>
-      <span class="status">pipeline atual</span>
+      <span class="status">Apify oficial</span>
     </div>
-    <p>Use as variações abaixo para capturar anunciantes ativos. Depois normalize nome, ID do anúncio, copy, URL de evidência e remova quem já está na memória.</p>
-    <div class="actions">
+    <p>Etapa de descoberta: captura anúncios ativos a partir das pesquisas do nicho. O lote piloto limita 30 resultados por busca (até 300 anúncios); a importação deduplica o anunciante contra a base histórica.</p>
+    <div class="actions"><a href="https://console.apify.com/actors/JJghSZmShuco4j9gJ/input" target="_blank" rel="noopener">Abrir ator</a>
   <a href="https://pt-br.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=multa+cnh&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions" target="_blank" rel="noopener">multa cnh</a>
 
   <a href="https://pt-br.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=direito+de+dirigir&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions" target="_blank" rel="noopener">direito de dirigir</a>
@@ -110,58 +110,39 @@
       <button type="button" data-copy="code-0">Copiar JSON</button>
     </div>
     <pre id="code-0"><code>{
-  &quot;active_status&quot;: &quot;active&quot;,
-  &quot;country&quot;: &quot;BR&quot;,
-  &quot;sort&quot;: &quot;total_impressions_desc&quot;,
-  &quot;queries&quot;: [
-    &quot;multa cnh&quot;,
-    &quot;direito de dirigir&quot;,
-    &quot;cnh suspensa&quot;,
-    &quot;cassação cnh&quot;,
-    &quot;bafometro&quot;,
-    &quot;lei seca recurso&quot;,
-    &quot;recusa bafometro&quot;,
-    &quot;recurso de multa cnh&quot;,
-    &quot;regularizar cnh&quot;,
-    &quot;pontuação cnh&quot;
+  &quot;startUrls&quot;: [
+    {
+      &quot;url&quot;: &quot;https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=multa%20cnh&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions&quot;
+    },
+    {
+      &quot;url&quot;: &quot;https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=direito%20de%20dirigir&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions&quot;
+    },
+    {
+      &quot;url&quot;: &quot;https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=cnh%20suspensa&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions&quot;
+    },
+    {
+      &quot;url&quot;: &quot;https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=cassa%C3%A7%C3%A3o%20cnh&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions&quot;
+    },
+    {
+      &quot;url&quot;: &quot;https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=bafometro&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions&quot;
+    },
+    {
+      &quot;url&quot;: &quot;https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=lei%20seca%20recurso&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions&quot;
+    },
+    {
+      &quot;url&quot;: &quot;https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=recusa%20bafometro&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions&quot;
+    },
+    {
+      &quot;url&quot;: &quot;https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=recurso%20de%20multa%20cnh&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions&quot;
+    },
+    {
+      &quot;url&quot;: &quot;https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=regularizar%20cnh&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions&quot;
+    },
+    {
+      &quot;url&quot;: &quot;https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;is_targeted_country=false&amp;media_type=all&amp;q=pontua%C3%A7%C3%A3o%20cnh&amp;search_type=keyword_unordered&amp;sort_data%5Bdirection%5D=desc&amp;sort_data%5Bmode%5D=total_impressions&quot;
+    }
   ],
-  &quot;include&quot;: [
-    &quot;cnh&quot;,
-    &quot;bafômetro&quot;,
-    &quot;bafometro&quot;,
-    &quot;lei seca&quot;,
-    &quot;recusa ao bafômetro&quot;,
-    &quot;recusa bafometro&quot;,
-    &quot;suspensão da cnh&quot;,
-    &quot;cnh suspensa&quot;,
-    &quot;cassação cnh&quot;,
-    &quot;cnh cassada&quot;,
-    &quot;direito de dirigir&quot;,
-    &quot;recurso de multa&quot;,
-    &quot;recurso de multas&quot;,
-    &quot;multa de trânsito&quot;,
-    &quot;multas de trânsito&quot;,
-    &quot;detran&quot;,
-    &quot;pontuação cnh&quot;,
-    &quot;regularizar cnh&quot;
-  ],
-  &quot;exclude&quot;: [
-    &quot;casamento&quot;,
-    &quot;festa&quot;,
-    &quot;kombucha&quot;,
-    &quot;segurança do trabalho&quot;,
-    &quot;instrumentos de medição&quot;,
-    &quot;etilômetro venda&quot;,
-    &quot;laboratório&quot;,
-    &quot;toxicológico&quot;,
-    &quot;medicina diagnóstica&quot;,
-    &quot;placa mercosul&quot;,
-    &quot;insulfilm&quot;,
-    &quot;auto som&quot;,
-    &quot;moto peças&quot;,
-    &quot;autopeças&quot;,
-    &quot;seminovos&quot;
-  ]
+  &quot;resultsLimit&quot;: 30
 }</code></pre>
   </section>
 
@@ -256,7 +237,7 @@
       </div>
       <span class="status">Apify</span>
     </div>
-    <p>Valida perfis e bios. Use primeiro os handles descobertos no Google/Meta; depois rode a busca por termos para novos perfis.</p>
+    <p>Somente valida perfis e bios encontrados na Meta, Google ou Maps. Pesquisa genérica por palavras-chave foi desativada porque trouxe conteúdo fora do nicho.</p>
     <div class="actions"><a href="https://console.apify.com/actors/shu8hvrXbJbY3Eb9W/input" target="_blank" rel="noopener">Abrir ator</a></div>
     <div class="code-head">
       <strong>Input pronto</strong>
@@ -264,13 +245,12 @@
     </div>
     <pre id="code-3"><code>{
   &quot;directUrls&quot;: [],
-  &quot;search&quot;: &quot;advogado bafometro, advogado lei seca, cnh suspensa, recurso multa cnh, cassação cnh, direito de trânsito&quot;,
-  &quot;searchType&quot;: &quot;user&quot;,
   &quot;resultsType&quot;: &quot;details&quot;,
-  &quot;resultsLimit&quot;: 100,
+  &quot;resultsLimit&quot;: 50,
   &quot;proxyConfig&quot;: {
     &quot;useApifyProxy&quot;: true
-  }
+  },
+  &quot;_workflowNote&quot;: &quot;Nao executar sem preencher directUrls com perfis confirmados na Meta, Google ou Maps. Busca generica por palavra-chave foi removida por baixa aderencia ao nicho.&quot;
 }</code></pre>
   </section>
 </main>
