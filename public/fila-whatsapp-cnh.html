@@ -24,6 +24,7 @@
     .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px; }
     .card { background:#fff; border:1px solid var(--line); border-left:6px solid var(--green); border-radius:10px; padding:16px; box-shadow:0 2px 10px rgba(16,32,51,.06); }
     .new-lead { border-left-color:var(--orange); }
+    .regional-lead { border-left-color:var(--blue); }
     .card.status-approached { border-left-color:var(--red); background:#fffafa; }
     .card.status-replied { border-left-color:var(--purple); }
     .card.status-meeting { border-left-color:var(--blue); }
@@ -57,7 +58,7 @@
 <body>
   <header>
     <h1>Operação SDR CNH - fila compartilhada</h1>
-    <div class="sub">27 leads com WhatsApp validado permanecem primeiro e na ordem original. A nova lista de pesquisa aparece abaixo com 17 anunciantes para enriquecimento e validação.</div>
+    <div class="sub">27 leads com WhatsApp validado permanecem primeiro e na ordem original. Há 17 anunciantes novos da Meta e 30 perfis inéditos do Google Local em TO aguardando validação.</div>
     <div class="operator">
       <label>Seu nome (obrigatório para registrar ação)
         <input id="operatorName" autocomplete="name" placeholder="Ex.: SDR 01">
@@ -65,7 +66,7 @@
       <div class="summary">
         <span class="pill"><strong id="countApproached">0</strong> abordados</span>
         <span class="pill"><strong id="countResearching">0</strong> em pesquisa</span>
-        <span class="pill"><strong id="countPending">44</strong> pendentes</span>
+        <span class="pill"><strong id="countPending">74</strong> pendentes</span>
       </div>
     </div>
     <div id="notice"></div>
@@ -1068,6 +1069,640 @@
       <summary>IDs capturados</summary>
       <small>1504365207888157; 2052410699039581; 983693990914836</small>
     </details>
+  </article>
+</div>
+  </section>
+  <section>
+    <h2 class="section-title">Lista 3 - Tocantins: Google Local para validação</h2>
+    <p class="section-note">Perfis inéditos retornados em buscas locais por advocacia de trânsito em TO. Os cartões com “sinal explícito” têm menção visível a trânsito; os demais ainda exigem confirmar atuação em CNH ou bafômetro antes da abordagem.</p>
+    <div class="grid">
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="pereira-sociedade-individual-1" data-lead-name="Pereira Sociedade Individual de Advocacia" data-order="1" data-status="pending">
+    <div class="top">
+      <span>TO #1</span>
+      <h2>Pereira Sociedade Individual de Advocacia</h2>
+      <b>Palmas - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Palmas%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Pereira%20Sociedade%20Individual%20de%20Advocacia%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Pereira%20Sociedade%20Individual%20de%20Advocacia&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(38) - Advogado · consulta: advogado de trânsito Palmas Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="railan-paiva-2" data-lead-name="Railan Paiva Advocacia &amp; Assessoria" data-order="2" data-status="pending">
+    <div class="top">
+      <span>TO #2</span>
+      <h2>Railan Paiva Advocacia &amp; Assessoria</h2>
+      <b>Palmas - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Palmas%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Railan%20Paiva%20Advocacia%20%26%20Assessoria%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Railan%20Paiva%20Advocacia%20%26%20Assessoria&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 4,9(70) - Serviços jurídicos · consulta: advogado de trânsito Palmas Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="d-avila-flores-marinho-ughini-3" data-lead-name="D'avila, Flores, Marinho e Ughini Advocacia" data-order="3" data-status="pending">
+    <div class="top">
+      <span>TO #3</span>
+      <h2>D'avila, Flores, Marinho e Ughini Advocacia</h2>
+      <b>Palmas - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Palmas%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=D'avila%2C%20Flores%2C%20Marinho%20e%20Ughini%20Advocacia%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=D'avila%2C%20Flores%2C%20Marinho%20e%20Ughini%20Advocacia&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(16) - Serviços jurídicos · consulta: advogado de trânsito Palmas Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="paulo-moraes-4" data-lead-name="Paulo Moraes" data-order="4" data-status="pending">
+    <div class="top">
+      <span>TO #4</span>
+      <h2>Paulo Moraes</h2>
+      <b>Palmas - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Palmas%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Paulo%20Moraes%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Paulo%20Moraes&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 4,8(49) - Serviços jurídicos · consulta: advogado de trânsito Palmas Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="vitorio-wortmann-sociedade-advogados-5" data-lead-name="Vitório &amp; Wortmann Sociedade de Advogados" data-order="5" data-status="pending">
+    <div class="top">
+      <span>TO #5</span>
+      <h2>Vitório &amp; Wortmann Sociedade de Advogados</h2>
+      <b>Palmas - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Palmas%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Vit%C3%B3rio%20%26%20Wortmann%20Sociedade%20de%20Advogados%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Vit%C3%B3rio%20%26%20Wortmann%20Sociedade%20de%20Advogados&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(373) - Advogado · consulta: advogado de trânsito Palmas Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="fantoni-fachine-advogados-associados-6" data-lead-name="FANTONI &amp; FACHINE Advogados Associados" data-order="6" data-status="pending">
+    <div class="top">
+      <span>TO #6</span>
+      <h2>FANTONI &amp; FACHINE Advogados Associados</h2>
+      <b>Palmas - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Palmas%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=FANTONI%20%26%20FACHINE%20Advogados%20Associados%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=FANTONI%20%26%20FACHINE%20Advogados%20Associados&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(28) - Serviços jurídicos · consulta: advogado de trânsito Palmas Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="leo-aires-7" data-lead-name="Leo Aires Advocacia &amp; Assessoria" data-order="7" data-status="pending">
+    <div class="top">
+      <span>TO #7</span>
+      <h2>Leo Aires Advocacia &amp; Assessoria</h2>
+      <b>Palmas - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Palmas%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Leo%20Aires%20Advocacia%20%26%20Assessoria%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Leo%20Aires%20Advocacia%20%26%20Assessoria&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(20) - Advogado(a) civil · consulta: advogado de trânsito Palmas Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="angefica-isabella-8" data-lead-name="Angéfica Isabella | Advogada de Trânsito" data-order="8" data-status="pending">
+    <div class="top">
+      <span>TO #8</span>
+      <h2>Angéfica Isabella | Advogada de Trânsito</h2>
+      <b>Palmas - TO · sinal explícito: trânsito</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Palmas%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Ang%C3%A9fica%20Isabella%20%7C%20Advogada%20de%20Tr%C3%A2nsito%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Ang%C3%A9fica%20Isabella%20%7C%20Advogada%20de%20Tr%C3%A2nsito&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · Nenhum comentário - Serviços jurídicos · consulta: advogado de trânsito Palmas Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="rodrigues-moreira-advogados-escritorio-9" data-lead-name="Rodrigues Moreira Advogados - Escritório de Advocacia" data-order="9" data-status="pending">
+    <div class="top">
+      <span>TO #9</span>
+      <h2>Rodrigues Moreira Advogados - Escritório de Advocacia</h2>
+      <b>Palmas - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Palmas%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Rodrigues%20Moreira%20Advogados%20-%20Escrit%C3%B3rio%20de%20Advocacia%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Rodrigues%20Moreira%20Advogados%20-%20Escrit%C3%B3rio%20de%20Advocacia&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(46) - Advogado · consulta: advogado de trânsito Palmas Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="lucia-amorim-criminalista-10" data-lead-name="Lúcia Amorim Advogada Criminalista" data-order="10" data-status="pending">
+    <div class="top">
+      <span>TO #10</span>
+      <h2>Lúcia Amorim Advogada Criminalista</h2>
+      <b>Palmas - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Palmas%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=L%C3%BAcia%20Amorim%20Advogada%20Criminalista%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=L%C3%BAcia%20Amorim%20Advogada%20Criminalista&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 4,9(38) - Advogado criminal · consulta: advogado de trânsito Palmas Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="cf-11" data-lead-name="CF ADVOCACIA" data-order="11" data-status="pending">
+    <div class="top">
+      <span>TO #11</span>
+      <h2>CF ADVOCACIA</h2>
+      <b>Palmas - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Palmas%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=CF%20ADVOCACIA%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=CF%20ADVOCACIA&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(3) - Advogado · consulta: advogado de trânsito Palmas Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="barros-oliveira-juridica-12" data-lead-name="Barros &amp; Oliveira - Advocacia e Consultoria Jurídica" data-order="12" data-status="pending">
+    <div class="top">
+      <span>TO #12</span>
+      <h2>Barros &amp; Oliveira - Advocacia e Consultoria Jurídica</h2>
+      <b>Palmas - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Palmas%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Barros%20%26%20Oliveira%20-%20Advocacia%20e%20Consultoria%20Jur%C3%ADdica%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Barros%20%26%20Oliveira%20-%20Advocacia%20e%20Consultoria%20Jur%C3%ADdica&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(24) - Advogado · consulta: advogado de trânsito Palmas Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="victor-fonseca-13" data-lead-name="Victor Fonseca Advocacia" data-order="13" data-status="pending">
+    <div class="top">
+      <span>TO #13</span>
+      <h2>Victor Fonseca Advocacia</h2>
+      <b>Palmas - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Palmas%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Victor%20Fonseca%20Advocacia%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Victor%20Fonseca%20Advocacia&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(7) - Serviços jurídicos · consulta: advogado de trânsito Palmas Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="natalia-piccolo-14" data-lead-name="Natália Piccolo Advocacia" data-order="14" data-status="pending">
+    <div class="top">
+      <span>TO #14</span>
+      <h2>Natália Piccolo Advocacia</h2>
+      <b>Palmas - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Palmas%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Nat%C3%A1lia%20Piccolo%20Advocacia%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Nat%C3%A1lia%20Piccolo%20Advocacia&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(2) - Advogado · consulta: advogado de trânsito Palmas Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="dheisson-amorim-especialista-direito-criminal-15" data-lead-name="Advogado Dheisson Amorim - Especialista em Direito de Trânsito e Criminal" data-order="15" data-status="pending">
+    <div class="top">
+      <span>TO #15</span>
+      <h2>Advogado Dheisson Amorim - Especialista em Direito de Trânsito e Criminal</h2>
+      <b>Araguaína - TO · sinal explícito: trânsito</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Aragua%C3%ADna%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Advogado%20Dheisson%20Amorim%20-%20Especialista%20em%20Direito%20de%20Tr%C3%A2nsito%20e%20Criminal%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Advogado%20Dheisson%20Amorim%20-%20Especialista%20em%20Direito%20de%20Tr%C3%A2nsito%20e%20Criminal&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(8) - Advogado · consulta: advogado de trânsito Araguaína Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="araguaina-dr-ronan-naves-16" data-lead-name="Advogado em Araguaína | Dr. Ronan Naves" data-order="16" data-status="pending">
+    <div class="top">
+      <span>TO #16</span>
+      <h2>Advogado em Araguaína | Dr. Ronan Naves</h2>
+      <b>Araguaína - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Aragua%C3%ADna%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Advogado%20em%20Aragua%C3%ADna%20%7C%20Dr.%20Ronan%20Naves%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Advogado%20em%20Aragua%C3%ADna%20%7C%20Dr.%20Ronan%20Naves&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(3) - Serviços jurídicos · consulta: advogado de trânsito Araguaína Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="joao-victor-duarte-17" data-lead-name="JOÃO VICTOR DUARTE ADVOGADO" data-order="17" data-status="pending">
+    <div class="top">
+      <span>TO #17</span>
+      <h2>JOÃO VICTOR DUARTE ADVOGADO</h2>
+      <b>Araguaína - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Aragua%C3%ADna%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=JO%C3%83O%20VICTOR%20DUARTE%20ADVOGADO%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=JO%C3%83O%20VICTOR%20DUARTE%20ADVOGADO&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 4,9(48) - Advogado · consulta: advogado de trânsito Araguaína Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="brindilla-ventura-18" data-lead-name="Bríndilla Ventura Advocacia" data-order="18" data-status="pending">
+    <div class="top">
+      <span>TO #18</span>
+      <h2>Bríndilla Ventura Advocacia</h2>
+      <b>Araguaína - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Aragua%C3%ADna%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Br%C3%ADndilla%20Ventura%20Advocacia%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Br%C3%ADndilla%20Ventura%20Advocacia&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(164) - Advogado · consulta: advogado de trânsito Araguaína Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="precinotte-marson-advogados-associados-19" data-lead-name="Precinotte Marson Advogados Associados" data-order="19" data-status="pending">
+    <div class="top">
+      <span>TO #19</span>
+      <h2>Precinotte Marson Advogados Associados</h2>
+      <b>Araguaína - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Aragua%C3%ADna%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Precinotte%20Marson%20Advogados%20Associados%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Precinotte%20Marson%20Advogados%20Associados&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(299) - Advogado · consulta: advogado de trânsito Araguaína Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="werbert-rodrigues-20" data-lead-name="Werbert Rodrigues Advogado" data-order="20" data-status="pending">
+    <div class="top">
+      <span>TO #20</span>
+      <h2>Werbert Rodrigues Advogado</h2>
+      <b>Araguaína - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Aragua%C3%ADna%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Werbert%20Rodrigues%20Advogado%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Werbert%20Rodrigues%20Advogado&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 4,9(33) - Advogado · consulta: advogado de trânsito Araguaína Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="raniele-dutra-advogados-associados-21" data-lead-name="Raniele Dutra Advogados Associados" data-order="21" data-status="pending">
+    <div class="top">
+      <span>TO #21</span>
+      <h2>Raniele Dutra Advogados Associados</h2>
+      <b>Araguaína - TO · baixa prioridade: validar nicho</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Aragua%C3%ADna%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Raniele%20Dutra%20Advogados%20Associados%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Raniele%20Dutra%20Advogados%20Associados&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 4,8(28) - Advogado trabalhista · consulta: advogado de trânsito Araguaína Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="neves-ferreira-22" data-lead-name="Neves e Ferreira - Advocacia" data-order="22" data-status="pending">
+    <div class="top">
+      <span>TO #22</span>
+      <h2>Neves e Ferreira - Advocacia</h2>
+      <b>Gurupi - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Gurupi%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Neves%20e%20Ferreira%20-%20Advocacia%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Neves%20e%20Ferreira%20-%20Advocacia&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(29) - Serviços jurídicos · consulta: advogado de trânsito Gurupi Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="povoa-23" data-lead-name="PÓVOA ADVOCACIA" data-order="23" data-status="pending">
+    <div class="top">
+      <span>TO #23</span>
+      <h2>PÓVOA ADVOCACIA</h2>
+      <b>Gurupi - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Gurupi%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=P%C3%93VOA%20ADVOCACIA%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=P%C3%93VOA%20ADVOCACIA&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(8) - Advogado · consulta: advogado de trânsito Gurupi Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="gustavo-esperandio-advogados-associados-gurupi-24" data-lead-name="Gustavo Esperandio Advogados Associados | Advogado em Gurupi" data-order="24" data-status="pending">
+    <div class="top">
+      <span>TO #24</span>
+      <h2>Gustavo Esperandio Advogados Associados | Advogado em Gurupi</h2>
+      <b>Gurupi - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Gurupi%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Gustavo%20Esperandio%20Advogados%20Associados%20%7C%20Advogado%20em%20Gurupi%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Gustavo%20Esperandio%20Advogados%20Associados%20%7C%20Advogado%20em%20Gurupi&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 4,8(26) - Advogado · consulta: advogado de trânsito Gurupi Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="camilo-variani-advogados-25" data-lead-name="Camilo Variani Advogados" data-order="25" data-status="pending">
+    <div class="top">
+      <span>TO #25</span>
+      <h2>Camilo Variani Advogados</h2>
+      <b>Gurupi - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Gurupi%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Camilo%20Variani%20Advogados%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Camilo%20Variani%20Advogados&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 4,3(6) - Serviços jurídicos · consulta: advogado de trânsito Gurupi Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="edilaine-aguiar-26" data-lead-name="Edilaine Aguiar - Advocacia e Consultoria" data-order="26" data-status="pending">
+    <div class="top">
+      <span>TO #26</span>
+      <h2>Edilaine Aguiar - Advocacia e Consultoria</h2>
+      <b>Gurupi - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Gurupi%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Edilaine%20Aguiar%20-%20Advocacia%20e%20Consultoria%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Edilaine%20Aguiar%20-%20Advocacia%20e%20Consultoria&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(2) - Advogado · consulta: advogado de trânsito Gurupi Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="gustavo-cruz-27" data-lead-name="GUSTAVO CRUZ ADVOGADO" data-order="27" data-status="pending">
+    <div class="top">
+      <span>TO #27</span>
+      <h2>GUSTAVO CRUZ ADVOGADO</h2>
+      <b>Gurupi - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Gurupi%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=GUSTAVO%20CRUZ%20ADVOGADO%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=GUSTAVO%20CRUZ%20ADVOGADO&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(11) - Advogado · consulta: advogado de trânsito Gurupi Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="eduardo-aires-advogados-28" data-lead-name="Eduardo Aires Advogados" data-order="28" data-status="pending">
+    <div class="top">
+      <span>TO #28</span>
+      <h2>Eduardo Aires Advogados</h2>
+      <b>Porto Nacional - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Porto%20Nacional%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Eduardo%20Aires%20Advogados%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Eduardo%20Aires%20Advogados&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 4,7(32) - Serviços jurídicos · consulta: advogado de trânsito Porto Nacional Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="godinho-29" data-lead-name="Godinho Advocacia" data-order="29" data-status="pending">
+    <div class="top">
+      <span>TO #29</span>
+      <h2>Godinho Advocacia</h2>
+      <b>Porto Nacional - TO · validar especialidade</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Porto%20Nacional%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=Godinho%20Advocacia%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=Godinho%20Advocacia&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · Nenhum comentário - Advogado · consulta: advogado de trânsito Porto Nacional Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
+  </article>
+
+
+  <article class="card regional-lead" data-list-id="cnh-google-local-to-2026-05-25" data-lead-key="dr-ediney-ferreira-30" data-lead-name="DR. EDINEY FERREIRA - Advocacia" data-order="30" data-status="pending">
+    <div class="top">
+      <span>TO #30</span>
+      <h2>DR. EDINEY FERREIRA - Advocacia</h2>
+      <b>Paraíso do Tocantins - TO · sinal explícito: trânsito</b>
+    </div>
+    <div class="actions">
+      <a class="meta" href="https://www.google.com/search?q=advogado%20de%20tr%C3%A2nsito%20Para%C3%ADso%20do%20Tocantins&amp;tbm=lcl&amp;hl=pt-BR&amp;gl=BR" target="_blank" rel="noopener noreferrer">Abrir resultado local</a>
+      <a class="google" href="https://www.google.com/search?q=DR.%20EDINEY%20FERREIRA%20-%20Advocacia%20CNH%20multas%20bafometro%20whatsapp%20instagram%20facebook" target="_blank" rel="noopener noreferrer">Pesquisar contato</a>
+      <a class="dark" href="https://www.facebook.com/ads/library/?active_status=active&amp;ad_type=all&amp;country=BR&amp;q=DR.%20EDINEY%20FERREIRA%20-%20Advocacia&amp;search_type=keyword_unordered" target="_blank" rel="noopener noreferrer">Buscar na Meta</a>
+    </div>
+    <div class="tracking">
+      <button type="button" class="mark researching" data-set-status="researching">Em pesquisa</button>
+      <button type="button" class="mark discarded" data-set-status="discarded">Descartar</button>
+      <button type="button" class="mark clear" data-set-status="pending">Reabrir</button>
+    </div>
+    <div class="status-line">Aguardando validação de nicho e contato</div>
+    <p>Google Local · 5,0(21) - Advogado criminal; perfil menciona acidente de trânsito · consulta: advogado de trânsito Paraíso do Tocantins. Nenhum WhatsApp foi liberado sem validação.</p>
   </article>
 </div>
   </section>
