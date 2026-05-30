@@ -38,6 +38,9 @@ class PostgresStore {
     this._freshAuthSessions = new Set(); // Sessao marcada para ignorar auth antigo e liberar QR fresco
     this._minSaveInterval = 30 * 60 * 1000; // Mínimo 30 minutos entre saves (reduz carga no Supabase durante disparos)
     this._maxSaveBytes = 15 * 1024 * 1024;  // Máximo 15MB por sessão — blobs maiores são cache acumulado
+    // O ZIP principal ja e a copia ativa. Um rollback verificado por sessao
+    // evita perda sem multiplicar blobs grandes ate esgotar o Supabase.
+    this._backupRetention = Math.max(1, parseInt(process.env.REMOTE_AUTH_BACKUP_RETENTION || '1', 10));
   }
 
   /**
@@ -103,6 +106,17 @@ class PostgresStore {
         ON whatsapp_auth_session_backups (session_id, created_at DESC)
       `);
       this._initialized = true;
+
+      // Remove apenas historico redundante. O ZIP principal e o backup
+      // verificado mais recente de cada sessao permanecem intactos.
+      try {
+        const pruned = await this._pruneBackupHistory(this._backupRetention);
+        if (pruned.deletedCount > 0) {
+          console.log(`PostgresStore: ${pruned.deletedCount} backup(s) redundante(s) removido(s), ${(pruned.deletedBytes / 1024 / 1024).toFixed(1)}MB liberados`);
+        }
+      } catch (pruneErr) {
+        console.warn(`PostgresStore: nao conseguiu reduzir historico de backups: ${pruneErr.message}`);
+      }
 
       // Carrega lista de sessões que JÁ existem no banco para saber quais já foram salvas
       try {
@@ -205,10 +219,60 @@ class PostgresStore {
            FROM whatsapp_auth_session_backups
            WHERE session_id = $1
            ORDER BY created_at DESC
-           LIMIT 3
+           LIMIT $2
          )`,
-      [sessionId]
+      [sessionId, this._backupRetention]
     );
+  }
+
+  async _pruneBackupHistory(keepPerSession = this._backupRetention) {
+    const retention = Math.max(1, Number(keepPerSession) || 1);
+    const result = await this.pool.query(
+      `WITH ranked AS (
+         SELECT id,
+                ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created_at DESC, id DESC) AS backup_rank
+         FROM whatsapp_auth_session_backups
+       ),
+       deleted AS (
+         DELETE FROM whatsapp_auth_session_backups b
+         USING ranked r
+         WHERE b.id = r.id
+           AND r.backup_rank > $1
+         RETURNING b.data_size
+       )
+       SELECT COUNT(*)::INTEGER AS deleted_count,
+              COALESCE(SUM(data_size), 0)::BIGINT AS deleted_bytes
+       FROM deleted`,
+      [retention]
+    );
+
+    return {
+      deletedCount: Number(result.rows[0]?.deleted_count || 0),
+      deletedBytes: Number(result.rows[0]?.deleted_bytes || 0)
+    };
+  }
+
+  async pruneBackupHistory(keepPerSession = this._backupRetention) {
+    await this.init();
+    return await this._pruneBackupHistory(keepPerSession);
+  }
+
+  async getStorageStats() {
+    await this.init();
+    const result = await this.pool.query(
+      `SELECT
+         (SELECT COUNT(*) FROM whatsapp_auth_sessions)::INTEGER AS main_count,
+         COALESCE((SELECT SUM(length(data)) FROM whatsapp_auth_sessions), 0)::BIGINT AS main_bytes,
+         (SELECT COUNT(*) FROM whatsapp_auth_session_backups)::INTEGER AS backup_count,
+         COALESCE((SELECT SUM(data_size) FROM whatsapp_auth_session_backups), 0)::BIGINT AS backup_bytes`
+    );
+    const row = result.rows[0] || {};
+    return {
+      mainCount: Number(row.main_count || 0),
+      mainBytes: Number(row.main_bytes || 0),
+      backupCount: Number(row.backup_count || 0),
+      backupBytes: Number(row.backup_bytes || 0)
+    };
   }
 
   forceNextSave(session) {
@@ -440,16 +504,35 @@ class PostgresStore {
   async delete(options) {
     await this.init();
     const sessionId = this._normalizeSessionId(options.session);
+    let client;
+    let committed = false;
     try {
-      await this.pool.query(
+      client = await this.pool.connect();
+      await client.query('BEGIN');
+      await client.query(
+        'DELETE FROM whatsapp_auth_session_backups WHERE session_id = $1',
+        [sessionId]
+      );
+      await client.query(
         'DELETE FROM whatsapp_auth_sessions WHERE session_id = $1',
         [sessionId]
       );
+      await client.query('COMMIT');
+      committed = true;
       this._freshAuthSessions.delete(sessionId);
       console.log(`🗑️ PostgresStore: sessão "${sessionId}" removida`);
     } catch (err) {
       console.error(`❌ PostgresStore.delete error for "${sessionId}":`, err.message);
       // NÃO relançar — delete é chamado em cleanup/logout
+    } finally {
+      if (client && !committed) {
+        try {
+          await client.query('ROLLBACK');
+        } catch (_) { /* ignore */ }
+      }
+      if (client) {
+        client.release();
+      }
     }
   }
 

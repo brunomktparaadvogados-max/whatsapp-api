@@ -1001,9 +1001,17 @@ app.get('/api/remote-auth-status', async (req, res) => {
       return res.json({ remoteAuth: false, message: 'PostgresStore não inicializado' });
     }
     const sessions = await sessionManager.pgStore.listSessions();
+    const storage = await sessionManager.pgStore.getStorageStats();
     res.json({
       remoteAuth: true,
       savedSessions: sessions.length,
+      storage: {
+        mainCount: storage.mainCount,
+        mainMB: (storage.mainBytes / 1024 / 1024).toFixed(2),
+        rollbackCount: storage.backupCount,
+        rollbackMB: (storage.backupBytes / 1024 / 1024).toFixed(2),
+        totalMB: ((storage.mainBytes + storage.backupBytes) / 1024 / 1024).toFixed(2)
+      },
       sessions: sessions.map(s => ({
         id: s.session_id,
         sizeMB: (s.data_size / 1024 / 1024).toFixed(2),

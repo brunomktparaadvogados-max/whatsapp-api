@@ -153,6 +153,12 @@ class HealthGuard {
     if (!this.pgStore) return;
 
     try {
+      const pruned = await this.pgStore.pruneBackupHistory();
+      if (pruned.deletedCount > 0) {
+        console.log(`🧹 [HealthGuard] ${pruned.deletedCount} backup(s) redundante(s) removido(s), ${(pruned.deletedBytes / 1024 / 1024).toFixed(1)}MB liberados`);
+      }
+
+      const storage = await this.pgStore.getStorageStats();
       const sessions = await this.pgStore.listSessions();
       if (!sessions || sessions.length === 0) return;
 
@@ -168,7 +174,7 @@ class HealthGuard {
         }
       }
 
-      console.log(`🛡️ [HealthGuard] RemoteAuth: ${sessions.length} sessões, ${totalSizeMB.toFixed(1)}MB total`);
+      console.log(`🛡️ [HealthGuard] RemoteAuth: ${sessions.length} sessões, ${totalSizeMB.toFixed(1)}MB principais, ${(storage.backupBytes / 1024 / 1024).toFixed(1)}MB rollback (${storage.backupCount} backup(s))`);
 
       // Limpa blobs individuais > MAX_BLOB_MB
       if (oversized.length > 0) {
@@ -247,10 +253,7 @@ class HealthGuard {
 
       // Todas as proteções passaram — blob é de sessão desconectada há mais de 2h
       // Seguro deletar (usuário fará novo QR)
-      await this.db.pool.query(
-        'DELETE FROM whatsapp_auth_sessions WHERE session_id = $1',
-        [sessionId]
-      );
+      await this.pgStore.delete({ session: sessionId });
       console.log(`🗑️ [HealthGuard] Blob oversized ${sessionId} (${sizeMB}MB) deletado (desconectada há >2h)`);
       this._stats.blobsCleaned++;
       return true;

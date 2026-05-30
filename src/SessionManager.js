@@ -784,8 +784,11 @@ class SessionManager {
         return this._initializeClientInBackground(retryClient, sessionData, attempt + 1);
       }
 
-      // Limpa recursos sem deletar do banco (permite tentar de novo)
-      const failedStatus = hasRemoteAuth ? 'auth_failure' : 'failed';
+      // Uma falha de initialize() nao prova que a credencial foi rejeitada.
+      // auth_failure e reservado exclusivamente para o evento emitido pelo
+      // WhatsApp. Em timeout/Chromium instavel, preserva a sessao como salva
+      // para permitir nova reativacao sob demanda sem exigir QR.
+      const failedStatus = hasRemoteAuth ? 'authenticated' : 'failed';
       this.sessionInitFailures.set(sessionData.id, {
         message: errorMessage,
         timestamp: Date.now()
@@ -798,7 +801,9 @@ class SessionManager {
       // Notifica frontend que a inicialização falhou (evita "Inicializando..." eterno)
       this.io.to(`user_${sessionData.userId}`).emit('session_error', {
         sessionId: sessionData.id,
-        error: 'Falha ao inicializar sessão. Tente criar novamente.',
+        error: hasRemoteAuth
+          ? 'A inicialização falhou temporariamente. A sessão salva foi preservada; tente reativar novamente.'
+          : 'Falha ao inicializar sessão. Tente criar novamente.',
         status: failedStatus
       });
     }
