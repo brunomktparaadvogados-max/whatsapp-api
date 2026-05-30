@@ -849,7 +849,9 @@ app.get('/api/admin/reactivate-session/:sessionId', async (req, res) => {
       });
     }
 
-    if (dbSession.status === 'auth_failure') {
+    const retrySavedAuth = String(req.query.retrySavedAuth || '').toLowerCase() === 'true';
+
+    if (dbSession.status === 'auth_failure' && !retrySavedAuth) {
       return res.status(409).json({
         success: false,
         sessionId,
@@ -859,6 +861,10 @@ app.get('/api/admin/reactivate-session/:sessionId', async (req, res) => {
         hasRemoteAuth: true,
         message: 'O WhatsApp rejeitou a autenticacao salva. Use Criar Sessao para gerar um novo QR Code sem apagar o registro do usuario.'
       });
+    }
+
+    if (dbSession.status === 'auth_failure' && retrySavedAuth) {
+      console.log(`[ADMIN REACTIVATE] Reteste unico do RemoteAuth salvo para ${sessionId} apos auth_failure`);
     }
 
     console.log(`[ADMIN REACTIVATE] Reativando ${sessionId} via RemoteAuth (sem apagar auth)`);
