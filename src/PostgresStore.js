@@ -38,9 +38,9 @@ class PostgresStore {
     this._freshAuthSessions = new Set(); // Sessao marcada para ignorar auth antigo e liberar QR fresco
     this._minSaveInterval = 30 * 60 * 1000; // Mínimo 30 minutos entre saves (reduz carga no Supabase durante disparos)
     this._maxSaveBytes = 15 * 1024 * 1024;  // Máximo 15MB por sessão — blobs maiores são cache acumulado
-    // O ZIP principal ja e a copia ativa. Um rollback verificado por sessao
-    // evita perda sem multiplicar blobs grandes ate esgotar o Supabase.
-    this._backupRetention = Math.max(1, parseInt(process.env.REMOTE_AUTH_BACKUP_RETENTION || '1', 10));
+    // O ZIP principal ja e a copia ativa. Backups completos duplicam dezenas
+    // de MB no Supabase e podem impedir novos scans de serem persistidos.
+    this._backupRetention = Math.max(0, parseInt(process.env.REMOTE_AUTH_BACKUP_RETENTION ?? '0', 10) || 0);
   }
 
   /**
@@ -209,6 +209,14 @@ class PostgresStore {
   }
 
   async _saveVerifiedBackup(client, sessionId, data, dataHash) {
+    if (this._backupRetention <= 0) {
+      await client.query(
+        'DELETE FROM whatsapp_auth_session_backups WHERE session_id = $1',
+        [sessionId]
+      );
+      return;
+    }
+
     await client.query(
       `INSERT INTO whatsapp_auth_session_backups (session_id, data, data_hash, data_size, created_at)
        VALUES ($1, $2, $3, $4, NOW())
@@ -231,7 +239,7 @@ class PostgresStore {
   }
 
   async _pruneBackupHistory(keepPerSession = this._backupRetention) {
-    const retention = Math.max(1, Number(keepPerSession) || 1);
+    const retention = Math.max(0, Number(keepPerSession) || 0);
     const result = await this.pool.query(
       `WITH ranked AS (
          SELECT id,
