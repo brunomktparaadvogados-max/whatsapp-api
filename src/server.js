@@ -1805,7 +1805,39 @@ app.get('/api/sessions/:sessionId/qr', authMiddleware, async (req, res) => {
     const session = sessionManager.getSession(sessionId);
 
     if (!session) {
-      return res.status(404).json({ error: 'Sessão não está ativa' });
+      const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
+      const dbStatus = dbSession.status || 'disconnected';
+      const recoverable = hasRemoteAuth && needsLiveSessionReconnect(dbStatus);
+      const shouldStartQr = needsQrSessionStart(dbStatus, hasRemoteAuth);
+      const targetUserId = dbSession.user_id || parseInt(sessionId.replace('user_', ''), 10);
+
+      const reactivationStarted = recoverable
+        ? kickSessionReconnect(sessionId, 'session_qr_saved_auth')
+        : false;
+      const qrStartStarted = !recoverable && shouldStartQr
+        ? kickSessionStart(sessionId, targetUserId, 'session_qr_required', { forceFreshAuth: hasRemoteAuth })
+        : false;
+
+      return res.status(202).json({
+        success: true,
+        qrCode: null,
+        status: recoverable ? 'saved_auth' : shouldStartQr ? 'initializing' : normalizeStatusWithoutRemoteAuth(dbStatus),
+        dbStatus,
+        hasRemoteAuth,
+        recoverable: !!recoverable,
+        reactivationStarted,
+        qrStartStarted,
+        action: recoverable
+          ? 'reactivate_saved_auth'
+          : shouldStartQr
+            ? 'create_qr'
+            : 'none',
+        message: recoverable
+          ? 'Sessao salva encontrada; reativacao iniciada. Atualize em alguns segundos.'
+          : shouldStartQr
+            ? 'Preparando QR Code. Atualize em alguns segundos.'
+            : 'Sessao nao esta ativa.'
+      });
     }
 
     if (!session.qrCode) {
