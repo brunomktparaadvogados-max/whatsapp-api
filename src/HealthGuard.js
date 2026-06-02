@@ -29,7 +29,9 @@ class HealthGuard {
     // CONFIGURAÇÃO — Thresholds ajustáveis via variáveis de ambiente
     // ═══════════════════════════════════════════════════════════════
     this.MAX_BLOB_MB = parseInt(process.env.HG_MAX_BLOB_MB) || 10;           // Blobs > 10MB são limpos (normal: 2-5MB)
-    this.MAX_TOTAL_AUTH_MB = parseInt(process.env.HG_MAX_TOTAL_AUTH_MB) || 80; // Total de auth > 80MB → limpeza agressiva
+    // Valid RemoteAuth packages are durable credentials, not disposable cache.
+    // Keep enough headroom for 30 saved sessions before auditing orphan cleanup.
+    this.MAX_TOTAL_AUTH_MB = Math.max(256, parseInt(process.env.HG_MAX_TOTAL_AUTH_MB || '256', 10));
     this.RSS_WARN_MB = parseInt(process.env.HG_RSS_WARN_MB) || 1400;         // Alerta de memória
     this.RSS_CRITICAL_MB = parseInt(process.env.HG_RSS_CRITICAL_MB) || 1700;  // Ação de emergência
     this.CHECK_INTERVAL_MS = parseInt(process.env.HG_CHECK_INTERVAL_MS) || 5 * 60 * 1000; // Verifica a cada 5 min

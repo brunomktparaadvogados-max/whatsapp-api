@@ -481,8 +481,8 @@
             </div>
 
             <div id="createSessionSection" style="display: none;">
-                <p style="margin-bottom: 15px;">Você ainda não tem uma sessão WhatsApp. Crie uma agora:</p>
-                <button onclick="createMySession()">📱 Criar Minha Sessão WhatsApp</button>
+                <p id="createSessionMessage" style="margin-bottom: 15px;">Você ainda não tem uma sessão WhatsApp. Crie uma agora:</p>
+                <button id="createSessionButton" onclick="createMySession()">📱 Criar Minha Sessão WhatsApp</button>
             </div>
 
             <div id="qrCodeSection" style="display: none; text-align: center;">
@@ -760,15 +760,25 @@
                     <p><strong>Status:</strong> ${getStatusText(session.status)}</p>
                 `;
 
-                if (session.status === 'not_created' || session.status === 'not_found' || session.status === 'failed' || session.status === 'disconnected' || session.status === 'auth_failure') {
+                if (session.status === 'saved_auth') {
                     document.getElementById('createSessionSection').style.display = 'block';
                     document.getElementById('qrCodeSection').style.display = 'none';
                     document.getElementById('connectedSection').style.display = 'none';
+                    document.getElementById('createSessionMessage').textContent = 'Sessão salva encontrada. A reativação automática foi iniciada; use o botão para tentar novamente agora.';
+                    document.getElementById('createSessionButton').textContent = '🔄 Reativar Sessão Salva';
+                } else if (session.status === 'not_created' || session.status === 'not_found' || session.status === 'failed' || session.status === 'disconnected' || session.status === 'auth_failure') {
+                    document.getElementById('createSessionSection').style.display = 'block';
+                    document.getElementById('qrCodeSection').style.display = 'none';
+                    document.getElementById('connectedSection').style.display = 'none';
+                    document.getElementById('createSessionMessage').textContent = session.status === 'auth_failure'
+                        ? 'A credencial salva foi rejeitada pelo WhatsApp. Gere um novo QR Code para reconectar.'
+                        : 'Esta sessão não está ativa. Reative a sessão salva ou gere um QR Code.';
+                    document.getElementById('createSessionButton').textContent = '🔄 Reativar / Gerar QR Code';
                     // Se acabou de criar e está transitando, aguardar um pouco
                     if (window._waitingForSession) {
                         window._waitingForSession = false; // Para de esperar quando status final chega
                     }
-                } else if (session.status === 'qr_code' || session.status === 'initializing') {
+                } else if (session.status === 'qr_code' || session.status === 'initializing' || session.status === 'authenticated') {
                     document.getElementById('createSessionSection').style.display = 'none';
                     document.getElementById('qrCodeSection').style.display = 'block';
                     document.getElementById('connectedSection').style.display = 'none';
@@ -782,7 +792,7 @@
                             <p>⏳ Preparando QR Code... Aguarde.</p>
                         `;
                     }
-                } else if (session.status === 'connected' || session.status === 'authenticated') {
+                } else if (session.status === 'connected') {
                     document.getElementById('createSessionSection').style.display = 'none';
                     document.getElementById('qrCodeSection').style.display = 'none';
                     document.getElementById('connectedSection').style.display = 'block';
@@ -797,7 +807,7 @@
                 }
 
                 // Auto-poll enquanto sessão está em transição
-                if (session.status === 'qr_code' || session.status === 'initializing' || session.status === 'authenticated') {
+                if (session.status === 'qr_code' || session.status === 'initializing' || session.status === 'authenticated' || session.status === 'saved_auth') {
                     setTimeout(checkSessionStatus, 3000);
                 }
 
@@ -826,16 +836,30 @@
         async function createMySession() {
             try {
                 // Desabilita botão para evitar cliques múltiplos
-                const btn = event?.target;
+                const btn = document.getElementById('createSessionButton');
                 if (btn) { btn.disabled = true; btn.textContent = '⏳ Criando...'; }
 
-                const response = await fetch(`${API_URL}/api/sessions`, {
+                const user = JSON.parse(localStorage.getItem('user') || '{}');
+                const sessionId = `user_${user.id}`;
+                let response = await fetch(`${API_URL}/api/sessions/${sessionId}/reactivate`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
-                    }
+                    },
+                    body: JSON.stringify({ waitMs: 30000 })
                 });
+
+                if (response.status === 404) {
+                    response = await fetch(`${API_URL}/api/sessions`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                        },
+                        body: JSON.stringify({ waitMs: 30000 })
+                    });
+                }
 
                 const data = await response.json();
 
@@ -853,7 +877,7 @@
                 }
             } catch (error) {
                 alert('❌ Erro ao criar sessão: ' + error.message);
-                const btn = event?.target;
+                const btn = document.getElementById('createSessionButton');
                 if (btn) { btn.disabled = false; btn.textContent = '📱 Criar Sessão WhatsApp'; }
             }
         }
@@ -1306,8 +1330,8 @@
         function getStatusClass(status) {
             switch(status) {
                 case 'connected':
-                case 'authenticated':
                     return 'status-connected';
+                case 'authenticated':
                 case 'qr_code':
                 case 'initializing':
                     return 'status-qr';
@@ -1323,7 +1347,7 @@
             const status = session?.status || 'not_created';
             const qrCode = session?.qrCode || session?.qr_code || null;
 
-            if (status === 'qr_code' || status === 'initializing') {
+            if (status === 'qr_code' || status === 'initializing' || status === 'authenticated') {
                 contentDiv.innerHTML = `
                     <p><strong>Status:</strong> ${getStatusText(status)}</p>
                     <p>Escaneie o QR Code abaixo com o WhatsApp do usuario:</p>
@@ -1343,7 +1367,7 @@
                 return;
             }
 
-            if (status === 'connected' || status === 'authenticated') {
+            if (status === 'connected') {
                 contentDiv.innerHTML = `
                     <div class="success-box">
                         <h4>WhatsApp Conectado!</h4>

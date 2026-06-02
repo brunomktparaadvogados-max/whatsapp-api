@@ -16,7 +16,11 @@ const path = require('path');
 const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 30; // Capacidade maxima de sessoes ativas; inicializacao continua sequencial para nao derrubar Chromium
 const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 1400;                         // Alinhado ao HealthGuard; 650MB derrubava sessoes com poucos Chromiums
 const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
-const IDLE_DISCONNECT_MS = parseInt(process.env.IDLE_DISCONNECT_MS) || 5 * 60 * 60 * 1000; // 5 horas idle → desconecta sessão
+// Keep connected sessions alive by default. Memory-pressure eviction remains available.
+const KEEP_SESSIONS_ALIVE = process.env.KEEP_SESSIONS_ALIVE !== 'false';
+const IDLE_DISCONNECT_MS = KEEP_SESSIONS_ALIVE
+  ? 0
+  : Math.max(0, parseInt(process.env.IDLE_DISCONNECT_MS ?? String(5 * 60 * 60 * 1000), 10) || 0);
 const EVICT_IDLE_AFTER_MS = parseInt(process.env.EVICT_IDLE_AFTER_MS) || 20 * 60 * 1000; // não expulsar sessão usada recentemente
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;        // verifica a cada 2 minutos (economiza queries)
 const SESSION_INIT_TIMEOUT_MS = 240000;           // 4 minutos para Chromium iniciar em Koyeb sob carga
@@ -25,7 +29,7 @@ const STALE_SESSION_HEALTHCHECK_MS = parseInt(process.env.STALE_SESSION_HEALTHCH
 const MIN_MESSAGE_INTERVAL_MS = 1500;             // 1.5 segundos entre mensagens (anti-rate-limit)
 const MAX_SEND_RETRIES = 0;                       // SEM retries — evita mensagens duplicadas
 const AUTO_RECONNECT_TIMEOUT_MS = 420000;         // 7 min máx para auto-reconexão no envio
-const AUTHENTICATED_READY_TIMEOUT_MS = parseInt(process.env.AUTHENTICATED_READY_TIMEOUT_MS) || 180000;
+const AUTHENTICATED_READY_TIMEOUT_MS = parseInt(process.env.AUTHENTICATED_READY_TIMEOUT_MS) || 360000;
 const STARTUP_RESTORE_LIMIT = parseInt(process.env.STARTUP_RESTORE_LIMIT || '0', 10);
 const SESSION_INIT_MAX_ATTEMPTS = parseInt(process.env.SESSION_INIT_MAX_ATTEMPTS) || 2;
 const SESSION_INIT_CONCURRENCY = parseInt(process.env.SESSION_INIT_CONCURRENCY) || 1;
@@ -1061,10 +1065,11 @@ class SessionManager {
 
       // Safety net: se 'ready' não disparar em 180s após autenticação,
       // marca como failed para o frontend não ficar preso em "Autenticado"
-      // 180s porque durante startup com muitos Chromiums (CPU 100%), o ready pode demorar mais
+      // Give WhatsApp Web time to finish navigating under load before recovery.
       setTimeout(async () => {
         const currentSession = this.sessions.get(sessionData.id);
-        if (currentSession && currentSession.status === 'authenticated') {
+        // A timer from an older Chromium must never tear down its replacement.
+        if (currentSession && currentSession === sessionData && currentSession.status === 'authenticated') {
           console.warn(`[${sessionData.id}] Sessao autenticada sem ready. Verificando RemoteAuth antes de limpar.`);
           let hasAuth = await this.hasSavedRemoteAuth(sessionData.id);
 
@@ -2471,7 +2476,7 @@ class SessionManager {
 
     const sessionPromises = [];
     this.sessions.forEach((session, id) => {
-      if (session.status === 'connected' || session.status === 'authenticated') {
+      if (session.status === 'connected') {
         health.connectedSessions++;
       } else {
         health.disconnectedSessions++;
@@ -2486,7 +2491,9 @@ class SessionManager {
         whatsappState: 'unknown'
       };
 
-      if (session.client) {
+      // getState() evaluates in Puppeteer. Avoid it while WhatsApp is navigating
+      // through initialization or QR flow.
+      if (session.client && session.status === 'connected') {
         sessionPromises.push(
           Promise.race([
             session.client.getState(),
@@ -2497,7 +2504,7 @@ class SessionManager {
           .then(() => sessionInfo)
         );
       } else {
-        sessionInfo.whatsappState = 'no_client';
+        sessionInfo.whatsappState = session.client ? `session_${session.status}` : 'no_client';
         sessionPromises.push(Promise.resolve(sessionInfo));
       }
     });
@@ -2633,7 +2640,7 @@ class SessionManager {
   startAutoCleanup() {
     console.log(`🔄 Auto-limpeza inteligente iniciada (verifica a cada ${CLEANUP_INTERVAL_MS / 1000}s)`);
     console.log(`   - QR Code timeout: ${QR_CODE_TIMEOUT_MS / 1000}s`);
-    console.log(`   - Idle disconnect: ${IDLE_DISCONNECT_MS / 1000}s`);
+    console.log(`   - Idle disconnect: ${IDLE_DISCONNECT_MS > 0 ? `${IDLE_DISCONNECT_MS / 1000}s` : 'desabilitado'}`);
 
     setInterval(async () => {
       const now = Date.now();
@@ -2650,7 +2657,7 @@ class SessionManager {
         // Sessões connected/authenticated IDLE → desconecta para liberar Chromium
         if ((sess.status === 'connected' || sess.status === 'authenticated') && sess.client) {
           const idleTime = now - lastTs;
-          if (idleTime > IDLE_DISCONNECT_MS) {
+          if (IDLE_DISCONNECT_MS > 0 && idleTime > IDLE_DISCONNECT_MS) {
             toDisconnect.push({ sid, idleTime });
           }
           continue;

@@ -240,12 +240,31 @@ async function requireQueryAdmin(req, res) {
   return user;
 }
 
+const sessionReconnectKickTimes = new Map();
+const SESSION_RECONNECT_KICK_COOLDOWN_MS = Math.max(
+  10000,
+  parseInt(process.env.SESSION_RECONNECT_KICK_COOLDOWN_MS || '60000', 10)
+);
+
 function kickSessionReconnect(sessionId, reason = 'send') {
+  const liveSession = sessionManager.getSession(sessionId);
+  if (liveSession && ['connected', 'initializing', 'authenticated', 'qr_code'].includes(liveSession.status)) {
+    return false;
+  }
+
+  const now = Date.now();
+  const lastKick = sessionReconnectKickTimes.get(sessionId) || 0;
+  if (now - lastKick < SESSION_RECONNECT_KICK_COOLDOWN_MS) {
+    return false;
+  }
+
+  sessionReconnectKickTimes.set(sessionId, now);
   setImmediate(() => {
     sessionManager.autoReconnectForSend(sessionId).catch(error => {
       console.error(`Erro ao preparar/reconectar ${sessionId} (${reason}):`, error.message);
     });
   });
+  return true;
 }
 
 async function ensureSessionReadyForSend(sessionId) {
@@ -558,6 +577,9 @@ app.post('/api/auth/login', async (req, res) => {
       sessionStatus = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status)
         ? 'saved_auth'
         : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
+      if (sessionStatus === 'saved_auth') {
+        kickSessionReconnect(sessionId, 'login_saved_auth');
+      }
     }
 
     res.json({
@@ -570,7 +592,8 @@ app.post('/api/auth/login', async (req, res) => {
         company: user.company
       },
       sessionId: sessionId,
-      sessionStatus: sessionStatus
+      sessionStatus: sessionStatus,
+      reactivationStarted: sessionStatus === 'saved_auth'
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -605,11 +628,20 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
       // Isso cobre o caso onde a sessão foi desconectada e removida da memória
       const dbSession = await db.getSession(sessionId);
       if (dbSession) {
+        const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
+        const recoverable = hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
+        const status = recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(dbSession.status || 'disconnected');
+        const reactivationStarted = recoverable
+          ? kickSessionReconnect(sessionId, 'auth_me_saved_auth')
+          : false;
         sessionInfo = {
           sessionId: dbSession.id,
-          status: dbSession.status || 'disconnected',
+          status,
           qrCode: null,
-          info: null
+          info: null,
+          hasRemoteAuth,
+          recoverable,
+          reactivationStarted
         };
       }
     }
@@ -1100,6 +1132,9 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
       const recoverable = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
       const status = recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
+      const reactivationStarted = recoverable
+        ? kickSessionReconnect(sessionId, 'my_session_saved_auth')
+        : false;
       return res.json({
         success: true,
         sessionId,
@@ -1107,9 +1142,10 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
         canSend: false,
         hasRemoteAuth,
         recoverable: !!recoverable,
+        reactivationStarted,
         dbStatus: dbSession?.status || null,
         message: recoverable
-          ? 'Sessao salva no RemoteAuth. Clique em criar sessao ou envie uma mensagem para reidratar.'
+          ? 'Sessao salva no RemoteAuth. Reativacao automatica iniciada; acompanhe o status.'
           : hasRemoteAuth
           ? 'Sessao salva no RemoteAuth. Clique em criar sessao para reidratar.'
           : 'Sessao ainda nao conectada. Clique em criar sessao para gerar QR.'
@@ -1139,6 +1175,9 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
       const recoverable = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
       const status = recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
+      const reactivationStarted = recoverable
+        ? kickSessionReconnect(sessionId, 'my_qr_saved_auth')
+        : false;
       return res.json({
         success: true,
         status,
@@ -1146,9 +1185,10 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
         canSend: false,
         hasRemoteAuth,
         recoverable: !!recoverable,
+        reactivationStarted,
         dbStatus: dbSession?.status || null,
         message: recoverable
-          ? 'Sessao salva no RemoteAuth; clique em criar sessao ou envie uma mensagem para reidratar.'
+          ? 'Sessao salva no RemoteAuth; reativacao automatica iniciada.'
           : hasRemoteAuth
           ? 'Sessao salva no RemoteAuth; clique em criar sessao para reidratar.'
           : 'Sessao sem RemoteAuth; clique em criar sessao para gerar QR.'
@@ -1161,7 +1201,7 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
         qrCode: null,
         status: session.status,
         canSend: session.status === 'connected',
-        message: (session.status === 'connected' || session.status === 'authenticated')
+        message: session.status === 'connected'
           ? 'WhatsApp já está conectado!'
           : 'QR Code ainda não disponível. Aguarde...'
       });
@@ -2318,15 +2358,19 @@ setInterval(async () => {
 // (getState pode dar timeout se Chromium estiver ocupado, matando sessão boa)
 // ═══════════════════════════════════════════════════════════════════
 const ZOMBIE_CHECK_INTERVAL_MS = 15 * 60 * 1000; // 15 minutos
+const AUTHENTICATED_ZOMBIE_TIMEOUT_MS = Math.max(
+  10 * 60 * 1000,
+  parseInt(process.env.AUTHENTICATED_ZOMBIE_TIMEOUT_MS || '600000', 10)
+);
 
 setInterval(async () => {
   const now = Date.now();
   const allSessions = sessionManager.getAllSessions();
 
   for (const s of allSessions) {
-    // Caso 1: Sessão presa em "authenticated" por mais de 5 minutos
-    // (o safety net de 90s no event handler já cuida da maioria, isso é fallback)
-    if (s.status === 'authenticated' && s.lastSeen && (now - s.lastSeen) > 5 * 60 * 1000) {
+    // Caso 1: sessao presa em "authenticated" alem do prazo seguro.
+    // O event handler cuida da maioria; esta varredura e apenas um fallback.
+    if (s.status === 'authenticated' && s.lastSeen && (now - s.lastSeen) > AUTHENTICATED_ZOMBIE_TIMEOUT_MS) {
       console.warn(`🧟 Sessão zumbi: ${s.id} — "authenticated" por ${Math.round((now - s.lastSeen) / 1000)}s`);
       await sessionManager.cleanupSession(s.id);
       await db.updateSessionStatus(s.id, await sessionManager.hasSavedRemoteAuth(s.id) ? 'authenticated' : 'disconnected');
