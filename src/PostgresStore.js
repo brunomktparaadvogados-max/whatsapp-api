@@ -52,6 +52,11 @@ class PostgresStore {
     return path.basename(String(session));
   }
 
+  _normalizeAuthSessionId(session) {
+    const sessionId = this._normalizeSessionId(session);
+    return sessionId.startsWith('RemoteAuth-') ? sessionId : `RemoteAuth-${sessionId}`;
+  }
+
   _toBuffer(data) {
     if (!data) return Buffer.alloc(0);
     return Buffer.isBuffer(data) ? data : Buffer.from(data);
@@ -255,6 +260,90 @@ class PostgresStore {
   async pruneBackupHistory(keepPerSession = this._backupRetention) {
     await this.init();
     return await this._pruneBackupHistory(keepPerSession);
+  }
+
+  async copyAuthSession({ fromSession, toSession, overwrite = false }) {
+    await this.init();
+
+    const fromId = this._normalizeAuthSessionId(fromSession);
+    const toId = this._normalizeAuthSessionId(toSession);
+
+    if (!fromId || !toId || fromId === toId) {
+      throw new Error('Informe sessoes de origem e destino diferentes.');
+    }
+
+    const sourceResult = await this.pool.query(
+      'SELECT session_id, data, length(data) AS data_size, updated_at FROM whatsapp_auth_sessions WHERE session_id = $1',
+      [fromId]
+    );
+
+    let sourceData = sourceResult.rows[0]?.data ? this._toBuffer(sourceResult.rows[0].data) : null;
+    let sourceKind = 'main';
+    let sourceUpdatedAt = sourceResult.rows[0]?.updated_at || null;
+
+    if (!this._isValidZipBuffer(sourceData, sourceData?.length || 0)) {
+      const backup = await this._findValidBackup(fromId, { includeData: true });
+      if (!backup?.data) {
+        throw new Error(`RemoteAuth de origem ${fromId} nao existe ou nao contem ZIP valido.`);
+      }
+      sourceData = this._toBuffer(backup.data);
+      sourceKind = 'backup';
+      sourceUpdatedAt = backup.created_at || null;
+    }
+
+    const targetResult = await this.pool.query(
+      'SELECT session_id, data, length(data) AS data_size FROM whatsapp_auth_sessions WHERE session_id = $1',
+      [toId]
+    );
+    const targetData = targetResult.rows[0]?.data ? this._toBuffer(targetResult.rows[0].data) : null;
+    const targetHasValidZip = this._isValidZipBuffer(targetData, targetData?.length || 0);
+
+    if (targetHasValidZip && !overwrite) {
+      throw new Error(`RemoteAuth de destino ${toId} ja existe e parece valido. Use overwrite=true apenas com confirmacao.`);
+    }
+
+    const dataHash = crypto.createHash('sha256').update(sourceData).digest('hex');
+    const client = await this.pool.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      if (targetHasValidZip) {
+        const targetHash = crypto.createHash('sha256').update(targetData).digest('hex');
+        await this._saveVerifiedBackup(client, toId, targetData, targetHash);
+      }
+
+      await client.query(
+        `INSERT INTO whatsapp_auth_sessions (session_id, data, created_at, updated_at)
+         VALUES ($1, $2, NOW(), NOW())
+         ON CONFLICT (session_id)
+         DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        [toId, sourceData]
+      );
+
+      await this._saveVerifiedBackup(client, toId, sourceData, dataHash);
+
+      await client.query('COMMIT');
+
+      this._savedSessions.add(toId);
+      this._freshAuthSessions.delete(toId);
+      this._forceSaveSessions.add(toId);
+
+      return {
+        from: fromId,
+        to: toId,
+        sourceKind,
+        sourceUpdatedAt,
+        overwritten: targetHasValidZip,
+        sizeBytes: sourceData.length,
+        sizeMB: (sourceData.length / 1024 / 1024).toFixed(2)
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async getStorageStats() {

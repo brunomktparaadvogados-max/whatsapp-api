@@ -985,6 +985,164 @@ app.post('/api/admin/require-qr/:sessionId', async (req, res) => {
   }
 });
 
+app.get('/api/admin/orphan-remote-auth', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = await db.getUserById(req.userId);
+    if (!currentUser || currentUser.email !== 'admin@flow.com') {
+      return res.status(403).json({ success: false, error: 'Acesso negado. Apenas administradores.' });
+    }
+
+    if (!sessionManager.pgStore) {
+      return res.status(503).json({
+        success: false,
+        error: 'PostgresStore nao inicializado'
+      });
+    }
+
+    const [remoteSessions, dbSessions, users] = await Promise.all([
+      sessionManager.pgStore.listSessions(),
+      db.getAllSessionsFromDB(),
+      db.getAllUsers()
+    ]);
+
+    const dbSessionIds = new Set(dbSessions.map(s => s.id));
+    const userIds = new Set(users.map(u => Number(u.id)));
+
+    const orphans = remoteSessions
+      .filter(s => s.valid_zip || s.recoverable_from_backup)
+      .map(s => {
+        const dbSessionId = String(s.session_id || '').replace(/^RemoteAuth-/, '');
+        const numericUserId = Number(dbSessionId.replace(/^user_/, ''));
+        return {
+          remoteAuthId: s.session_id,
+          expectedSessionId: dbSessionId,
+          expectedUserId: Number.isFinite(numericUserId) ? numericUserId : null,
+          hasDbSession: dbSessionIds.has(dbSessionId),
+          hasUser: userIds.has(numericUserId),
+          sizeMB: (Number(s.data_size || 0) / 1024 / 1024).toFixed(2),
+          updatedAt: s.updated_at,
+          recoverableFromBackup: !!s.recoverable_from_backup
+        };
+      })
+      .filter(s => !s.hasDbSession || !s.hasUser);
+
+    res.json({
+      success: true,
+      totalRemoteAuth: remoteSessions.length,
+      orphanCount: orphans.length,
+      orphans
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      action: 'admin_orphan_remote_auth_error',
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/admin/migrate-remote-auth', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = await db.getUserById(req.userId);
+    if (!currentUser || currentUser.email !== 'admin@flow.com') {
+      return res.status(403).json({ success: false, error: 'Acesso negado. Apenas administradores.' });
+    }
+
+    if (!sessionManager.pgStore) {
+      return res.status(503).json({
+        success: false,
+        error: 'PostgresStore nao inicializado'
+      });
+    }
+
+    const fromSessionId = String(req.body.fromSessionId || req.body.from || '').trim();
+    const force = req.body.force === true || String(req.body.force || '').toLowerCase() === 'true';
+    const targetUserId = req.body.targetUserId ? Number(req.body.targetUserId) : null;
+    const toSessionId = String(req.body.toSessionId || req.body.to || (targetUserId ? `user_${targetUserId}` : '')).trim();
+
+    if (!fromSessionId || !toSessionId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Informe fromSessionId e toSessionId ou targetUserId.'
+      });
+    }
+
+    const targetUserIdFromSession = Number(toSessionId.replace(/^user_/, ''));
+    const resolvedTargetUserId = targetUserId || targetUserIdFromSession;
+    if (!Number.isFinite(resolvedTargetUserId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Nao foi possivel identificar o usuario de destino.'
+      });
+    }
+
+    const targetUser = await db.getUserById(resolvedTargetUserId);
+    if (!targetUser) {
+      return res.status(404).json({
+        success: false,
+        error: `Usuario de destino ${resolvedTargetUserId} nao encontrado.`
+      });
+    }
+
+    let targetDbSession = await db.getSession(toSessionId);
+    if (targetDbSession && Number(targetDbSession.user_id) !== Number(resolvedTargetUserId)) {
+      return res.status(409).json({
+        success: false,
+        error: `Sessao ${toSessionId} pertence a outro usuario (${targetDbSession.user_id}).`
+      });
+    }
+
+    const liveSession = sessionManager.getSession(toSessionId);
+    if (liveSession?.status === 'connected' && !force) {
+      return res.status(409).json({
+        success: false,
+        sessionId: toSessionId,
+        action: 'connected_session_preserved',
+        message: 'Destino esta conectado. Nenhuma alteracao feita.'
+      });
+    }
+
+    if (liveSession && liveSession.status !== 'connected') {
+      await sessionManager.cleanupSession(toSessionId);
+    }
+
+    if (!targetDbSession) {
+      await db.createSession(toSessionId, resolvedTargetUserId);
+      targetDbSession = await db.getSession(toSessionId);
+    }
+
+    const migration = await sessionManager.pgStore.copyAuthSession({
+      fromSession: fromSessionId,
+      toSession: toSessionId,
+      overwrite: force
+    });
+
+    await db.updateSessionStatus(toSessionId, 'authenticated');
+
+    console.log(`[ADMIN MIGRATE AUTH] ${migration.from} -> ${migration.to} (${migration.sizeMB}MB, source=${migration.sourceKind}, overwrite=${migration.overwritten})`);
+
+    res.json({
+      success: true,
+      action: 'remote_auth_migrated',
+      targetUser: {
+        id: targetUser.id,
+        email: targetUser.email,
+        name: targetUser.name
+      },
+      sessionId: toSessionId,
+      status: 'authenticated',
+      migration,
+      message: 'RemoteAuth copiado para o usuario correto. Reative a sessao sob demanda para validar a conexao.'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      action: 'admin_migrate_remote_auth_error',
+      error: error.message
+    });
+  }
+});
+
 app.get('/health', (req, res) => {
   // SEMPRE retorna 200 IMEDIATAMENTE para o Koyeb health check
   // Nunca faz queries ao banco — evita travar o health check
