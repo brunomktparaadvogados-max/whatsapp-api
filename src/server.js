@@ -931,6 +931,60 @@ app.get('/api/admin/reactivate-session/:sessionId', async (req, res) => {
   }
 });
 
+app.post('/api/admin/require-qr/:sessionId', async (req, res) => {
+  try {
+    const admin = await requireQueryAdmin(req, res);
+    if (!admin) return;
+
+    const { sessionId } = req.params;
+    const force = String(req.query.force || '').toLowerCase() === 'true';
+    const dbSession = await db.getSession(sessionId);
+
+    if (!dbSession) {
+      return res.status(404).json({
+        success: false,
+        sessionId,
+        error: 'Sessao nao encontrada'
+      });
+    }
+
+    const liveSession = sessionManager.getSession(sessionId);
+    if (liveSession?.status === 'connected' && !force) {
+      return res.status(409).json({
+        success: false,
+        sessionId,
+        action: 'connected_session_preserved',
+        status: 'connected',
+        message: 'Sessao conectada preservada. Use force=true somente se o QR for realmente necessario.'
+      });
+    }
+
+    if (liveSession) {
+      await sessionManager.cleanupSession(sessionId);
+    }
+
+    await db.updateSessionStatus(sessionId, 'auth_failure');
+    const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
+
+    console.log(`[ADMIN REQUIRE QR] ${sessionId} marcado como auth_failure; RemoteAuth preservado: ${hasRemoteAuth}`);
+
+    res.json({
+      success: true,
+      sessionId,
+      action: 'qr_required',
+      status: 'auth_failure',
+      hasRemoteAuth,
+      message: 'Sessao marcada para gerar novo QR Code no proximo acesso. O RemoteAuth anterior foi preservado.'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      action: 'admin_require_qr_error',
+      error: error.message
+    });
+  }
+});
+
 app.get('/health', (req, res) => {
   // SEMPRE retorna 200 IMEDIATAMENTE para o Koyeb health check
   // Nunca faz queries ao banco — evita travar o health check
