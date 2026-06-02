@@ -179,6 +179,12 @@ class DatabaseManager {
       )
     `);
 
+    try {
+      await this.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower_unique ON users (LOWER(email))`);
+    } catch (error) {
+      console.warn('⚠️ Não foi possível criar índice único case-insensitive de usuários:', error.message);
+    }
+
     await this.run(`
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -322,16 +328,27 @@ class DatabaseManager {
   }
 
   async createUser(email, password, name, company = null) {
+    const normalizedEmail = String(email || '').trim();
+    const existingUser = await this.get('SELECT id, email FROM users WHERE LOWER(email) = LOWER($1)', [normalizedEmail]);
+    if (existingUser) {
+      const error = new Error('Email ja cadastrado. Use o usuario existente para preservar a sessao WhatsApp.');
+      error.code = 'USER_EMAIL_EXISTS';
+      error.userId = existingUser.id;
+      error.email = existingUser.email;
+      throw error;
+    }
+
     const hashedPassword = bcrypt.hashSync(password, 10);
     const result = await this.query(
       'INSERT INTO users (email, password, name, company) VALUES ($1, $2, $3, $4) RETURNING id',
-      [email, hashedPassword, name, company]
+      [normalizedEmail, hashedPassword, name, company]
     );
     return result.rows[0].id;
   }
 
   async getUserByEmail(email) {
-    return await this.get('SELECT * FROM users WHERE email = $1', [email]);
+    const normalizedEmail = String(email || '').trim();
+    return await this.get('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [normalizedEmail]);
   }
 
   async getUserById(id) {

@@ -153,11 +153,14 @@ function isSessionReadyForImmediateSend(sessionId) {
 }
 
 function needsLiveSessionReconnect(dbStatus) {
-  return ['connected', 'authenticated', 'reconnecting', 'initializing', 'saved_auth', 'disconnected', 'failed'].includes(dbStatus);
+  return ['connected', 'authenticated', 'reconnecting', 'initializing', 'saved_auth', 'disconnected', 'failed', 'auth_failure'].includes(dbStatus);
 }
 
 function needsQrSessionStart(dbStatus, hasRemoteAuth) {
-  if (hasRemoteAuth && dbStatus !== 'auth_failure') return false;
+  // If a valid RemoteAuth package exists, always try it before forcing a new QR.
+  // Some sessions were marked auth_failure during resource pressure, but the
+  // saved browser profile is still usable after a clean rehydrate.
+  if (hasRemoteAuth) return false;
   return ['auth_failure', 'disconnected', 'failed', 'not_created'].includes(dbStatus || 'not_created');
 }
 
@@ -581,6 +584,16 @@ app.post('/api/auth/register', async (req, res) => {
       message: 'Usuário criado! Clique em criar sessão para gerar o QR Code quando estiver pronto para escanear.'
     });
   } catch (error) {
+    if (error.code === 'USER_EMAIL_EXISTS') {
+      return res.status(409).json({
+        success: false,
+        error: 'Email ja cadastrado',
+        action: 'use_existing_user',
+        userId: error.userId,
+        email: error.email,
+        message: 'Este email ja possui usuario. Use o login existente ou reative a sessao para preservar o WhatsApp salvo.'
+      });
+    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -1574,7 +1587,7 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       });
     }
 
-    const canTrustSavedAuth = hasRemoteAuth && dbSession?.status !== 'auth_failure';
+    const canTrustSavedAuth = hasRemoteAuth;
 
     if (dbSession) {
       await db.updateSessionStatus(targetSessionId, canTrustSavedAuth ? 'authenticated' : 'initializing');
@@ -1585,7 +1598,7 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
         console.log(`🔄 Criando sessão ${targetSessionId} para usuário ${targetUserId}...`);
         await sessionManager.createSession(targetSessionId, targetUserId, {
           priority: true,
-          forceFreshAuth: hasRemoteAuth && !canTrustSavedAuth
+          forceFreshAuth: !hasRemoteAuth
         });
         console.log(`✅ Sessão ${targetSessionId} criada`);
       } catch (error) {
@@ -1687,7 +1700,7 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
     }
 
     const targetUserId = dbSession.user_id || parseInt(sessionId.replace('user_', ''), 10);
-    const canTrustSavedAuth = hasRemoteAuth && dbSession.status !== 'auth_failure';
+    const canTrustSavedAuth = hasRemoteAuth;
     const action = canTrustSavedAuth ? 'reactivate_saved_auth' : 'create_qr';
 
     await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'authenticated' : 'initializing');
@@ -1697,7 +1710,7 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
         console.log(`[REACTIVATE] ${action} para ${sessionId}`);
         await sessionManager.createSession(sessionId, targetUserId, {
           priority: true,
-          forceFreshAuth: hasRemoteAuth && !canTrustSavedAuth
+          forceFreshAuth: !hasRemoteAuth
         });
       } catch (error) {
         console.error(`[REACTIVATE] Falha ao reativar ${sessionId}:`, error.message);
