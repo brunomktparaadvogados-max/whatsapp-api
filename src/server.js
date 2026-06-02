@@ -156,6 +156,11 @@ function needsLiveSessionReconnect(dbStatus) {
   return ['connected', 'authenticated', 'reconnecting', 'initializing', 'saved_auth', 'disconnected', 'failed'].includes(dbStatus);
 }
 
+function needsQrSessionStart(dbStatus, hasRemoteAuth) {
+  if (hasRemoteAuth && dbStatus !== 'auth_failure') return false;
+  return ['auth_failure', 'disconnected', 'failed', 'not_created'].includes(dbStatus || 'not_created');
+}
+
 function normalizeStatusWithoutRemoteAuth(dbStatus) {
   if (!dbStatus || dbStatus === 'not_created') return dbStatus || 'not_created';
   if (['connected', 'authenticated', 'reconnecting', 'initializing', 'saved_auth', 'qr_code', 'failed'].includes(dbStatus)) {
@@ -263,6 +268,47 @@ function kickSessionReconnect(sessionId, reason = 'send') {
     sessionManager.autoReconnectForSend(sessionId).catch(error => {
       console.error(`Erro ao preparar/reconectar ${sessionId} (${reason}):`, error.message);
     });
+  });
+  return true;
+}
+
+const sessionStartKickTimes = new Map();
+const SESSION_START_KICK_COOLDOWN_MS = Math.max(
+  5000,
+  parseInt(process.env.SESSION_START_KICK_COOLDOWN_MS || '15000', 10)
+);
+
+function kickSessionStart(sessionId, userId, reason = 'manual', options = {}) {
+  const liveSession = sessionManager.getSession(sessionId);
+  if (liveSession && ['connected', 'initializing', 'authenticated', 'qr_code'].includes(liveSession.status)) {
+    return false;
+  }
+
+  const now = Date.now();
+  const lastKick = sessionStartKickTimes.get(sessionId) || 0;
+  if (now - lastKick < SESSION_START_KICK_COOLDOWN_MS) {
+    return false;
+  }
+
+  sessionStartKickTimes.set(sessionId, now);
+  setImmediate(async () => {
+    try {
+      console.log(`[SESSION START] ${sessionId} (${reason}) forceFreshAuth=${!!options.forceFreshAuth}`);
+      await db.updateSessionStatus(sessionId, 'initializing');
+      await sessionManager.createSession(sessionId, userId, {
+        priority: true,
+        forceFreshAuth: !!options.forceFreshAuth
+      });
+    } catch (error) {
+      console.error(`[SESSION START] Falha ao iniciar ${sessionId} (${reason}):`, error.message);
+      try {
+        await db.updateSessionStatus(sessionId, 'failed');
+      } catch (_) { /* ignore */ }
+      io.to(`user_${userId}`).emit('session_error', {
+        sessionId,
+        error: error.message
+      });
+    }
   });
   return true;
 }
@@ -1342,11 +1388,20 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
     if (!session) {
       const dbSession = await db.getSession(sessionId);
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-      const recoverable = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
-      const status = recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
+      const dbStatus = dbSession?.status || 'not_created';
+      const recoverable = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbStatus);
+      const shouldStartQr = needsQrSessionStart(dbStatus, hasRemoteAuth);
       const reactivationStarted = recoverable
         ? kickSessionReconnect(sessionId, 'my_session_saved_auth')
         : false;
+      const qrStartStarted = !recoverable && shouldStartQr
+        ? kickSessionStart(sessionId, req.userId, 'my_session_qr_required', { forceFreshAuth: hasRemoteAuth })
+        : false;
+      const status = recoverable
+        ? 'saved_auth'
+        : shouldStartQr
+          ? 'initializing'
+          : normalizeStatusWithoutRemoteAuth(dbStatus);
       return res.json({
         success: true,
         sessionId,
@@ -1355,12 +1410,20 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
         hasRemoteAuth,
         recoverable: !!recoverable,
         reactivationStarted,
+        qrStartStarted,
+        action: recoverable
+          ? 'reactivate_saved_auth'
+          : shouldStartQr
+            ? 'create_qr'
+            : 'none',
         dbStatus: dbSession?.status || null,
         message: recoverable
           ? 'Sessao salva no RemoteAuth. Reativacao automatica iniciada; acompanhe o status.'
-          : hasRemoteAuth
-          ? 'Sessao salva no RemoteAuth. Clique em criar sessao para reidratar.'
-          : 'Sessao ainda nao conectada. Clique em criar sessao para gerar QR.'
+          : shouldStartQr
+            ? 'Preparando sessao para gerar QR Code. Aguarde alguns segundos e atualize.'
+            : hasRemoteAuth
+              ? 'Sessao salva no RemoteAuth. Use reativar para reidratar.'
+              : 'Sessao ainda nao conectada. Preparando QR Code quando solicitado.'
       });
     }
 
@@ -1385,11 +1448,20 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
     if (!session) {
       const dbSession = await db.getSession(sessionId);
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-      const recoverable = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
-      const status = recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
+      const dbStatus = dbSession?.status || 'not_created';
+      const recoverable = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbStatus);
+      const shouldStartQr = needsQrSessionStart(dbStatus, hasRemoteAuth);
       const reactivationStarted = recoverable
         ? kickSessionReconnect(sessionId, 'my_qr_saved_auth')
         : false;
+      const qrStartStarted = !recoverable && shouldStartQr
+        ? kickSessionStart(sessionId, req.userId, 'my_qr_required', { forceFreshAuth: hasRemoteAuth })
+        : false;
+      const status = recoverable
+        ? 'saved_auth'
+        : shouldStartQr
+          ? 'initializing'
+          : normalizeStatusWithoutRemoteAuth(dbStatus);
       return res.json({
         success: true,
         status,
@@ -1398,12 +1470,20 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
         hasRemoteAuth,
         recoverable: !!recoverable,
         reactivationStarted,
+        qrStartStarted,
+        action: recoverable
+          ? 'reactivate_saved_auth'
+          : shouldStartQr
+            ? 'create_qr'
+            : 'none',
         dbStatus: dbSession?.status || null,
         message: recoverable
           ? 'Sessao salva no RemoteAuth; reativacao automatica iniciada.'
-          : hasRemoteAuth
-          ? 'Sessao salva no RemoteAuth; clique em criar sessao para reidratar.'
-          : 'Sessao sem RemoteAuth; clique em criar sessao para gerar QR.'
+          : shouldStartQr
+            ? 'Preparando QR Code automaticamente. Aguarde alguns segundos.'
+            : hasRemoteAuth
+              ? 'Sessao salva no RemoteAuth; use reativar para reidratar.'
+              : 'Sessao sem RemoteAuth; solicite a criacao para gerar QR.'
       });
     }
 

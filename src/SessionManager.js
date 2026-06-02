@@ -15,7 +15,7 @@ const path = require('path');
 // ═══════════════════════════════════════════════════════════════════
 const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 30; // Capacidade maxima de sessoes ativas; inicializacao continua sequencial para nao derrubar Chromium
 const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 1400;                         // Alinhado ao HealthGuard; 650MB derrubava sessoes com poucos Chromiums
-const QR_CODE_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutos para escanear QR
+const QR_CODE_TIMEOUT_MS = parseInt(process.env.QR_CODE_TIMEOUT_MS) || 15 * 60 * 1000; // 15 minutos para escanear QR por padrao
 // Keep connected sessions alive by default. Memory-pressure eviction remains available.
 const KEEP_SESSIONS_ALIVE = process.env.KEEP_SESSIONS_ALIVE !== 'false';
 const IDLE_DISCONNECT_MS = KEEP_SESSIONS_ALIVE
