@@ -25,7 +25,8 @@ const EVICT_IDLE_AFTER_MS = parseInt(process.env.EVICT_IDLE_AFTER_MS) || 20 * 60
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;        // verifica a cada 2 minutos (economiza queries)
 const SESSION_INIT_TIMEOUT_MS = 240000;           // 4 minutos para Chromium iniciar em Koyeb sob carga
 const MESSAGE_SEND_TIMEOUT_MS = 30000;            // 30 segundos timeout por mensagem (reduzido de 60s para feedback rápido)
-const MESSAGE_ACK_TIMEOUT_MS = parseInt(process.env.MESSAGE_ACK_TIMEOUT_MS) || 15000;
+const MESSAGE_ACK_TIMEOUT_MS = parseInt(process.env.MESSAGE_ACK_TIMEOUT_MS) || 30000;
+const MESSAGE_CONFIRM_ACK = parseInt(process.env.MESSAGE_CONFIRM_ACK) || 2; // 2 = delivered; 1 only means WhatsApp server accepted it.
 const STALE_SESSION_HEALTHCHECK_MS = parseInt(process.env.STALE_SESSION_HEALTHCHECK_MS) || 2 * 60 * 1000;
 const MIN_MESSAGE_INTERVAL_MS = 1500;             // 1.5 segundos entre mensagens (anti-rate-limit)
 const MAX_SEND_RETRIES = 0;                       // SEM retries — evita mensagens duplicadas
@@ -1973,7 +1974,7 @@ class SessionManager {
     return statusMap[ack] || 'unknown';
   }
 
-  waitForMessageAck(messageId, timeoutMs = MESSAGE_ACK_TIMEOUT_MS, minAck = 1) {
+  waitForMessageAck(messageId, timeoutMs = MESSAGE_ACK_TIMEOUT_MS, minAck = MESSAGE_CONFIRM_ACK) {
     if (!messageId) {
       return Promise.resolve({
         confirmed: false,
