@@ -568,7 +568,14 @@ app.post('/api/auth/register', async (req, res) => {
 
     const existingUser = await db.getUserByEmail(email);
     if (existingUser) {
-      return res.status(400).json({ error: 'Email já cadastrado' });
+      return res.status(409).json({
+        success: false,
+        error: 'Email ja cadastrado',
+        action: 'use_existing_user',
+        userId: existingUser.id,
+        email: existingUser.email,
+        message: 'Este email ja possui usuario. Use o login existente ou reative a sessao para preservar o WhatsApp salvo.'
+      });
     }
 
     const userId = await db.createUser(email, password, name, company);
