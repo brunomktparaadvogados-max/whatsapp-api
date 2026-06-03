@@ -490,7 +490,7 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
     shouldMarkLead: result?.skipped ? 'invalid' : (isPending ? 'pending' : 'sent'),
     confirmed: !result?.skipped && !isPending,
     invalidNumber: Boolean(result?.skipped || result?.status === 'invalid_number'),
-    messageId: isPending ? null : (result?.messageId || result?.id || null),
+    messageId: result?.messageId || result?.id || null,
     attemptId: result?.attemptId || null,
     skipped: !!result?.skipped,
     unconfirmed: !!result?.unconfirmed,

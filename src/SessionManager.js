@@ -25,6 +25,7 @@ const EVICT_IDLE_AFTER_MS = parseInt(process.env.EVICT_IDLE_AFTER_MS) || 20 * 60
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;        // verifica a cada 2 minutos (economiza queries)
 const SESSION_INIT_TIMEOUT_MS = 240000;           // 4 minutos para Chromium iniciar em Koyeb sob carga
 const MESSAGE_SEND_TIMEOUT_MS = 30000;            // 30 segundos timeout por mensagem (reduzido de 60s para feedback rápido)
+const MESSAGE_ACK_TIMEOUT_MS = parseInt(process.env.MESSAGE_ACK_TIMEOUT_MS) || 15000;
 const STALE_SESSION_HEALTHCHECK_MS = parseInt(process.env.STALE_SESSION_HEALTHCHECK_MS) || 2 * 60 * 1000;
 const MIN_MESSAGE_INTERVAL_MS = 1500;             // 1.5 segundos entre mensagens (anti-rate-limit)
 const MAX_SEND_RETRIES = 0;                       // SEM retries — evita mensagens duplicadas
@@ -63,6 +64,8 @@ class SessionManager {
     this.sessionInitQueue = [];
     this.sessionInitFailures = new Map();
     this.remoteAuthSaveInFlight = new Set(); // Evita backups RemoteAuth simultaneos da mesma sessao
+    this.messageAckWaiters = new Map();
+    this.messageAckCache = new Map();
     this._contactCache = new Map();          // Cache de contatos: "session_phone" → timestamp (evita upsert repetido)
     this._contactCacheTTL = 10 * 60 * 1000; // 10 min TTL — mesmo contato não faz upsert de novo por 10 min
 
@@ -1393,14 +1396,14 @@ class SessionManager {
         mediaMimetype: null,
         fromMe: true,
         timestamp: message.timestamp,
-        status: 'sent'
+        status: 'pending'
       };
 
       // NÃO faz upsertContact aqui — o sendMessage (disparo via API) já cria o contato.
       // Fazer upsert aqui criaria leads falsos para contatos pessoais do WhatsApp,
       // já que message_create dispara para TODA mensagem enviada (pessoal ou campanha).
 
-      this.io.to(`user_${sessionData.userId}`).emit('message_sent', {
+      this.io.to(`user_${sessionData.userId}`).emit('message_pending', {
         sessionId: sessionData.id,
         message: messageData
       });
@@ -1411,13 +1414,40 @@ class SessionManager {
     });
 
     client.on('message_ack', async (message, ack) => {
-      const statusMap = { 0: 'error', 1: 'pending', 2: 'sent', 3: 'delivered', 4: 'read' };
-      const status = statusMap[ack] || 'unknown';
-      await this.db.updateMessageStatus(message.id._serialized, status);
+      const messageId = message?.id?._serialized;
+      if (!messageId) return;
+
+      const ackNumber = Number(ack);
+      const status = this.getAckStatus(ackNumber);
+      const ackData = {
+        ack: ackNumber,
+        status,
+        timestamp: Date.now()
+      };
+      this.messageAckCache.set(messageId, ackData);
+
+      const waiter = this.messageAckWaiters.get(messageId);
+      if (waiter && (ackNumber >= waiter.minAck || ackNumber === -1)) {
+        clearTimeout(waiter.timeout);
+        this.messageAckWaiters.delete(messageId);
+        waiter.resolve({
+          confirmed: ackNumber >= waiter.minAck,
+          ack: ackNumber,
+          status,
+          timedOut: false
+        });
+      }
+
+      try {
+        await this.db.updateMessageStatus(messageId, status);
+      } catch (error) {
+        console.warn(`[${sessionData.id}] Falha ao atualizar ACK ${messageId}: ${error.message}`);
+      }
 
       this.io.to(`user_${sessionData.userId}`).emit('message_status', {
         sessionId: sessionData.id,
-        messageId: message.id._serialized,
+        messageId,
+        ack: ackNumber,
         status
       });
     });
@@ -1931,6 +1961,65 @@ class SessionManager {
     return null;
   }
 
+  getAckStatus(ack) {
+    const statusMap = {
+      [-1]: 'failed',
+      0: 'pending',
+      1: 'sent',
+      2: 'delivered',
+      3: 'read',
+      4: 'played'
+    };
+    return statusMap[ack] || 'unknown';
+  }
+
+  waitForMessageAck(messageId, timeoutMs = MESSAGE_ACK_TIMEOUT_MS, minAck = 1) {
+    if (!messageId) {
+      return Promise.resolve({
+        confirmed: false,
+        ack: null,
+        status: 'unknown',
+        timedOut: true
+      });
+    }
+
+    const cached = this.messageAckCache.get(messageId);
+    if (cached && (cached.ack >= minAck || cached.ack === -1)) {
+      return Promise.resolve({
+        confirmed: cached.ack >= minAck,
+        ack: cached.ack,
+        status: cached.status,
+        timedOut: false
+      });
+    }
+
+    const now = Date.now();
+    for (const [cachedId, data] of this.messageAckCache.entries()) {
+      if (now - data.timestamp > 5 * 60 * 1000) {
+        this.messageAckCache.delete(cachedId);
+      }
+    }
+
+    return new Promise(resolve => {
+      const timeout = setTimeout(() => {
+        this.messageAckWaiters.delete(messageId);
+        const latest = this.messageAckCache.get(messageId);
+        resolve({
+          confirmed: false,
+          ack: latest?.ack ?? null,
+          status: latest?.status || 'pending',
+          timedOut: true
+        });
+      }, timeoutMs);
+
+      this.messageAckWaiters.set(messageId, {
+        minAck,
+        timeout,
+        resolve
+      });
+    });
+  }
+
   // Envia uma mensagem com timeout
   async sendMessageWithTimeout(client, chatId, message, mediaUrl, timeoutMs = MESSAGE_SEND_TIMEOUT_MS) {
     const sendPromise = (async () => {
@@ -2087,15 +2176,54 @@ class SessionManager {
     const attemptSend = async (currentClient, isRetry = false, isLidRetry = false) => {
       try {
         const sentMessage = await this.sendMessageWithTimeout(currentClient, chatId, message, mediaUrl);
-        console.log(`✅ [${sessionId}] Mensagem enviada com sucesso${isRetry ? ' (após reconexão)' : isLidRetry ? ' (após retry LID)' : ''}! ID: ${sentMessage?.id?._serialized || 'N/A'}`);
+        const sentMessageId = sentMessage?.id?._serialized;
+        console.log(`[${sessionId}] WhatsApp Web criou mensagem${isRetry ? ' (após reconexão)' : isLidRetry ? ' (após retry LID)' : ''}. Aguardando ACK do WhatsApp... ID: ${sentMessageId || 'N/A'}`);
+
+        const ackResult = await this.waitForMessageAck(sentMessageId);
+        if (!ackResult.confirmed) {
+          console.warn(`[${sessionId}] Envio para ${normalizedPhone} sem ACK confirmado (${ackResult.status}, ack=${ackResult.ack ?? 'none'}). Mantendo pendente para evitar falso enviado.`);
+
+          await this.cachedUpsertContact(sessionId, normalizedPhone);
+          session.lastSeen = Date.now();
+          this.sessionLastActivity.set(sessionId, Date.now());
+
+          return {
+            id: sentMessageId,
+            messageId: sentMessageId,
+            attemptId: sentMessageId || `unconfirmed_${sessionId}_${normalizedPhone}_${Date.now()}`,
+            success: false,
+            confirmed: false,
+            invalidNumber: false,
+            unconfirmed: true,
+            ack: ackResult.ack,
+            ackStatus: ackResult.status,
+            ackTimedOut: ackResult.timedOut,
+            sessionId: sessionId,
+            contactPhone: normalizedPhone,
+            to: normalizedPhone,
+            phone: normalizedPhone,
+            messageType: sentMessage?.type || (mediaUrl ? 'media' : 'chat'),
+            body: message,
+            mediaUrl: mediaUrl,
+            mediaMimetype: null,
+            fromMe: true,
+            timestamp: sentMessage?.timestamp || Math.floor(Date.now() / 1000),
+            status: 'pending',
+            note: 'WhatsApp Web criou a mensagem, mas o WhatsApp nao confirmou o envio via ACK. Mantido pendente para evitar falso enviado.'
+          };
+        }
+
+        console.log(`[${sessionId}] ACK confirmado para ${normalizedPhone}: ${ackResult.status} (ack=${ackResult.ack})`);
 
         const messageData = {
-          id: sentMessage.id._serialized,
-          messageId: sentMessage.id._serialized,
+          id: sentMessageId,
+          messageId: sentMessageId,
           success: true,
           confirmed: true,
           invalidNumber: false,
           unconfirmed: false,
+          ack: ackResult.ack,
+          ackStatus: ackResult.status,
           sessionId: sessionId,
           contactPhone: normalizedPhone,
           to: normalizedPhone,
@@ -2553,13 +2681,20 @@ class SessionManager {
 
     // Usa o mesmo timeout do sendMessage para consistência
     const result = await this.sendMessageWithTimeout(session.client, chatId, caption, mediaUrl);
+    const messageId = result?.id?._serialized;
+    const ackResult = await this.waitForMessageAck(messageId);
 
     session.lastSeen = Date.now();
     this.sessionLastActivity.set(sessionId, Date.now());
 
     return {
-      success: true,
-      messageId: result.id._serialized,
+      success: ackResult.confirmed,
+      confirmed: ackResult.confirmed,
+      unconfirmed: !ackResult.confirmed,
+      status: ackResult.confirmed ? 'sent' : 'pending',
+      ack: ackResult.ack,
+      ackStatus: ackResult.status,
+      messageId,
       timestamp: result.timestamp
     };
   }
