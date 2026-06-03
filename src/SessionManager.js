@@ -1911,7 +1911,7 @@ class SessionManager {
           return session;
         }
         // Estados terminais — não vai recuperar
-        if (session.status === 'failed' || session.status === 'auth_failure') {
+        if (session.status === 'failed' || session.status === 'auth_failure' || session.status === 'qr_code') {
           return null;
         }
         // 'authenticated' = progredindo, continua aguardando 'ready'
