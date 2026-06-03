@@ -65,6 +65,7 @@ class SessionManager {
     this.sessionInitQueue = [];
     this.sessionInitFailures = new Map();
     this.remoteAuthSaveInFlight = new Set(); // Evita backups RemoteAuth simultaneos da mesma sessao
+    this.remoteAuthBackupTimers = new Map(); // Evita rajadas de backups forçados na mesma sessao
     this.messageAckWaiters = new Map();
     this.messageAckCache = new Map();
     this._contactCache = new Map();          // Cache de contatos: "session_phone" → timestamp (evita upsert repetido)
@@ -344,15 +345,24 @@ class SessionManager {
 
   scheduleRemoteAuthBackup(sessionData, delayMs, reason) {
     if (!this.useRemoteAuth || !sessionData?.client?.authStrategy?.storeRemoteSession) return;
+    const key = `${sessionData.id}:${reason}`;
+    if (this.remoteAuthBackupTimers.has(key)) return;
     setTimeout(() => {
+      this.remoteAuthBackupTimers.delete(key);
       this.forceRemoteAuthBackup(sessionData.id, reason).catch(error => {
         console.warn(`[${sessionData.id}] Backup RemoteAuth (${reason}) falhou: ${error.message}`);
       });
     }, delayMs).unref?.();
+    this.remoteAuthBackupTimers.set(key, true);
   }
 
   scheduleInitialRemoteAuthBackups(sessionData, reason) {
-    for (const delayMs of [1000, 5000, 15000, 30000, 60000, 120000, 180000]) {
+    const prefix = `${sessionData.id}:initial_backup_scheduled`;
+    if (this.remoteAuthBackupTimers.has(prefix)) return;
+    this.remoteAuthBackupTimers.set(prefix, true);
+    setTimeout(() => this.remoteAuthBackupTimers.delete(prefix), 5 * 60 * 1000).unref?.();
+
+    for (const delayMs of [15000, 60000, 180000]) {
       this.scheduleRemoteAuthBackup(sessionData, delayMs, `${reason}_${delayMs / 1000}s`);
     }
   }

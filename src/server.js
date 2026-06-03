@@ -481,21 +481,28 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
     () => sessionManager.sendMessage(sessionId, to, message, mediaUrl),
     { sessionId, to }
   );
+  const deliveryFailed = result?.ack === -1 || result?.ackStatus === 'failed';
   const isPending = !!result?.unconfirmed || result?.status === 'pending';
-  const finalStatus = result?.skipped ? 'invalid_number' : (isPending ? 'pending' : 'sent');
-  return res.status(result?.skipped ? 422 : (isPending ? 202 : 200)).json({
-    success: !result?.skipped && !isPending,
-    status: result?.status || finalStatus,
+  const finalStatus = result?.skipped ? 'invalid_number' : (deliveryFailed ? 'failed' : (isPending ? 'pending' : 'sent'));
+  return res.status(result?.skipped ? 422 : (deliveryFailed ? 409 : (isPending ? 202 : 200))).json({
+    success: !result?.skipped && !isPending && !deliveryFailed,
+    status: deliveryFailed ? 'failed' : (result?.status || finalStatus),
     finalStatus,
-    shouldMarkLead: result?.skipped ? 'invalid' : (isPending ? 'pending' : 'sent'),
-    confirmed: !result?.skipped && !isPending,
+    shouldMarkLead: result?.skipped ? 'invalid' : (deliveryFailed || isPending ? 'pending' : 'sent'),
+    confirmed: !result?.skipped && !isPending && !deliveryFailed,
     invalidNumber: Boolean(result?.skipped || result?.status === 'invalid_number'),
     messageId: result?.messageId || result?.id || null,
     attemptId: result?.attemptId || null,
     skipped: !!result?.skipped,
     unconfirmed: !!result?.unconfirmed,
     sessionId,
-    message: result?.skipped ? 'Contato invalido ou nao resolvido pelo WhatsApp' : (isPending ? 'Envio nao confirmado pelo WhatsApp; manter pendente' : 'Mensagem enviada com sucesso'),
+    errorType: deliveryFailed ? 'delivery_failed' : undefined,
+    action: deliveryFailed ? 'keep_pending_review_session' : undefined,
+    message: result?.skipped
+      ? 'Contato invalido ou nao resolvido pelo WhatsApp'
+      : (deliveryFailed
+        ? 'WhatsApp rejeitou ou nao entregou a mensagem nesta sessao; manter lead pendente e revisar a sessao do WhatsApp.'
+        : (isPending ? 'Envio nao confirmado pelo WhatsApp; manter pendente' : 'Mensagem enviada com sucesso')),
     data: result
   });
 }
