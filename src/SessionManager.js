@@ -219,11 +219,6 @@ class SessionManager {
       const sessionsWithAuth = [];
       for (const session of validSessions) {
         try {
-          if (session.status === 'auth_failure') {
-            console.log(`${session.id}: RemoteAuth rejeitado anteriormente; QR necessario, sem restore automatico.`);
-            continue;
-          }
-
           const authId = `RemoteAuth-${session.id}`;
           const hasAuth = await this.pgStore.sessionExists({ session: authId });
           if (hasAuth) {
@@ -1834,11 +1829,6 @@ class SessionManager {
       return null;
     }
 
-    if (dbSession.status === 'auth_failure') {
-      console.log(`[${sessionId}] Auth salva rejeitada anteriormente; auto-reconexao bloqueada ate novo QR.`);
-      return null;
-    }
-
     // Verificar se RemoteAuth tem dados salvos
     if (!this.pgStore || !this.useRemoteAuth) {
       console.log(`❌ [${sessionId}] RemoteAuth não disponível — QR necessário`);
@@ -1859,6 +1849,11 @@ class SessionManager {
     }
 
     // Marcar como reconectando (evita múltiplas reconexões paralelas)
+    if (dbSession.status === 'auth_failure') {
+      console.log(`[${sessionId}] Retestando RemoteAuth valido mesmo apos auth_failure anterior.`);
+      await this.db.updateSessionStatus(sessionId, 'authenticated');
+    }
+
     this.reconnectingSet.add(sessionId);
     console.log(`🔄 [${sessionId}] Iniciando auto-reconexão via RemoteAuth...`);
 
