@@ -157,11 +157,24 @@ function needsLiveSessionReconnect(dbStatus) {
 }
 
 function needsQrSessionStart(dbStatus, hasRemoteAuth) {
+  // auth_failure is an operator-confirmed state: WhatsApp rejected the saved
+  // browser profile, so the next start must produce a fresh QR while the old
+  // RemoteAuth record remains preserved until a new scan is saved.
+  if (dbStatus === 'auth_failure') return true;
+
   // If a valid RemoteAuth package exists, always try it before forcing a new QR.
   // Some sessions were marked auth_failure during resource pressure, but the
   // saved browser profile is still usable after a clean rehydrate.
   if (hasRemoteAuth) return false;
   return ['auth_failure', 'disconnected', 'failed', 'not_created'].includes(dbStatus || 'not_created');
+}
+
+function shouldForceFreshAuth(dbStatus, hasRemoteAuth) {
+  return dbStatus === 'auth_failure' || !hasRemoteAuth;
+}
+
+function canTrustSavedRemoteAuth(dbStatus, hasRemoteAuth) {
+  return !!hasRemoteAuth && !shouldForceFreshAuth(dbStatus, hasRemoteAuth);
 }
 
 function normalizeStatusWithoutRemoteAuth(dbStatus) {
@@ -1594,7 +1607,8 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       });
     }
 
-    const canTrustSavedAuth = hasRemoteAuth;
+    const forceFreshAuth = shouldForceFreshAuth(dbSession?.status, hasRemoteAuth);
+    const canTrustSavedAuth = canTrustSavedRemoteAuth(dbSession?.status, hasRemoteAuth);
 
     if (dbSession) {
       await db.updateSessionStatus(targetSessionId, canTrustSavedAuth ? 'authenticated' : 'initializing');
@@ -1605,7 +1619,7 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
         console.log(`🔄 Criando sessão ${targetSessionId} para usuário ${targetUserId}...`);
         await sessionManager.createSession(targetSessionId, targetUserId, {
           priority: true,
-          forceFreshAuth: !hasRemoteAuth
+          forceFreshAuth
         });
         console.log(`✅ Sessão ${targetSessionId} criada`);
       } catch (error) {
@@ -1707,7 +1721,8 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
     }
 
     const targetUserId = dbSession.user_id || parseInt(sessionId.replace('user_', ''), 10);
-    const canTrustSavedAuth = hasRemoteAuth;
+    const forceFreshAuth = shouldForceFreshAuth(dbSession.status, hasRemoteAuth);
+    const canTrustSavedAuth = canTrustSavedRemoteAuth(dbSession.status, hasRemoteAuth);
     const action = canTrustSavedAuth ? 'reactivate_saved_auth' : 'create_qr';
 
     await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'authenticated' : 'initializing');
@@ -1717,7 +1732,7 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
         console.log(`[REACTIVATE] ${action} para ${sessionId}`);
         await sessionManager.createSession(sessionId, targetUserId, {
           priority: true,
-          forceFreshAuth: !hasRemoteAuth
+          forceFreshAuth
         });
       } catch (error) {
         console.error(`[REACTIVATE] Falha ao reativar ${sessionId}:`, error.message);
