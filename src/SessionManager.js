@@ -16,11 +16,12 @@ const path = require('path');
 const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 30; // Capacidade maxima de sessoes ativas; inicializacao continua sequencial para nao derrubar Chromium
 const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 1400;                         // Alinhado ao HealthGuard; 650MB derrubava sessoes com poucos Chromiums
 const QR_CODE_TIMEOUT_MS = parseInt(process.env.QR_CODE_TIMEOUT_MS) || 15 * 60 * 1000; // 15 minutos para escanear QR por padrao
-// Keep connected sessions alive by default. Memory-pressure eviction remains available.
-const KEEP_SESSIONS_ALIVE = process.env.KEEP_SESSIONS_ALIVE !== 'false';
+// Keep sessions alive only when explicitly requested. By default, idle Chromium
+// processes hibernate while RemoteAuth stays preserved in PostgreSQL.
+const KEEP_SESSIONS_ALIVE = process.env.KEEP_SESSIONS_ALIVE === 'true';
 const IDLE_DISCONNECT_MS = KEEP_SESSIONS_ALIVE
   ? 0
-  : Math.max(0, parseInt(process.env.IDLE_DISCONNECT_MS ?? String(5 * 60 * 60 * 1000), 10) || 0);
+  : Math.max(0, parseInt(process.env.IDLE_DISCONNECT_MS ?? String(30 * 60 * 1000), 10) || 0);
 const EVICT_IDLE_AFTER_MS = parseInt(process.env.EVICT_IDLE_AFTER_MS) || 20 * 60 * 1000; // não expulsar sessão usada recentemente
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;        // verifica a cada 2 minutos (economiza queries)
 const SESSION_INIT_TIMEOUT_MS = 240000;           // 4 minutos para Chromium iniciar em Koyeb sob carga
@@ -68,6 +69,7 @@ class SessionManager {
     this.remoteAuthBackupTimers = new Map(); // Evita rajadas de backups forçados na mesma sessao
     this.messageAckWaiters = new Map();
     this.messageAckCache = new Map();
+    this.intentionalShutdowns = new Set();    // Destroy controlado nao deve disparar auto-reconnect
     this._contactCache = new Map();          // Cache de contatos: "session_phone" → timestamp (evita upsert repetido)
     this._contactCacheTTL = 10 * 60 * 1000; // 10 min TTL — mesmo contato não faz upsert de novo por 10 min
 
@@ -264,9 +266,9 @@ class SessionManager {
       const toRestore = sessionsWithAuth.slice(0, restoreLimit);
       const remaining = sessionsWithAuth.slice(restoreLimit);
 
-      // Sessões que excedem o limite ficam disconnected (auto-reconexão sob demanda)
+      // Sessões que excedem o limite ficam hibernadas (auto-reconexão sob demanda)
       for (const s of remaining) {
-        await this.db.updateSessionStatus(s.id, 'authenticated');
+        await this.db.updateSessionStatus(s.id, 'saved_auth');
         console.log(`⏸️ ${s.id}: RemoteAuth salvo mas slot cheio — reconexão sob demanda`);
       }
 
@@ -401,7 +403,16 @@ class SessionManager {
       return false;
     }
 
-    console.log(`🔌 [${sessionId}] Desconectando sessão por inatividade...`);
+    console.log(`[${sessionId}] Hibernando sessao por inatividade...`);
+
+    let hasRemoteAuth = await this.hasSavedRemoteAuth(sessionId);
+    if (!hasRemoteAuth && session.client?.authStrategy?.storeRemoteSession) {
+      try {
+        hasRemoteAuth = await this.forceRemoteAuthBackup(sessionId, 'idle_hibernate');
+      } catch (e) {
+        console.warn(`[${sessionId}] Backup antes de hibernar falhou: ${e.message}`);
+      }
+    }
 
     // Destrói o processo Chromium
     if (session.client) {
@@ -419,8 +430,7 @@ class SessionManager {
     this.lastMessageTime.delete(sessionId);
     this.sessionSendLock.delete(sessionId);
 
-    const hasRemoteAuth = await this.hasSavedRemoteAuth(sessionId);
-    const nextStatus = hasRemoteAuth ? 'authenticated' : 'disconnected';
+    const nextStatus = hasRemoteAuth ? 'saved_auth' : 'disconnected';
 
     await this.db.updateSessionStatus(sessionId, nextStatus);
 
@@ -434,10 +444,13 @@ class SessionManager {
       status: nextStatus,
       hasRemoteAuth,
       recoverable: hasRemoteAuth,
-      message: 'Sessão desconectada por inatividade. Crie uma nova sessão para reconectar.'
+      hibernated: hasRemoteAuth,
+      message: hasRemoteAuth
+        ? 'Sessao hibernada por inatividade. A autenticacao foi preservada; reative para restaurar sem QR.'
+        : 'Sessao desconectada por inatividade. Gere um novo QR Code para conectar.'
     });
 
-    console.log(`🔌 [${sessionId}] Desconectada. Chromium ativos: ${this.getActiveChromiumCount()}/${MAX_CONCURRENT_SESSIONS}`);
+    console.log(`[${sessionId}] Hibernada. Chromium ativos: ${this.getActiveChromiumCount()}/${MAX_CONCURRENT_SESSIONS}`);
     return true;
   }
 
@@ -498,9 +511,9 @@ class SessionManager {
         }
 
         // Marca como disconnected em vez de tentar restaurar
-        if (session.status === 'connected' || session.status === 'authenticated') {
-          await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'authenticated' : 'disconnected');
-          console.log(`📴 Sessão ${sessionId}: ${session.status} → disconnected`);
+        if (session.status === 'connected' || session.status === 'authenticated' || session.status === 'saved_auth') {
+          await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'saved_auth' : 'disconnected');
+          console.log(`📴 Sessão ${sessionId}: ${session.status} → saved_auth/disconnected`);
         }
       }
 
@@ -824,6 +837,13 @@ class SessionManager {
   // Limpa sessão da memória e destrói Chromium, sem tocar no banco
   async cleanupSession(sessionId) {
     const session = this.sessions.get(sessionId);
+    this.intentionalShutdowns.add(sessionId);
+    this.sessions.delete(sessionId);
+    this.sessionLastActivity.delete(sessionId);
+    this.reconnectAttempts.delete(sessionId);
+    this.reconnectPromises.delete(sessionId);
+    this.reconnectingSet.delete(sessionId);
+
     if (session && session.client) {
       try {
         await session.client.destroy();
@@ -832,9 +852,7 @@ class SessionManager {
         console.error(`⚠️ Erro ao destruir cliente ${sessionId}:`, e.message);
       }
     }
-    this.sessions.delete(sessionId);
-    this.sessionLastActivity.delete(sessionId);
-    this.reconnectAttempts.delete(sessionId);
+    setTimeout(() => this.intentionalShutdowns.delete(sessionId), 5000);
 
     // Limpa arquivos do disco para liberar espaço
     this.cleanupSessionFiles(sessionId);
@@ -998,7 +1016,7 @@ class SessionManager {
       // Se é um erro fatal que indica que o Chromium morreu
       if (this.isFatalSessionError(error)) {
         console.error(`💀 [${sessionData.id}] Erro FATAL detectado no event handler. Iniciando reconexão...`);
-        const nextStatus = await this.hasSavedRemoteAuth(sessionData.id) ? 'authenticated' : 'disconnected';
+        const nextStatus = await this.hasSavedRemoteAuth(sessionData.id) ? 'saved_auth' : 'disconnected';
         sessionData.status = nextStatus;
         await this.db.updateSessionStatus(sessionData.id, nextStatus);
 
@@ -1100,8 +1118,8 @@ class SessionManager {
             return;
           }
 
-          currentSession.status = 'authenticated';
-          await this.db.updateSessionStatus(sessionData.id, 'authenticated');
+          currentSession.status = 'saved_auth';
+          await this.db.updateSessionStatus(sessionData.id, 'saved_auth');
           this.io.to(`user_${sessionData.userId}`).emit('session_reconnecting', {
             sessionId: sessionData.id,
             error: 'WhatsApp autenticou mas demorou para conectar. Reconexao automatica em andamento.',
@@ -1205,6 +1223,11 @@ class SessionManager {
     client.on('disconnected', async (reason) => {
       console.log(`🔴 Desconectado: ${sessionData.id} - Motivo: ${reason}`);
       sessionData.lastSeen = Date.now();
+
+      if (this.intentionalShutdowns.has(sessionData.id)) {
+        console.log(`[${sessionData.id}] Disconnected esperado durante cleanup/hibernacao; sem auto-reconnect.`);
+        return;
+      }
 
       const hasRemoteAuth = await this.hasSavedRemoteAuth(sessionData.id);
       const shouldReconnect = reason !== 'LOGOUT' && reason !== 'CONFLICT' && hasRemoteAuth;
@@ -1490,7 +1513,7 @@ class SessionManager {
     if (attempts >= this.maxReconnectAttempts) {
       console.log(`❌ [${sessionId}] Máximo de ${this.maxReconnectAttempts} reconexões atingido. Sessão precisa ser recriada manualmente.`);
       await this.cleanupSession(sessionId);
-      const preservedStatus = await this.hasSavedRemoteAuth(sessionId) ? 'authenticated' : 'failed';
+      const preservedStatus = await this.hasSavedRemoteAuth(sessionId) ? 'saved_auth' : 'failed';
       await this.db.updateSessionStatus(sessionId, preservedStatus);
 
       // Notifica frontend que todas as tentativas falharam
@@ -2105,7 +2128,7 @@ class SessionManager {
       if (!alive) {
         console.warn(`⚠️ [${sessionId}] Sessão marcada como connected, mas Chromium não respondeu. Reconectando antes do envio...`);
         await this.cleanupSession(sessionId);
-        await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'authenticated' : 'disconnected');
+        await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'saved_auth' : 'disconnected');
         session = await this.autoReconnectForSend(sessionId);
         if (!session || !session.client || session.status !== 'connected') {
           throw new Error('Sessão conectada no banco, mas o Chromium não respondeu e a reconexão falhou. Tente novamente em 1 minuto.');
@@ -2261,7 +2284,7 @@ class SessionManager {
           setImmediate(async () => {
             try {
               await this.cleanupSession(sessionId);
-              await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'authenticated' : 'disconnected');
+              await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'saved_auth' : 'disconnected');
               await this.autoReconnectForSend(sessionId);
             } catch (reconnectErr) {
               console.error(`Erro no reconnect em background apos envio ambiguo ${sessionId}: ${reconnectErr.message}`);
@@ -2490,7 +2513,7 @@ class SessionManager {
           setImmediate(async () => {
             try {
               await this.cleanupSession(sessionId);
-              await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'authenticated' : 'disconnected');
+              await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'saved_auth' : 'disconnected');
               await this.autoReconnectForSend(sessionId);
             } catch (reconErr) {
               console.error(`Erro no reconnect em background apos envio ambiguo ${sessionId}: ${reconErr.message}`);
@@ -2822,9 +2845,9 @@ class SessionManager {
         }
       }
 
-      // Desconecta sessões idle (libera Chromium, usuário precisará escanear QR novamente)
+      // Hiberna sessões idle: libera Chromium sem apagar RemoteAuth.
       for (const { sid, idleTime } of toDisconnect) {
-        console.log(`🔌 Auto-disconnect: "${sid}" — idle por ${Math.round(idleTime / 1000)}s`);
+        console.log(`Auto-hibernate: "${sid}" — idle por ${Math.round(idleTime / 1000)}s`);
         try {
           await this.disconnectIdleSession(sid);
         } catch (e) {
@@ -2837,9 +2860,15 @@ class SessionManager {
         console.log(`🧹 Auto-limpeza: "${sid}" — ${reason}`);
         try {
           const sess = this.sessions.get(sid);
-          const nextStatus = sess?.status === 'qr_code' && sess?.qrFromRejectedAuth
-            ? 'auth_failure'
-            : (sess?.status === 'qr_code' ? 'disconnected' : null);
+          const hasRemoteAuth = await this.hasSavedRemoteAuth(sid);
+          let nextStatus = null;
+          if (sess?.status === 'qr_code') {
+            nextStatus = sess?.qrFromRejectedAuth
+              ? 'auth_failure'
+              : (hasRemoteAuth ? 'saved_auth' : 'disconnected');
+          } else if (['failed', 'disconnected'].includes(sess?.status) && hasRemoteAuth) {
+            nextStatus = 'saved_auth';
+          }
           await this.cleanupSession(sid);
           if (nextStatus) {
             await this.db.updateSessionStatus(sid, nextStatus);

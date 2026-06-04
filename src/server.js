@@ -433,7 +433,7 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
     if (!hasRemoteAuth) {
       return respondSessionQrRequired(res, sessionId, to, 'A autenticacao salva foi rejeitada pelo WhatsApp');
     }
-    await db.updateSessionStatus(sessionId, 'authenticated');
+    await db.updateSessionStatus(sessionId, 'saved_auth');
   }
 
   const liveSession = sessionManager.getSession(sessionId);
@@ -654,9 +654,6 @@ app.post('/api/auth/login', async (req, res) => {
       sessionStatus = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status)
         ? 'saved_auth'
         : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
-      if (sessionStatus === 'saved_auth') {
-        kickSessionReconnect(sessionId, 'login_saved_auth');
-      }
     }
 
     res.json({
@@ -670,7 +667,7 @@ app.post('/api/auth/login', async (req, res) => {
       },
       sessionId: sessionId,
       sessionStatus: sessionStatus,
-      reactivationStarted: sessionStatus === 'saved_auth'
+      reactivationStarted: false
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -708,9 +705,6 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
         const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
         const recoverable = hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
         const status = recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(dbSession.status || 'disconnected');
-        const reactivationStarted = recoverable
-          ? kickSessionReconnect(sessionId, 'auth_me_saved_auth')
-          : false;
         sessionInfo = {
           sessionId: dbSession.id,
           status,
@@ -718,7 +712,7 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
           info: null,
           hasRemoteAuth,
           recoverable,
-          reactivationStarted
+          reactivationStarted: false
         };
       }
     }
@@ -1189,7 +1183,7 @@ app.post('/api/admin/migrate-remote-auth', authMiddleware, async (req, res) => {
       overwrite: force
     });
 
-    await db.updateSessionStatus(toSessionId, 'authenticated');
+    await db.updateSessionStatus(toSessionId, 'saved_auth');
 
     console.log(`[ADMIN MIGRATE AUTH] ${migration.from} -> ${migration.to} (${migration.sizeMB}MB, source=${migration.sourceKind}, overwrite=${migration.overwritten})`);
 
@@ -1202,7 +1196,7 @@ app.post('/api/admin/migrate-remote-auth', authMiddleware, async (req, res) => {
         name: targetUser.name
       },
       sessionId: toSessionId,
-      status: 'authenticated',
+      status: 'saved_auth',
       migration,
       message: 'RemoteAuth copiado para o usuario correto. Reative a sessao sob demanda para validar a conexao.'
     });
@@ -1618,7 +1612,7 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
         console.error(`❌ Erro ao criar sessão ${targetSessionId}:`, error.message);
         // Marca como 'failed' no banco para que o polling do frontend detecte
         try {
-          await db.updateSessionStatus(targetSessionId, canTrustSavedAuth ? 'authenticated' : 'failed');
+          await db.updateSessionStatus(targetSessionId, canTrustSavedAuth ? 'saved_auth' : 'failed');
         } catch (_) { /* ignora */ }
         // Emite erro via Socket.IO (caso frontend suporte no futuro)
         io.to(`user_${targetUserId}`).emit('session_error', {
@@ -1728,7 +1722,7 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
       } catch (error) {
         console.error(`[REACTIVATE] Falha ao reativar ${sessionId}:`, error.message);
         try {
-          await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'authenticated' : 'failed');
+          await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'saved_auth' : 'failed');
         } catch (_) { /* ignore */ }
         io.to(`user_${targetUserId}`).emit('session_error', {
           sessionId,
@@ -2722,8 +2716,9 @@ setInterval(async () => {
     // O event handler cuida da maioria; esta varredura e apenas um fallback.
     if (s.status === 'authenticated' && s.lastSeen && (now - s.lastSeen) > AUTHENTICATED_ZOMBIE_TIMEOUT_MS) {
       console.warn(`🧟 Sessão zumbi: ${s.id} — "authenticated" por ${Math.round((now - s.lastSeen) / 1000)}s`);
+      const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(s.id);
       await sessionManager.cleanupSession(s.id);
-      await db.updateSessionStatus(s.id, await sessionManager.hasSavedRemoteAuth(s.id) ? 'authenticated' : 'disconnected');
+      await db.updateSessionStatus(s.id, hasRemoteAuth ? 'saved_auth' : 'disconnected');
     }
 
     // Caso 2: Sessão "connected" mas SEM ATIVIDADE por mais de 30 min
@@ -2733,33 +2728,17 @@ setInterval(async () => {
         const alive = await sessionManager.isSessionAlive(s.id);
         if (!alive) {
           console.warn(`🧟 Sessão ${s.id} — "connected" mas Chromium morto (inativa ${Math.round((now - s.lastSeen) / 60000)}min)`);
+          const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(s.id);
           await sessionManager.cleanupSession(s.id);
-          await db.updateSessionStatus(s.id, await sessionManager.hasSavedRemoteAuth(s.id) ? 'authenticated' : 'disconnected');
-
-          // Tenta auto-reconexão antes de notificar desconexão
-          console.log(`🔄 [${s.id}] Tentando auto-reconexão após detectar Chromium morto...`);
-          try {
-            const reconSession = await sessionManager.autoReconnectForSend(s.id);
-            if (reconSession) {
-              console.log(`✅ [${s.id}] Auto-reconexão pós-zombie bem-sucedida! Sessão restaurada.`);
-              io.to(`user_${s.userId}`).emit('session_reconnected', {
-                sessionId: s.id,
-                reason: 'AUTO_RECONNECT_AFTER_ZOMBIE'
-              });
-            } else {
-              console.warn(`❌ [${s.id}] Auto-reconexão pós-zombie falhou — QR será necessário`);
-              io.to(`user_${s.userId}`).emit('session_disconnected', {
-                sessionId: s.id,
-                reason: 'CHROMIUM_DEAD'
-              });
-            }
-          } catch (reconErr) {
-            console.error(`❌ [${s.id}] Erro na auto-reconexão pós-zombie: ${reconErr.message}`);
-            io.to(`user_${s.userId}`).emit('session_disconnected', {
-              sessionId: s.id,
-              reason: 'CHROMIUM_DEAD'
-            });
-          }
+          const nextStatus = hasRemoteAuth ? 'saved_auth' : 'disconnected';
+          await db.updateSessionStatus(s.id, nextStatus);
+          io.to(`user_${s.userId}`).emit('session_disconnected', {
+            sessionId: s.id,
+            status: nextStatus,
+            recoverable: hasRemoteAuth,
+            hibernated: hasRemoteAuth,
+            reason: 'CHROMIUM_DEAD_HIBERNATED'
+          });
         }
       } catch (e) {
         // Erro ao verificar NÃO mata a sessão — pode ser temporário
@@ -3137,7 +3116,7 @@ process.on('SIGTERM', async () => {
         }
       }
       // Marca como disconnected no banco (NÃO deleta)
-      await db.updateSessionStatus(session.id, await sessionManager.hasSavedRemoteAuth(session.id) ? 'authenticated' : 'disconnected');
+      await db.updateSessionStatus(session.id, await sessionManager.hasSavedRemoteAuth(session.id) ? 'saved_auth' : 'disconnected');
     } catch (error) {
       console.error(`❌ Erro ao encerrar ${session.id}:`, error.message);
     }
@@ -3181,25 +3160,17 @@ process.on('unhandledRejection', (reason, promise) => {
             try {
               const alive = await sessionManager.isSessionAlive(sid);
               if (!alive) {
-                console.error(`🧟 [${sid}] Chromium morto detectado via unhandledRejection! Reconectando...`);
+                console.error(`🧟 [${sid}] Chromium morto detectado via unhandledRejection! Hibernando para reativacao sob demanda...`);
+                const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sid);
                 await sessionManager.cleanupSession(sid);
-                await db.updateSessionStatus(sid, await sessionManager.hasSavedRemoteAuth(sid) ? 'authenticated' : 'disconnected');
-                try {
-                  const reconSession = await sessionManager.autoReconnectForSend(sid);
-                  if (reconSession) {
-                    console.log(`✅ [${sid}] Auto-reconexão pós-unhandledRejection OK!`);
-                    io.to(`user_${session.userId}`).emit('session_reconnected', {
-                      sessionId: sid, reason: 'AUTO_RECONNECT_AFTER_UNHANDLED_REJECTION'
-                    });
-                  } else {
-                    console.warn(`❌ [${sid}] Auto-reconexão falhou — QR necessário`);
-                    io.to(`user_${session.userId}`).emit('session_disconnected', {
-                      sessionId: sid, reason: 'CHROMIUM_DEAD_UNHANDLED'
-                    });
-                  }
-                } catch (reconErr) {
-                  console.error(`❌ [${sid}] Erro reconexão: ${reconErr.message}`);
-                }
+                await db.updateSessionStatus(sid, hasRemoteAuth ? 'saved_auth' : 'disconnected');
+                io.to(`user_${session.userId}`).emit('session_disconnected', {
+                  sessionId: sid,
+                  status: hasRemoteAuth ? 'saved_auth' : 'disconnected',
+                  recoverable: hasRemoteAuth,
+                  hibernated: hasRemoteAuth,
+                  reason: 'CHROMIUM_DEAD_UNHANDLED'
+                });
               }
             } catch (checkErr) {
               console.warn(`⚠️ [${sid}] Erro verificando saúde: ${checkErr.message}`);
