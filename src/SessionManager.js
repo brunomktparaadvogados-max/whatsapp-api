@@ -1079,29 +1079,12 @@ class SessionManager {
         if (hadSavedAuth && !sessionData.allowQrFallback) {
           this.logRecentError(
             sessionData.id,
-            new Error('RemoteAuth salvo existe, mas o WhatsApp Web pediu QR durante reidratacao. QR bloqueado para preservar memoria.')
+            new Error('RemoteAuth salvo existe, mas o WhatsApp Web pediu QR durante reidratacao. QR liberado preservando memoria.')
           );
-          console.warn(`[${sessionData.id}] RemoteAuth salvo foi rejeitado pelo WhatsApp Web. Preservando blob e exigindo novo QR.`);
+          console.warn(`[${sessionData.id}] RemoteAuth salvo foi rejeitado pelo WhatsApp Web. Preservando blob e liberando QR imediatamente.`);
           sessionData.qrFromRejectedAuth = true;
-          sessionData.qrCode = null;
-          sessionData.status = 'auth_failure';
-          sessionData.lastSeen = Date.now();
-          this.sessionInitFailures.set(sessionData.id, {
-            message: 'RemoteAuth salvo rejeitado pelo WhatsApp Web; novo QR necessario.',
-            timestamp: Date.now()
-          });
-          await this.db.updateSessionStatus(sessionData.id, 'auth_failure');
-          this.io.to(`user_${sessionData.userId}`).emit('session_error', {
-            sessionId: sessionData.id,
-            status: 'auth_failure',
-            recoverable: false,
-            action: 'qr_required',
-            error: 'A sessao salva foi preservada, mas o WhatsApp exigiu um novo QR Code. Gere o QR para reativar sem excluir o usuario.'
-          });
-          await this.cleanupSession(sessionData.id);
-          return;
-        }
-        if (hadSavedAuth) {
+          this.sessionInitFailures.delete(sessionData.id);
+        } else if (hadSavedAuth) {
           this.logRecentError(
             sessionData.id,
             new Error('RemoteAuth salvo existe, mas o WhatsApp Web pediu QR. A sessao salva nao foi aceita para reativacao.')
@@ -1113,8 +1096,9 @@ class SessionManager {
       }
       sessionData.qrCode = await QRCode.toDataURL(qr);
       sessionData.status = 'qr_code';
-      sessionData.qrFromRejectedAuth = hadSavedAuth;
+      sessionData.qrFromRejectedAuth = sessionData.qrFromRejectedAuth || hadSavedAuth;
       sessionData.lastSeen = Date.now();
+      this.sessionInitFailures.delete(sessionData.id);
       // NÃO atualizar sessionLastActivity aqui — cada QR gerado renovava o timer
       // e o timeout de 5 minutos nunca disparava, causando loop infinito de QR
 
@@ -1127,6 +1111,16 @@ class SessionManager {
         sessionId: sessionData.id,
         qrCode: sessionData.qrCode
       });
+
+      if (sessionData.qrFromRejectedAuth) {
+        this.io.to(`user_${sessionData.userId}`).emit('session_error', {
+          sessionId: sessionData.id,
+          status: 'qr_code',
+          recoverable: true,
+          action: 'scan_qr',
+          error: 'A sessao salva foi preservada, mas o WhatsApp exigiu um novo QR Code. O QR ja esta disponivel para reativar sem excluir o usuario.'
+        });
+      }
     });
 
     client.on('authenticated', async () => {
@@ -2918,7 +2912,7 @@ class SessionManager {
           let nextStatus = null;
           if (sess?.status === 'qr_code') {
             nextStatus = sess?.qrFromRejectedAuth
-              ? (hasRemoteAuth ? 'saved_auth' : 'auth_failure')
+              ? 'auth_failure'
               : (hasRemoteAuth ? 'saved_auth' : 'disconnected');
           } else if (['failed', 'disconnected'].includes(sess?.status) && hasRemoteAuth) {
             nextStatus = 'saved_auth';
