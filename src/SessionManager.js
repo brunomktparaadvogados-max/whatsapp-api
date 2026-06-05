@@ -78,6 +78,40 @@ class SessionManager {
     this.init();
   }
 
+  getRecentInitFailure(sessionId, maxAgeMs = 10 * 60 * 1000) {
+    const failure = this.sessionInitFailures.get(sessionId);
+    if (!failure) return null;
+
+    if (Date.now() - failure.timestamp > maxAgeMs) {
+      this.sessionInitFailures.delete(sessionId);
+      return null;
+    }
+
+    return failure;
+  }
+
+  touchSession(sessionId) {
+    const now = Date.now();
+    const session = this.sessions.get(sessionId);
+    if (session) session.lastSeen = now;
+    this.sessionLastActivity.set(sessionId, now);
+  }
+
+  isSessionBusy(sessionId) {
+    return this.sessionSendLock.has(sessionId) ||
+      this.reconnectPromises.has(sessionId) ||
+      this.sessionStartPromises.has(sessionId) ||
+      this.reconnectingSet.has(sessionId);
+  }
+
+  shouldPreserveLiveSession(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    if (this.isSessionBusy(sessionId)) return true;
+    if (this.healthGuard && this.healthGuard._dispatchActive) return true;
+    return ['initializing', 'qr_code', 'authenticated'].includes(session.status);
+  }
+
   async initializePostgresStore(attempts = REMOTE_AUTH_INIT_RETRIES) {
     let lastError = null;
 
@@ -406,6 +440,12 @@ class SessionManager {
       return false;
     }
 
+    if (this.shouldPreserveLiveSession(sessionId)) {
+      this.touchSession(sessionId);
+      console.log(`[${sessionId}] Hibernacao ignorada: sessao ocupada ou em recuperacao.`);
+      return false;
+    }
+
     if (session.status !== 'connected' && session.status !== 'authenticated') {
       console.log(`⚠️ [${sessionId}] Status ${session.status} — não precisa desconectar`);
       return false;
@@ -472,6 +512,7 @@ class SessionManager {
       const sess = this.sessions.get(sid);
       if (!sess || !sess.client) continue;
       if (sess.status !== 'connected' && sess.status !== 'authenticated') continue;
+      if (this.shouldPreserveLiveSession(sid)) continue;
       if ((Date.now() - lastTs) < EVICT_IDLE_AFTER_MS) continue;
 
       if (lastTs < oldestTime) {
@@ -849,7 +890,7 @@ class SessionManager {
         latestDbStatus = null;
       }
       const savedAuthWasRejected = qrRejectedSavedAuth || latestDbStatus === 'auth_failure';
-      const failedStatus = savedAuthWasRejected ? 'auth_failure' : (hasRemoteAuth ? 'saved_auth' : 'failed');
+      const failedStatus = (savedAuthWasRejected || hasRemoteAuth) ? 'auth_failure' : 'failed';
       this.sessionInitFailures.set(sessionData.id, {
         message: errorMessage,
         timestamp: Date.now()
@@ -865,7 +906,10 @@ class SessionManager {
         error: hasRemoteAuth
           ? 'A sessão salva não concluiu a reativação. A credencial anterior foi preservada; gere um novo QR Code.'
           : 'Falha ao inicializar sessão. Tente criar novamente.',
-        status: failedStatus
+        status: failedStatus,
+        recoverable: true,
+        action: hasRemoteAuth ? 'scan_qr' : 'retry',
+        recentFailure: true
       });
     }
   }
@@ -1173,19 +1217,22 @@ class SessionManager {
             return;
           }
 
-          currentSession.status = 'saved_auth';
-          await this.db.updateSessionStatus(sessionData.id, 'saved_auth');
-          this.io.to(`user_${sessionData.userId}`).emit('session_reconnecting', {
+          this.sessionInitFailures.set(sessionData.id, {
+            message: 'authenticated_timeout_without_ready',
+            timestamp: Date.now()
+          });
+
+          currentSession.status = 'auth_failure';
+          await this.db.updateSessionStatus(sessionData.id, 'auth_failure');
+          this.io.to(`user_${sessionData.userId}`).emit('session_error', {
             sessionId: sessionData.id,
-            error: 'WhatsApp autenticou mas demorou para conectar. Reconexao automatica em andamento.',
-            status: 'reconnecting'
+            error: 'WhatsApp autenticou, mas nao ficou pronto. Gere um QR Code para reativar sem apagar a memoria salva.',
+            status: 'auth_failure',
+            recoverable: true,
+            action: 'scan_qr',
+            recentFailure: true
           });
           await this.cleanupSession(sessionData.id);
-          setTimeout(() => {
-            this.autoReconnectForSend(sessionData.id).catch(err => {
-              console.error(`Reconnect after authenticated timeout failed for ${sessionData.id}: ${err.message}`);
-            });
-          }, 5000);
         }
       }, AUTHENTICATED_READY_TIMEOUT_MS);
     });
@@ -2146,6 +2193,7 @@ class SessionManager {
   }
 
   async _sendMessageUnlocked(sessionId, phoneNumber, message, mediaUrl = null) {
+    this.touchSession(sessionId);
     let session = this.sessions.get(sessionId);
 
     // ═══════════════════════════════════════════════════════════════════
@@ -2166,6 +2214,7 @@ class SessionManager {
       }
     }
 
+    this.touchSession(sessionId);
     let client = session.client;
 
     // ═══════════════════════════════════════════════════════════════════
@@ -2188,6 +2237,7 @@ class SessionManager {
         if (!session || !session.client || session.status !== 'connected') {
           throw new Error('Sessão conectada no banco, mas o Chromium não respondeu e a reconexão falhou. Tente novamente em 1 minuto.');
         }
+        this.touchSession(sessionId);
         client = session.client;
       }
     }
@@ -2876,6 +2926,11 @@ class SessionManager {
         if ((sess.status === 'connected' || sess.status === 'authenticated') && sess.client) {
           const idleTime = now - lastTs;
           if (IDLE_DISCONNECT_MS > 0 && idleTime > IDLE_DISCONNECT_MS) {
+            if (this.shouldPreserveLiveSession(sid)) {
+              this.touchSession(sid);
+              console.log(`Auto-hibernate ignorada: "${sid}" esta ocupada/em recuperacao.`);
+              continue;
+            }
             toDisconnect.push({ sid, idleTime });
           }
           continue;
@@ -2889,6 +2944,10 @@ class SessionManager {
 
         // Sessões inicializando: permite até SESSION_INIT_TIMEOUT_MS + margem
         if (sess.status === 'initializing' && (now - lastTs) > (SESSION_INIT_TIMEOUT_MS + 30000)) {
+          if (this.isSessionBusy(sid)) {
+            this.touchSession(sid);
+            continue;
+          }
           toDestroy.push({ sid, reason: `Inicialização travada (${Math.round((now - lastTs) / 1000)}s)` });
           continue;
         }
