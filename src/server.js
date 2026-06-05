@@ -153,7 +153,7 @@ function isSessionReadyForImmediateSend(sessionId) {
 }
 
 function needsLiveSessionReconnect(dbStatus) {
-  return ['connected', 'authenticated', 'reconnecting', 'initializing', 'saved_auth', 'disconnected', 'failed', 'auth_failure'].includes(dbStatus);
+  return ['connected', 'authenticated', 'reconnecting', 'initializing', 'saved_auth', 'disconnected', 'failed'].includes(dbStatus);
 }
 
 function needsQrSessionStart(dbStatus, hasRemoteAuth) {

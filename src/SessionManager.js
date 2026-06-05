@@ -62,6 +62,7 @@ class SessionManager {
     this.reconnectingSet = new Set();       // Sessões em processo de auto-reconexão
     this.reconnectPromises = new Map();     // Promises de reconexão em andamento
     this.reconnectCancelled = new Set();   // Sessões que tiveram reconnect cancelado
+    this.sessionStartPromises = new Map(); // Evita duas inicializações concorrentes da mesma sessão
     this.activeSessionInitializations = 0;
     this.sessionInitQueue = [];
     this.sessionInitFailures = new Map();
@@ -539,6 +540,24 @@ class SessionManager {
   }
 
   async createSession(sessionId, userId, options = {}) {
+    const existingStart = this.sessionStartPromises.get(sessionId);
+    if (existingStart) {
+      console.log(`[${sessionId}] Inicializacao ja em andamento; reutilizando a mesma promessa.`);
+      return existingStart;
+    }
+
+    const startPromise = this._createSession(sessionId, userId, options);
+    this.sessionStartPromises.set(sessionId, startPromise);
+    try {
+      return await startPromise;
+    } finally {
+      if (this.sessionStartPromises.get(sessionId) === startPromise) {
+        this.sessionStartPromises.delete(sessionId);
+      }
+    }
+  }
+
+  async _createSession(sessionId, userId, options = {}) {
     console.log(`🆕 Criando nova sessão: ${sessionId}`);
 
     // CANCELA qualquer reconnect pendente para esta sessão (evita race condition)
@@ -785,7 +804,8 @@ class SessionManager {
 
       const hasRemoteAuth = await this.hasSavedRemoteAuth(sessionData.id);
       const isTransientError = this.isTransientInitError(error);
-      if (isTransientError && attempt < SESSION_INIT_MAX_ATTEMPTS) {
+      const qrRejectedSavedAuth = sessionData.qrFromRejectedAuth === true || sessionData.status === 'auth_failure';
+      if (isTransientError && attempt < SESSION_INIT_MAX_ATTEMPTS && !qrRejectedSavedAuth) {
         const retryMode = hasRemoteAuth ? 'sem perder RemoteAuth' : 'para liberar QR de nova sessão';
         console.warn(`[${sessionData.id}] Falha transiente do Chromium/WhatsApp Web. Recriando cliente ${retryMode}...`);
 
@@ -815,7 +835,14 @@ class SessionManager {
       // A primeira falha transiente recebe uma tentativa isolada acima. Se o
       // RemoteAuth ainda nao inicializar, preserva o pacote e interrompe o
       // ciclo automatico. A proxima ativacao deve tentar reidratar novamente.
-      const failedStatus = hasRemoteAuth ? 'saved_auth' : 'failed';
+      let latestDbStatus = null;
+      try {
+        latestDbStatus = (await this.db.getSession(sessionData.id))?.status || null;
+      } catch (_dbStatusError) {
+        latestDbStatus = null;
+      }
+      const savedAuthWasRejected = qrRejectedSavedAuth || latestDbStatus === 'auth_failure';
+      const failedStatus = savedAuthWasRejected ? 'auth_failure' : (hasRemoteAuth ? 'saved_auth' : 'failed');
       this.sessionInitFailures.set(sessionData.id, {
         message: errorMessage,
         timestamp: Date.now()
@@ -1054,17 +1081,22 @@ class SessionManager {
             sessionData.id,
             new Error('RemoteAuth salvo existe, mas o WhatsApp Web pediu QR durante reidratacao. QR bloqueado para preservar memoria.')
           );
-          console.warn(`[${sessionData.id}] RemoteAuth salvo existe, mas WhatsApp Web pediu QR; bloqueando QR e preservando dados salvos.`);
+          console.warn(`[${sessionData.id}] RemoteAuth salvo foi rejeitado pelo WhatsApp Web. Preservando blob e exigindo novo QR.`);
           sessionData.qrFromRejectedAuth = true;
           sessionData.qrCode = null;
-          sessionData.status = 'saved_auth';
+          sessionData.status = 'auth_failure';
           sessionData.lastSeen = Date.now();
-          await this.db.updateSessionStatus(sessionData.id, 'saved_auth');
+          this.sessionInitFailures.set(sessionData.id, {
+            message: 'RemoteAuth salvo rejeitado pelo WhatsApp Web; novo QR necessario.',
+            timestamp: Date.now()
+          });
+          await this.db.updateSessionStatus(sessionData.id, 'auth_failure');
           this.io.to(`user_${sessionData.userId}`).emit('session_error', {
             sessionId: sessionData.id,
-            status: 'saved_auth',
-            recoverable: true,
-            error: 'Sessao salva preservada. O WhatsApp pediu QR durante a reativacao; tente reativar novamente antes de gerar novo QR.'
+            status: 'auth_failure',
+            recoverable: false,
+            action: 'qr_required',
+            error: 'A sessao salva foi preservada, mas o WhatsApp exigiu um novo QR Code. Gere o QR para reativar sem excluir o usuario.'
           });
           await this.cleanupSession(sessionData.id);
           return;
