@@ -68,6 +68,7 @@ class SessionManager {
     this.sessionInitFailures = new Map();
     this.remoteAuthSaveInFlight = new Set(); // Evita backups RemoteAuth simultaneos da mesma sessao
     this.remoteAuthBackupTimers = new Map(); // Evita rajadas de backups forçados na mesma sessao
+    this.remoteAuthLastForcedSave = new Map(); // Cooldown real para nao zipar o mesmo perfil em rajada
     this.messageAckWaiters = new Map();
     this.messageAckCache = new Map();
     this.intentionalShutdowns = new Set();    // Destroy controlado nao deve disparar auto-reconnect
@@ -377,8 +378,14 @@ class SessionManager {
     if (!session?.client?.authStrategy?.storeRemoteSession) return false;
     if (this.remoteAuthSaveInFlight.has(sessionId)) return false;
 
+    const lastForcedSave = this.remoteAuthLastForcedSave.get(sessionId) || 0;
+    if (Date.now() - lastForcedSave < 45 * 1000) {
+      return await this.hasSavedRemoteAuth(sessionId);
+    }
+
     this.remoteAuthSaveInFlight.add(sessionId);
     try {
+      this.remoteAuthLastForcedSave.set(sessionId, Date.now());
       this.pgStore.forceNextSave(`RemoteAuth-${sessionId}`);
       console.log(`[${sessionId}] Forcando backup RemoteAuth (${reason})`);
       await session.client.authStrategy.storeRemoteSession({ emit: true });
