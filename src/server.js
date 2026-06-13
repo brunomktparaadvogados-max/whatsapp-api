@@ -249,6 +249,23 @@ async function cleanupStaleLiveSessionBeforeStart(sessionId, reason) {
   return true;
 }
 
+async function forceQrForSession(sessionId, userId, reason = 'forced_qr', waitMs = 30000) {
+  const liveSession = sessionManager.getSession(sessionId);
+  if (liveSession) {
+    console.warn(`[FORCE QR] Limpando ${sessionId} (${liveSession.status}) para liberar QR. Motivo: ${reason}`);
+    await sessionManager.cleanupSession(sessionId);
+  }
+
+  await db.updateSessionStatus(sessionId, 'initializing');
+  await sessionManager.createSession(sessionId, userId, {
+    priority: true,
+    forceFreshAuth: true,
+    forceQrFallback: true
+  });
+
+  return await waitForSessionProgress(sessionId, waitMs);
+}
+
 async function getSessionView(sessionId, dbSession = null) {
   const savedDbSession = dbSession || await db.getSession(sessionId);
   if (!savedDbSession) return null;
@@ -881,6 +898,68 @@ app.post('/api/admin/cleanup-sessions', authMiddleware, async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/drop-all-whatsapp-sessions', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = await db.getUserById(req.userId);
+    if (currentUser.email !== 'admin@flow.com') {
+      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
+    }
+
+    const restart = req.body?.restart !== false;
+    const liveSessions = sessionManager.getAllSessions();
+    let liveDropped = 0;
+    let dbUpdated = 0;
+
+    for (const session of liveSessions) {
+      await sessionManager.cleanupSession(session.id);
+      liveDropped++;
+    }
+
+    const dbSessions = await db.getAllSessionsFromDB();
+    for (const session of dbSessions) {
+      const sessionId = session.id;
+      if (!sessionId || !sessionId.startsWith('user_')) continue;
+
+      const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
+      const nextStatus = hasRemoteAuth ? 'saved_auth' : 'disconnected';
+      await db.updateSessionStatus(sessionId, nextStatus);
+      dbUpdated++;
+    }
+
+    try {
+      const { execSync } = require('child_process');
+      execSync('pkill -f chromium 2>/dev/null || true');
+      execSync('pkill -f chrome 2>/dev/null || true');
+    } catch (e) {
+      console.warn(`Falha ao matar Chromiums orfaos: ${e.message}`);
+    }
+
+    res.json({
+      success: true,
+      action: 'drop_all_whatsapp_sessions',
+      liveDropped,
+      dbUpdated,
+      restart,
+      message: restart
+        ? 'Todas as sessoes foram derrubadas e o processo sera reiniciado para limpar Chromiums orfaos.'
+        : 'Todas as sessoes foram derrubadas; o processo atual foi mantido.'
+    });
+
+    if (restart) {
+      setTimeout(() => {
+        console.log('[ADMIN DROP ALL] Reiniciando processo apos derrubar todas as sessoes WhatsApp.');
+        process.exit(1);
+      }, 1000).unref?.();
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      action: 'drop_all_whatsapp_sessions_error',
+      error: error.message
+    });
   }
 });
 
@@ -1720,11 +1799,22 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       }
     });
 
-    const progressedSession = await waitForSessionProgress(targetSessionId, req.body?.waitMs || 30000);
-    const view = await getSessionView(targetSessionId);
-    const status = progressedSession ? progressedSession.status : (view?.status || 'initializing');
-    const isReady = status === 'connected';
-    const needsQr = status === 'qr_code';
+    let fallbackForcedQr = false;
+    let progressedSession = await waitForSessionProgress(targetSessionId, req.body?.waitMs || 30000);
+    let view = await getSessionView(targetSessionId);
+    let status = progressedSession ? progressedSession.status : (view?.status || 'initializing');
+    let isReady = status === 'connected';
+    let needsQr = status === 'qr_code';
+
+    if (canTrustSavedAuth && !isReady && !needsQr) {
+      console.warn(`[CREATE SESSION] ${targetSessionId} nao conectou via RemoteAuth (status=${status}); liberando QR imediatamente.`);
+      fallbackForcedQr = true;
+      progressedSession = await forceQrForSession(targetSessionId, targetUserId, 'saved_auth_create_timeout', req.body?.waitMs || 30000);
+      view = await getSessionView(targetSessionId);
+      status = progressedSession ? progressedSession.status : (view?.status || 'initializing');
+      isReady = status === 'connected';
+      needsQr = status === 'qr_code';
+    }
 
     res.status(isReady || needsQr ? 200 : 202).json({
       success: true,
@@ -1736,12 +1826,13 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       recoverable: view?.recoverable || false,
       recentInitFailure: !!startupPath.recentFailure,
       forceQr: explicitForceQr,
-      action: canTrustSavedAuth ? 'reactivate_saved_auth' : 'create_qr',
+      fallbackForcedQr,
+      action: canTrustSavedAuth && !fallbackForcedQr ? 'reactivate_saved_auth' : 'create_qr',
       message: isReady
         ? 'Sessao pronta para disparo.'
         : needsQr
           ? 'QR Code disponivel para escanear.'
-          : canTrustSavedAuth
+          : canTrustSavedAuth && !fallbackForcedQr
             ? 'Reativacao iniciada pela sessao salva; acompanhe o status.'
             : startupPath.forceQrFallback
               ? 'Recuperacao da sessao salva falhou recentemente. QR sera preparado sem apagar a memoria anterior.'
@@ -1840,11 +1931,22 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
       }
     });
 
-    const progressedSession = await waitForSessionProgress(sessionId, req.body?.waitMs);
-    const view = await getSessionView(sessionId);
-    const status = progressedSession ? progressedSession.status : view.status;
-    const isReady = status === 'connected';
-    const needsQr = status === 'qr_code';
+    let fallbackForcedQr = false;
+    let progressedSession = await waitForSessionProgress(sessionId, req.body?.waitMs);
+    let view = await getSessionView(sessionId);
+    let status = progressedSession ? progressedSession.status : view.status;
+    let isReady = status === 'connected';
+    let needsQr = status === 'qr_code';
+
+    if (canTrustSavedAuth && !isReady && !needsQr) {
+      console.warn(`[REACTIVATE] ${sessionId} nao conectou via RemoteAuth (status=${status}); liberando QR imediatamente.`);
+      fallbackForcedQr = true;
+      progressedSession = await forceQrForSession(sessionId, targetUserId, 'saved_auth_reactivate_timeout', req.body?.waitMs || 30000);
+      view = await getSessionView(sessionId);
+      status = progressedSession ? progressedSession.status : view.status;
+      isReady = status === 'connected';
+      needsQr = status === 'qr_code';
+    }
 
     res.status(isReady || needsQr ? 200 : 202).json({
       success: isReady || needsQr || status === 'initializing' || status === 'authenticated' || status === 'saved_auth',
@@ -1856,13 +1958,14 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
       recoverable: view.recoverable,
       recentInitFailure: !!startupPath.recentFailure,
       forceQr: explicitForceQr,
+      fallbackForcedQr,
       canSend: view.canSend,
       qrCode: view.qrCode,
       message: isReady
         ? 'Sessao reativada e pronta para disparo.'
         : needsQr
           ? 'QR Code disponivel para escanear.'
-          : canTrustSavedAuth
+          : canTrustSavedAuth && !fallbackForcedQr
             ? 'Reativacao iniciada pela sessao salva; acompanhe o status.'
             : startupPath.forceQrFallback
               ? 'Recuperacao da sessao salva falhou recentemente. QR sera preparado sem apagar a memoria anterior.'
