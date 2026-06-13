@@ -725,6 +725,19 @@ class SessionManager {
 
     // RemoteAuth: NÃO deleta dados de auth — permite reconexão sem QR code
     // Dados só são deletados em: deleteSession (explícito) ou auth_failure
+    const authClientId = options.forceQrFallback
+      ? `${sessionId}-qr-${Date.now()}-${uuidv4().slice(0, 8)}`
+      : sessionId;
+
+    if (options.forceQrFallback && this.pgStore) {
+      this.pgStore.aliasSession({
+        fromSession: authClientId,
+        toSession: sessionId,
+        suppressSource: true
+      });
+      this.pgStore.forceNextSave(`RemoteAuth-${sessionId}`);
+    }
+
     let hasRemoteAuth = false;
     if (this.pgStore) {
       try {
@@ -812,6 +825,7 @@ class SessionManager {
       qrCode: null,
       status: 'initializing',
       client: null,
+      authClientId,
       info: null,
       hasRemoteAuth,
       allowQrFallback: options.forceFreshAuth === true || options.forceQrFallback === true,
@@ -826,9 +840,12 @@ class SessionManager {
         // Limpar aqui garante que o novo QR Code seja gerado sem conflitos.
         console.log(`Limpando dados de auth anteriores para sessão ${sessionId}...`);
         this.cleanupSessionFiles(sessionId);
+        if (authClientId !== sessionId) {
+          this.cleanupSessionFiles(authClientId);
+        }
     
     console.log(`🤖 Inicializando cliente WhatsApp para sessão ${sessionId}...`);
-    const client = await this.createWhatsAppClient(sessionId);
+    const client = await this.createWhatsAppClient(authClientId);
     this.setupClientEvents(client, sessionData);
 
     sessionData.client = client;
@@ -1036,6 +1053,9 @@ class SessionManager {
 
     // Limpa arquivos do disco para liberar espaço
     this.cleanupSessionFiles(sessionId);
+    if (session?.authClientId && session.authClientId !== sessionId) {
+      this.cleanupSessionFiles(session.authClientId);
+    }
   }
 
   cleanupSessionFiles(sessionId) {

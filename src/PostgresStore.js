@@ -36,6 +36,7 @@ class PostgresStore {
     this._savedSessions = new Set(); // Sessões que JÁ foram salvas pelo menos 1x (proteção contra perda)
     this._forceSaveSessions = new Set(); // Proximo save deve ignorar throttle/HealthGuard
     this._freshAuthSessions = new Set(); // Sessao marcada para ignorar auth antigo e liberar QR fresco
+    this._sessionAliases = new Map(); // RemoteAuth temporario -> RemoteAuth real
     this._minSaveInterval = 30 * 60 * 1000; // Mínimo 30 minutos entre saves (reduz carga no Supabase durante disparos)
     this._maxSaveBytes = 15 * 1024 * 1024;  // Máximo 15MB por sessão — blobs maiores são cache acumulado
     // O ZIP principal ja e a copia ativa. Backups completos duplicam dezenas
@@ -55,6 +56,11 @@ class PostgresStore {
   _normalizeAuthSessionId(session) {
     const sessionId = this._normalizeSessionId(session);
     return sessionId.startsWith('RemoteAuth-') ? sessionId : `RemoteAuth-${sessionId}`;
+  }
+
+  _resolveStorageSessionId(session) {
+    const sessionId = this._normalizeSessionId(session);
+    return this._sessionAliases.get(sessionId) || sessionId;
   }
 
   _toBuffer(data) {
@@ -154,8 +160,9 @@ class PostgresStore {
    */
   async sessionExists(options) {
     await this.init();
-    const sessionId = this._normalizeSessionId(options.session);
-    if (this._freshAuthSessions.has(sessionId)) {
+    const sourceSessionId = this._normalizeSessionId(options.session);
+    const sessionId = this._resolveStorageSessionId(options.session);
+    if (this._freshAuthSessions.has(sourceSessionId) || this._freshAuthSessions.has(sessionId)) {
       console.warn(`PostgresStore.sessionExists("${sessionId}"): auth antigo suprimido para gerar QR fresco`);
       return false;
     }
@@ -373,7 +380,7 @@ class PostgresStore {
   }
 
   forceNextSave(session) {
-    const sessionId = this._normalizeSessionId(session);
+    const sessionId = this._resolveStorageSessionId(session);
     this._forceSaveSessions.add(sessionId);
   }
 
@@ -381,6 +388,20 @@ class PostgresStore {
     const sessionId = this._normalizeSessionId(session);
     this._freshAuthSessions.add(sessionId);
     console.warn(`PostgresStore: RemoteAuth antigo de "${sessionId}" sera ignorado nesta inicializacao para liberar QR fresco`);
+  }
+
+  aliasSession({ fromSession, toSession, suppressSource = true }) {
+    const fromId = this._normalizeAuthSessionId(fromSession);
+    const toId = this._normalizeAuthSessionId(toSession);
+    if (!fromId || !toId || fromId === toId) return;
+
+    this._sessionAliases.set(fromId, toId);
+    this._forceSaveSessions.add(toId);
+    if (suppressSource) {
+      this._freshAuthSessions.add(fromId);
+    }
+
+    console.warn(`PostgresStore: alias "${fromId}" -> "${toId}" para QR fresco sem perder a sessao real`);
   }
 
   /**
@@ -397,7 +418,8 @@ class PostgresStore {
     // O zip path usa o valor ORIGINAL (path completo) pois é onde o arquivo está no disco
     const zipPath = `${options.session}.zip`;
     // Mas o session_id no banco usa apenas o basename para consistência
-    const sessionId = this._normalizeSessionId(options.session);
+    const sourceSessionId = this._normalizeSessionId(options.session);
+    const sessionId = this._resolveStorageSessionId(options.session);
 
     try {
       const now = Date.now();
@@ -489,6 +511,7 @@ class PostgresStore {
       this._lastSaveTime.set(sessionId, now);
       this._savedSessions.add(sessionId);  // Marca: essa sessão já foi salva pelo menos 1x
       this._freshAuthSessions.delete(sessionId);
+      this._freshAuthSessions.delete(sourceSessionId);
       console.log(`💾 PostgresStore: sessão "${sessionId}" salva (${sizeMB}MB)${isFirstSave ? ' ★ PRIMEIRO SAVE — sessão protegida!' : ''}`);
     } catch (err) {
       // CRÍTICO: NÃO relançar! RemoteAuth chama save() em setInterval sem try/catch.
@@ -507,9 +530,10 @@ class PostgresStore {
    */
   async extract(options) {
     await this.init();
-    const sessionId = this._normalizeSessionId(options.session);
-    if (this._freshAuthSessions.has(sessionId)) {
-      throw new Error(`RemoteAuth "${sessionId}" suprimido para gerar QR fresco`);
+    const sourceSessionId = this._normalizeSessionId(options.session);
+    const sessionId = this._resolveStorageSessionId(options.session);
+    if (this._freshAuthSessions.has(sourceSessionId) || this._freshAuthSessions.has(sessionId)) {
+      throw new Error(`RemoteAuth "${sourceSessionId}" suprimido para gerar QR fresco`);
     }
     try {
       // SET statement_timeout maior para extract de blobs (podem ser 5-10MB)
