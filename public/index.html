@@ -754,6 +754,7 @@
 
                 const session = data.session;
                 const user = data.user;
+                window._lastSessionStatus = session.status;
 
                 document.getElementById('sessionStatus').innerHTML = `
                     <p><strong>Usuário:</strong> ${user.name} (${user.email})</p>
@@ -841,13 +842,14 @@
 
                 const user = JSON.parse(localStorage.getItem('user') || '{}');
                 const sessionId = `user_${user.id}`;
+                const forceQr = window._lastSessionStatus === 'auth_failure';
                 let response = await fetch(`${API_URL}/api/sessions/${sessionId}/reactivate`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                     },
-                    body: JSON.stringify({ waitMs: 30000 })
+                    body: JSON.stringify({ waitMs: 30000, forceQr })
                 });
 
                 if (response.status === 404) {
@@ -857,7 +859,7 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                         },
-                        body: JSON.stringify({ waitMs: 30000 })
+                        body: JSON.stringify({ waitMs: 30000, forceQr })
                     });
                 }
 
@@ -1390,13 +1392,16 @@
                     <button onclick="createUserSession(${userId})" style="margin-top: 10px;">
                         Reativar sessao salva
                     </button>
+                    <button onclick="createUserSession(${userId}, true)" style="margin-top: 10px; margin-left: 10px;">
+                        Forcar novo QR
+                    </button>
                 `;
                 return;
             }
 
             contentDiv.innerHTML = `
                 <p><strong>Status:</strong> ${getStatusText(status)}</p>
-                <button onclick="createUserSession(${userId})" style="margin-top: 10px;">
+                <button onclick="createUserSession(${userId}, ${status === 'auth_failure' ? 'true' : 'false'})" style="margin-top: 10px;">
                     Reativar / gerar QR Code
                 </button>
             `;
@@ -1439,7 +1444,7 @@
             }
         }
 
-        async function createUserSession(userId) {
+        async function createUserSession(userId, forceQr = false) {
             const sessionDiv = document.getElementById(`session-${userId}`);
             const contentDiv = document.getElementById(`session-content-${userId}`);
             if (sessionDiv) {
@@ -1455,7 +1460,7 @@
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                     },
-                    body: JSON.stringify({ waitMs: 60000 })
+                    body: JSON.stringify({ waitMs: 60000, forceQr })
                 });
 
                 if (response.status === 404) {
@@ -1465,7 +1470,7 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                         },
-                        body: JSON.stringify({ sessionId, waitMs: 60000 })
+                        body: JSON.stringify({ sessionId, waitMs: 60000, forceQr })
                     });
                 }
 
