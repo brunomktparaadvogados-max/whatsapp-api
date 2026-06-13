@@ -15,19 +15,35 @@ const path = require('path');
 // ═══════════════════════════════════════════════════════════════════
 const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 30; // Capacidade maxima de sessoes ativas; inicializacao continua sequencial para nao derrubar Chromium
 const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 1400;                         // Alinhado ao HealthGuard; 650MB derrubava sessoes com poucos Chromiums
-const QR_CODE_TIMEOUT_MS = parseInt(process.env.QR_CODE_TIMEOUT_MS) || 15 * 60 * 1000; // 15 minutos para escanear QR por padrao
+const QR_CODE_TIMEOUT_MS = parseInt(process.env.QR_CODE_TIMEOUT_MS) || 30 * 60 * 1000; // 30 minutos para escanear QR por padrao
+const MAX_ACTIVE_QR_SESSIONS = Math.max(
+  1,
+  Math.min(MAX_CONCURRENT_SESSIONS, parseInt(process.env.MAX_ACTIVE_QR_SESSIONS ?? '3', 10) || 3)
+);
+const QR_NO_AUTH_MIN_KEEPALIVE_MS = Math.max(
+  QR_CODE_TIMEOUT_MS,
+  parseInt(process.env.QR_NO_AUTH_MIN_KEEPALIVE_MS ?? String(45 * 60 * 1000), 10) || 0
+);
 // Keep sessions alive only when explicitly requested. By default, idle Chromium
 // processes hibernate while RemoteAuth stays preserved in PostgreSQL.
 const KEEP_SESSIONS_ALIVE = process.env.KEEP_SESSIONS_ALIVE === 'true';
+const DEFAULT_IDLE_DISCONNECT_MS = 90 * 60 * 1000;
 const IDLE_DISCONNECT_MS = KEEP_SESSIONS_ALIVE
   ? 0
-  : Math.max(0, parseInt(process.env.IDLE_DISCONNECT_MS ?? String(30 * 60 * 1000), 10) || 0);
+  : Math.max(0, parseInt(process.env.IDLE_DISCONNECT_MS ?? String(DEFAULT_IDLE_DISCONNECT_MS), 10) || 0);
 const EVICT_IDLE_AFTER_MS = parseInt(process.env.EVICT_IDLE_AFTER_MS) || 20 * 60 * 1000; // não expulsar sessão usada recentemente
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;        // verifica a cada 2 minutos (economiza queries)
 const SESSION_INIT_TIMEOUT_MS = 240000;           // 4 minutos para Chromium iniciar em Koyeb sob carga
 const MESSAGE_SEND_TIMEOUT_MS = 30000;            // 30 segundos timeout por mensagem (reduzido de 60s para feedback rápido)
 const MESSAGE_ACK_TIMEOUT_MS = parseInt(process.env.MESSAGE_ACK_TIMEOUT_MS) || 30000;
-const MESSAGE_CONFIRM_ACK = parseInt(process.env.MESSAGE_CONFIRM_ACK) || 2; // 2 = delivered; 1 only means WhatsApp server accepted it.
+const RAW_MESSAGE_CONFIRM_ACK = parseInt(process.env.MESSAGE_CONFIRM_ACK, 10);
+const MESSAGE_CONFIRM_ACK = process.env.ALLOW_SERVER_ACK_AS_SENT === 'true'
+  ? Math.max(1, RAW_MESSAGE_CONFIRM_ACK || 2)
+  : Math.max(2, RAW_MESSAGE_CONFIRM_ACK || 2); // 2 = delivered; 1 only means WhatsApp server accepted it.
+const RECENT_ACTIVITY_PRESERVE_MS = Math.max(
+  5 * 60 * 1000,
+  parseInt(process.env.RECENT_ACTIVITY_PRESERVE_MS ?? String(10 * 60 * 1000), 10) || 0
+);
 const STALE_SESSION_HEALTHCHECK_MS = parseInt(process.env.STALE_SESSION_HEALTHCHECK_MS) || 2 * 60 * 1000;
 const MIN_MESSAGE_INTERVAL_MS = 1500;             // 1.5 segundos entre mensagens (anti-rate-limit)
 const MAX_SEND_RETRIES = 0;                       // SEM retries — evita mensagens duplicadas
@@ -109,6 +125,8 @@ class SessionManager {
     if (!session) return false;
     if (this.isSessionBusy(sessionId)) return true;
     if (this.healthGuard && this.healthGuard._dispatchActive) return true;
+    const lastActivity = this.sessionLastActivity.get(sessionId) || session.lastSeen || session.createdAt || 0;
+    if (lastActivity && Date.now() - lastActivity < RECENT_ACTIVITY_PRESERVE_MS) return true;
     return ['initializing', 'qr_code', 'authenticated'].includes(session.status);
   }
 
@@ -475,6 +493,7 @@ class SessionManager {
     // Remove da memória completamente
     this.sessions.delete(sessionId);
     this.sessionLastActivity.delete(sessionId);
+    this.qrGeneratedAt.delete(sessionId);
     this.lastMessageTime.delete(sessionId);
     this.sessionSendLock.delete(sessionId);
 
@@ -528,6 +547,51 @@ class SessionManager {
     }
 
     return false;
+  }
+
+  isQrWithoutSavedAuth(session) {
+    return !!(
+      session &&
+      session.status === 'qr_code' &&
+      !session.hasRemoteAuth &&
+      session.qrFromRejectedAuth !== true
+    );
+  }
+
+  getActiveQrWithoutSavedAuthCount(excludeId = null) {
+    let count = 0;
+    for (const [sid, sess] of this.sessions.entries()) {
+      if (sid === excludeId) continue;
+      if (sess.client && this.isQrWithoutSavedAuth(sess)) count++;
+    }
+    return count;
+  }
+
+  async evictOldestQrWithoutSavedAuth(excludeId = null, minAgeMs = QR_NO_AUTH_MIN_KEEPALIVE_MS) {
+    let oldestId = null;
+    let oldestQrTs = Infinity;
+    const now = Date.now();
+
+    for (const [sid, sess] of this.sessions.entries()) {
+      if (sid === excludeId) continue;
+      if (!sess.client || !this.isQrWithoutSavedAuth(sess)) continue;
+      if (this.isSessionBusy(sid)) continue;
+
+      const qrTs = this.qrGeneratedAt.get(sid) || sess.qrGeneratedAt || sess.lastSeen || sess.createdAt || now;
+      if ((now - qrTs) < minAgeMs) continue;
+
+      if (qrTs < oldestQrTs) {
+        oldestQrTs = qrTs;
+        oldestId = sid;
+      }
+    }
+
+    if (!oldestId) return false;
+
+    console.log(`Evicting QR sem RemoteAuth mais antigo: ${oldestId} (idade ${Math.round((now - oldestQrTs) / 1000)}s)`);
+    await this.cleanupSession(oldestId);
+    await this.db.updateSessionStatus(oldestId, 'disconnected');
+    return true;
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -615,12 +679,14 @@ class SessionManager {
     // Se a sessão já existe na memória E tem cliente ativo, retorna ela
     if (this.sessions.has(sessionId)) {
       const existing = this.sessions.get(sessionId);
-      const existingAgeMs = Date.now() - (existing.lastSeen || existing.createdAt || 0);
-      const freshQr = existing.status === 'qr_code' && existingAgeMs <= 90 * 1000;
+      const now = Date.now();
+      const existingAgeMs = now - (existing.lastSeen || existing.createdAt || now);
+      const existingQrAgeMs = now - (this.qrGeneratedAt.get(sessionId) || existing.qrGeneratedAt || existing.lastSeen || existing.createdAt || now);
+      const freshQr = existing.status === 'qr_code' && existingQrAgeMs <= QR_CODE_TIMEOUT_MS;
       const freshBoot = (existing.status === 'authenticated' || existing.status === 'initializing') &&
         existingAgeMs <= AUTHENTICATED_READY_TIMEOUT_MS;
-      if (existing.client && existing.status === 'qr_code' && existingAgeMs > 90 * 1000) {
-        console.log(`QR antigo para ${sessionId}; limpando para gerar QR novo`);
+      if (existing.client && existing.status === 'qr_code' && existingQrAgeMs > QR_CODE_TIMEOUT_MS) {
+        console.log(`QR expirado para ${sessionId}; limpando para gerar QR novo`);
         await this.cleanupSession(sessionId);
       } else if (existing.client && (existing.status === 'connected' || freshQr || freshBoot)) {
         console.log(`⚠️ Sessão ${sessionId} já existe na memória com status ${existing.status}`);
@@ -638,8 +704,23 @@ class SessionManager {
       await this.db.updateSessionStatus(sessionId, 'initializing');
     }
 
-    if (options.forceFreshAuth && this.pgStore) {
-      this.pgStore.suppressExistingAuth({ session: `RemoteAuth-${sessionId}` });
+    if ((options.forceFreshAuth || options.forceQrFallback) && this.pgStore) {
+      const authSessionId = `RemoteAuth-${sessionId}`;
+      let hasExistingRemoteAuth = false;
+      try {
+        hasExistingRemoteAuth = await this.pgStore.sessionExists({ session: authSessionId });
+      } catch (error) {
+        console.warn(`Erro ao validar RemoteAuth antes de forceFreshAuth ${sessionId}: ${error.message}`);
+      }
+
+      if (options.forceQrFallback) {
+        this.pgStore.suppressExistingAuth({ session: authSessionId });
+        console.warn(`[${sessionId}] forceQrFallback ativo: ignorando RemoteAuth antigo nesta inicializacao para liberar QR sem apagar memoria.`);
+      } else if (hasExistingRemoteAuth) {
+        console.warn(`[${sessionId}] forceFreshAuth solicitado, mas RemoteAuth existe. Preservando memoria e tentando recuperacao antes de QR.`);
+      } else {
+        this.pgStore.suppressExistingAuth({ session: authSessionId });
+      }
     }
 
     // RemoteAuth: NÃO deleta dados de auth — permite reconexão sem QR code
@@ -672,6 +753,16 @@ class SessionManager {
       }
     }
 
+    if (!hasRemoteAuth) {
+      const activeQrWithoutAuth = this.getActiveQrWithoutSavedAuthCount(sessionId);
+      if (activeQrWithoutAuth >= MAX_ACTIVE_QR_SESSIONS) {
+        const evictedQr = await this.evictOldestQrWithoutSavedAuth(sessionId);
+        if (!evictedQr) {
+          throw new Error(`Limite de QR Codes aguardando leitura atingido (${MAX_ACTIVE_QR_SESSIONS}). Aguarde um usuario escanear ou tente novamente em alguns minutos.`);
+        }
+      }
+    }
+
     // Verifica limite de Chromium simultâneos
     const activeCount = this.getActiveChromiumCount();
     if (activeCount >= MAX_CONCURRENT_SESSIONS) {
@@ -684,18 +775,23 @@ class SessionManager {
         await this.forceCleanupDeadSessions();
       }
 
-      // 3. Se ainda cheio, força cleanup de sessões QR que ninguém escaneou
+      // 3. Se ainda cheio, limpa apenas estados mortos. Nunca mata QR/init/authenticated para liberar slot.
       let newCount = this.getActiveChromiumCount();
       if (newCount >= MAX_CONCURRENT_SESSIONS) {
         for (const [sid, sess] of this.sessions.entries()) {
           if (sid === sessionId) continue;
-          if (sess.status === 'qr_code' || (sess.status === 'initializing' && sess.client)) {
-            console.log(`🔄 Forçando cleanup de sessão ${sid} (status: ${sess.status}) para liberar slot`);
+          if (['failed', 'disconnected', 'auth_failure'].includes(sess.status)) {
+            console.log(`🔄 Forçando cleanup de sessão morta ${sid} (status: ${sess.status}) para liberar slot`);
             await this.cleanupSession(sid);
-            await this.db.updateSessionStatus(sid, 'disconnected');
+            await this.db.updateSessionStatus(sid, sess.status === 'auth_failure' ? 'auth_failure' : 'disconnected');
             break;
           }
         }
+      }
+
+      newCount = this.getActiveChromiumCount();
+      if (newCount >= MAX_CONCURRENT_SESSIONS) {
+        await this.evictOldestQrWithoutSavedAuth(sessionId);
       }
 
       newCount = this.getActiveChromiumCount();
@@ -718,7 +814,9 @@ class SessionManager {
       client: null,
       info: null,
       hasRemoteAuth,
-      allowQrFallback: options.forceFreshAuth === true,
+      allowQrFallback: options.forceFreshAuth === true || options.forceQrFallback === true,
+      qrFromRejectedAuth: options.forceQrFallback === true,
+      qrGeneratedAt: null,
       lastSeen: Date.now(),
       createdAt: Date.now()
     };
@@ -865,6 +963,7 @@ class SessionManager {
 
         this.sessions.delete(sessionData.id);
         this.sessionLastActivity.delete(sessionData.id);
+        this.qrGeneratedAt.delete(sessionData.id);
         this.cleanupSessionFiles(sessionData.id);
         await new Promise(r => setTimeout(r, 10000 * attempt));
 
@@ -889,8 +988,8 @@ class SessionManager {
       } catch (_dbStatusError) {
         latestDbStatus = null;
       }
-      const savedAuthWasRejected = qrRejectedSavedAuth || latestDbStatus === 'auth_failure';
-      const failedStatus = (savedAuthWasRejected || hasRemoteAuth) ? 'auth_failure' : 'failed';
+      const savedAuthWasRejected = qrRejectedSavedAuth === true;
+      const failedStatus = savedAuthWasRejected ? 'auth_failure' : (hasRemoteAuth ? 'saved_auth' : 'failed');
       this.sessionInitFailures.set(sessionData.id, {
         message: errorMessage,
         timestamp: Date.now()
@@ -908,7 +1007,7 @@ class SessionManager {
           : 'Falha ao inicializar sessão. Tente criar novamente.',
         status: failedStatus,
         recoverable: true,
-        action: hasRemoteAuth ? 'scan_qr' : 'retry',
+        action: savedAuthWasRejected ? 'scan_qr' : (hasRemoteAuth ? 'reactivate_saved_auth' : 'retry'),
         recentFailure: true
       });
     }
@@ -920,6 +1019,7 @@ class SessionManager {
     this.intentionalShutdowns.add(sessionId);
     this.sessions.delete(sessionId);
     this.sessionLastActivity.delete(sessionId);
+    this.qrGeneratedAt.delete(sessionId);
     this.reconnectAttempts.delete(sessionId);
     this.reconnectPromises.delete(sessionId);
     this.reconnectingSet.delete(sessionId);
@@ -1145,10 +1245,13 @@ class SessionManager {
       } catch (authCheckError) {
         console.warn(`[${sessionData.id}] Nao foi possivel verificar RemoteAuth durante QR: ${authCheckError.message}`);
       }
+      const qrGeneratedAt = Date.now();
       sessionData.qrCode = await QRCode.toDataURL(qr);
       sessionData.status = 'qr_code';
       sessionData.qrFromRejectedAuth = sessionData.qrFromRejectedAuth || hadSavedAuth;
-      sessionData.lastSeen = Date.now();
+      sessionData.qrGeneratedAt = qrGeneratedAt;
+      sessionData.lastSeen = qrGeneratedAt;
+      this.qrGeneratedAt.set(sessionData.id, qrGeneratedAt);
       this.sessionInitFailures.delete(sessionData.id);
       // NÃO atualizar sessionLastActivity aqui — cada QR gerado renovava o timer
       // e o timeout de 5 minutos nunca disparava, causando loop infinito de QR
@@ -1222,17 +1325,17 @@ class SessionManager {
             timestamp: Date.now()
           });
 
-          currentSession.status = 'auth_failure';
-          await this.db.updateSessionStatus(sessionData.id, 'auth_failure');
+          currentSession.status = 'saved_auth';
+          await this.cleanupSession(sessionData.id);
+          await this.db.updateSessionStatus(sessionData.id, 'saved_auth');
           this.io.to(`user_${sessionData.userId}`).emit('session_error', {
             sessionId: sessionData.id,
-            error: 'WhatsApp autenticou, mas nao ficou pronto. Gere um QR Code para reativar sem apagar a memoria salva.',
-            status: 'auth_failure',
+            error: 'WhatsApp autenticou, mas nao ficou pronto. A memoria foi preservada; tente reativar novamente.',
+            status: 'saved_auth',
             recoverable: true,
-            action: 'scan_qr',
+            action: 'reactivate_saved_auth',
             recentFailure: true
           });
-          await this.cleanupSession(sessionData.id);
         }
       }, AUTHENTICATED_READY_TIMEOUT_MS);
     });
@@ -2725,6 +2828,9 @@ class SessionManager {
       authStrategy: this.useRemoteAuth ? 'RemoteAuth (PostgreSQL)' : (REQUIRE_REMOTE_AUTH ? 'RemoteAuth indisponivel (LocalAuth bloqueado)' : 'LocalAuth'),
       remoteAuthError: this.remoteAuthInitError?.message || null,
       maxConcurrent: MAX_CONCURRENT_SESSIONS,
+      maxActiveQrSessions: MAX_ACTIVE_QR_SESSIONS,
+      activeQrWithoutSavedAuth: this.getActiveQrWithoutSavedAuthCount(),
+      qrNoAuthMinKeepaliveMs: QR_NO_AUTH_MIN_KEEPALIVE_MS,
       idleDisconnectMs: IDLE_DISCONNECT_MS,
       recentErrors: this.getRecentErrors(5),
       memory: {
@@ -2914,11 +3020,13 @@ class SessionManager {
       const now = Date.now();
       const toDestroy = [];
       const toDisconnect = [];
+      const noAuthQrSessions = [];
 
       for (const [sid, lastTs] of this.sessionLastActivity.entries()) {
         const sess = this.sessions.get(sid);
         if (!sess) {
           this.sessionLastActivity.delete(sid);
+          this.qrGeneratedAt.delete(sid);
           continue;
         }
 
@@ -2936,9 +3044,20 @@ class SessionManager {
           continue;
         }
 
-        // Sessões com QR code: remove após QR_CODE_TIMEOUT_MS (QR expirou)
-        if (sess.status === 'qr_code' && (now - lastTs) > QR_CODE_TIMEOUT_MS) {
-          toDestroy.push({ sid, reason: `QR expirado (${Math.round((now - lastTs) / 1000)}s)` });
+        // QR sem RemoteAuth precisa ficar vivo para o usuario escanear.
+        // A protecao de carga acontece por limite de QRs ativos, nao por timeout simples.
+        if (sess.status === 'qr_code') {
+          const qrTs = this.qrGeneratedAt.get(sid) || sess.qrGeneratedAt || lastTs;
+          const qrAgeMs = now - qrTs;
+
+          if (this.isQrWithoutSavedAuth(sess)) {
+            noAuthQrSessions.push({ sid, qrTs, qrAgeMs });
+            continue;
+          }
+
+          if (qrAgeMs > QR_CODE_TIMEOUT_MS) {
+            toDestroy.push({ sid, reason: `QR expirado (${Math.round(qrAgeMs / 1000)}s)` });
+          }
           continue;
         }
 
@@ -2958,6 +3077,15 @@ class SessionManager {
           continue;
         }
       }
+
+      noAuthQrSessions
+        .sort((a, b) => a.qrTs - b.qrTs)
+        .slice(0, Math.max(0, noAuthQrSessions.length - MAX_ACTIVE_QR_SESSIONS))
+        .forEach(({ sid, qrAgeMs }) => {
+          if (qrAgeMs >= QR_NO_AUTH_MIN_KEEPALIVE_MS) {
+            toDestroy.push({ sid, reason: `limite de QR sem RemoteAuth (${MAX_ACTIVE_QR_SESSIONS})` });
+          }
+        });
 
       // Hiberna sessões idle: libera Chromium sem apagar RemoteAuth.
       for (const { sid, idleTime } of toDisconnect) {
@@ -2980,6 +3108,10 @@ class SessionManager {
             nextStatus = sess?.qrFromRejectedAuth
               ? 'auth_failure'
               : (hasRemoteAuth ? 'saved_auth' : 'disconnected');
+          } else if (sess?.status === 'initializing' || sess?.status === 'authenticated') {
+            nextStatus = hasRemoteAuth ? 'saved_auth' : 'failed';
+          } else if (sess?.status === 'auth_failure') {
+            nextStatus = 'auth_failure';
           } else if (['failed', 'disconnected'].includes(sess?.status) && hasRemoteAuth) {
             nextStatus = 'saved_auth';
           }
@@ -2991,6 +3123,7 @@ class SessionManager {
           console.error(`Erro ao auto-limpar ${sid}:`, e.message);
           this.sessions.delete(sid);
           this.sessionLastActivity.delete(sid);
+          this.qrGeneratedAt.delete(sid);
         }
       }
 
