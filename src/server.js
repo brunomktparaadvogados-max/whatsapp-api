@@ -74,10 +74,6 @@ const QR_CREATE_STALE_MS = parseInt(process.env.WHATSAPP_QR_CREATE_STALE_MS) || 
 let activeGlobalSends = 0;
 const globalSendQueue = [];
 
-function parseBooleanFlag(value) {
-  return ['true', '1', 'yes', 'sim', 'force'].includes(String(value || '').trim().toLowerCase());
-}
-
 function normalizeWhatsAppPhoneForDedupe(to) {
   let cleanTo = String(to || '').replace(/\D/g, '');
   if (!cleanTo) return cleanTo;
@@ -160,63 +156,6 @@ function needsLiveSessionReconnect(dbStatus) {
   return ['connected', 'authenticated', 'reconnecting', 'initializing', 'saved_auth', 'disconnected', 'failed'].includes(dbStatus);
 }
 
-const QR_FALLBACK_STATUSES = new Set(['auth_failure', 'qr_expired']);
-
-function recentFailureRequestsQr(recentFailure) {
-  if (!recentFailure) return false;
-  if (recentFailure.action === 'scan_qr' || recentFailure.status === 'auth_failure') return true;
-
-  const failureText = [
-    recentFailure.errorType,
-    recentFailure.message,
-    recentFailure.error
-  ].filter(Boolean).join(' ').toLowerCase();
-
-  return failureText.includes('auth') || failureText.includes('qr');
-}
-
-function needsQrFallback(dbStatus, hasRemoteAuth, recentFailure) {
-  if (!hasRemoteAuth) return false;
-  if (QR_FALLBACK_STATUSES.has(dbStatus)) return true;
-  return recentFailureRequestsQr(recentFailure);
-}
-
-function needsQrSessionStart(dbStatus, hasRemoteAuth, forceQrFallback = false) {
-  if (forceQrFallback) return true;
-  if (hasRemoteAuth) return false;
-  return ['auth_failure', 'disconnected', 'failed', 'not_created'].includes(dbStatus || 'not_created');
-}
-
-function shouldForceFreshAuth(dbStatus, hasRemoteAuth, forceQrFallback = false) {
-  return forceQrFallback || !hasRemoteAuth;
-}
-
-function canTrustSavedRemoteAuth(dbStatus, hasRemoteAuth, forceQrFallback = false) {
-  return !!hasRemoteAuth && !forceQrFallback && !QR_FALLBACK_STATUSES.has(dbStatus);
-}
-
-function getRecentInitFailure(sessionId) {
-  return typeof sessionManager.getRecentInitFailure === 'function'
-    ? sessionManager.getRecentInitFailure(sessionId)
-    : null;
-}
-
-function resolveStartupPath(sessionId, dbStatus, hasRemoteAuth) {
-  const recentFailure = getRecentInitFailure(sessionId);
-  const forceQrFallback = needsQrFallback(dbStatus, hasRemoteAuth, recentFailure);
-  const recoverable = !!hasRemoteAuth && !forceQrFallback && needsLiveSessionReconnect(dbStatus);
-  const shouldStartQr = needsQrSessionStart(dbStatus, hasRemoteAuth, forceQrFallback);
-
-  return {
-    recentFailure,
-    forceQrFallback,
-    recoverable,
-    shouldStartQr,
-    forceFreshAuth: shouldForceFreshAuth(dbStatus, hasRemoteAuth, forceQrFallback),
-    canTrustSavedAuth: canTrustSavedRemoteAuth(dbStatus, hasRemoteAuth, forceQrFallback)
-  };
-}
-
 function normalizeStatusWithoutRemoteAuth(dbStatus) {
   if (!dbStatus || dbStatus === 'not_created') return dbStatus || 'not_created';
   if (['connected', 'authenticated', 'reconnecting', 'initializing', 'saved_auth', 'qr_code', 'failed'].includes(dbStatus)) {
@@ -238,42 +177,13 @@ function shouldReuseExistingSession(session) {
   return false;
 }
 
-async function cleanupStaleLiveSessionBeforeStart(sessionId, reason) {
-  const liveSession = sessionManager.getSession(sessionId);
-  if (!liveSession) return false;
-  if (liveSession.status === 'connected') return false;
-  if (shouldReuseExistingSession(liveSession)) return false;
-
-  console.warn(`[SESSION START] Limpando sessao stale ${sessionId} (${liveSession.status}) antes de ${reason}`);
-  await sessionManager.cleanupSession(sessionId);
-  return true;
-}
-
-async function forceQrForSession(sessionId, userId, reason = 'forced_qr', waitMs = 30000) {
-  const liveSession = sessionManager.getSession(sessionId);
-  if (liveSession) {
-    console.warn(`[FORCE QR] Limpando ${sessionId} (${liveSession.status}) para liberar QR. Motivo: ${reason}`);
-    await sessionManager.cleanupSession(sessionId);
-  }
-
-  await db.updateSessionStatus(sessionId, 'initializing');
-  await sessionManager.createSession(sessionId, userId, {
-    priority: true,
-    forceFreshAuth: true,
-    forceQrFallback: true
-  });
-
-  return await waitForSessionProgress(sessionId, waitMs);
-}
-
 async function getSessionView(sessionId, dbSession = null) {
   const savedDbSession = dbSession || await db.getSession(sessionId);
   if (!savedDbSession) return null;
 
   const liveSession = sessionManager.getSession(sessionId);
   const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-  const startupPath = resolveStartupPath(sessionId, savedDbSession.status, hasRemoteAuth);
-  const recoverable = !liveSession && startupPath.recoverable;
+  const recoverable = !liveSession && hasRemoteAuth && needsLiveSessionReconnect(savedDbSession.status);
   const status = liveSession
     ? liveSession.status
     : (recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(savedDbSession.status));
@@ -284,7 +194,6 @@ async function getSessionView(sessionId, dbSession = null) {
     dbStatus: savedDbSession.status,
     hasRemoteAuth,
     recoverable,
-    recentInitFailure: !!startupPath.recentFailure,
     canSend: liveSession ? liveSession.status === 'connected' : false,
     qrCode: liveSession ? liveSession.qrCode : null,
     info: liveSession ? liveSession.info : null,
@@ -339,10 +248,7 @@ const SESSION_RECONNECT_KICK_COOLDOWN_MS = Math.max(
 
 function kickSessionReconnect(sessionId, reason = 'send') {
   const liveSession = sessionManager.getSession(sessionId);
-  if (liveSession && liveSession.status === 'connected') {
-    return false;
-  }
-  if (liveSession && shouldReuseExistingSession(liveSession)) {
+  if (liveSession && ['connected', 'initializing', 'authenticated', 'qr_code'].includes(liveSession.status)) {
     return false;
   }
 
@@ -353,59 +259,10 @@ function kickSessionReconnect(sessionId, reason = 'send') {
   }
 
   sessionReconnectKickTimes.set(sessionId, now);
-  setImmediate(async () => {
-    try {
-      await cleanupStaleLiveSessionBeforeStart(sessionId, reason);
-      await sessionManager.autoReconnectForSend(sessionId);
-    } catch (error) {
+  setImmediate(() => {
+    sessionManager.autoReconnectForSend(sessionId).catch(error => {
       console.error(`Erro ao preparar/reconectar ${sessionId} (${reason}):`, error.message);
-    }
-  });
-  return true;
-}
-
-const sessionStartKickTimes = new Map();
-const SESSION_START_KICK_COOLDOWN_MS = Math.max(
-  5000,
-  parseInt(process.env.SESSION_START_KICK_COOLDOWN_MS || '15000', 10)
-);
-
-function kickSessionStart(sessionId, userId, reason = 'manual', options = {}) {
-  const liveSession = sessionManager.getSession(sessionId);
-  if (liveSession && liveSession.status === 'connected') {
-    return false;
-  }
-  if (liveSession && shouldReuseExistingSession(liveSession)) {
-    return false;
-  }
-
-  const now = Date.now();
-  const lastKick = sessionStartKickTimes.get(sessionId) || 0;
-  if (now - lastKick < SESSION_START_KICK_COOLDOWN_MS) {
-    return false;
-  }
-
-  sessionStartKickTimes.set(sessionId, now);
-  setImmediate(async () => {
-    try {
-      console.log(`[SESSION START] ${sessionId} (${reason}) forceFreshAuth=${!!options.forceFreshAuth} forceQrFallback=${!!options.forceQrFallback}`);
-      await cleanupStaleLiveSessionBeforeStart(sessionId, reason);
-      await db.updateSessionStatus(sessionId, 'initializing');
-      await sessionManager.createSession(sessionId, userId, {
-        priority: true,
-        forceFreshAuth: !!options.forceFreshAuth,
-        forceQrFallback: !!options.forceQrFallback
-      });
-    } catch (error) {
-      console.error(`[SESSION START] Falha ao iniciar ${sessionId} (${reason}):`, error.message);
-      try {
-        await db.updateSessionStatus(sessionId, 'failed');
-      } catch (_) { /* ignore */ }
-      io.to(`user_${userId}`).emit('session_error', {
-        sessionId,
-        error: error.message
-      });
-    }
+    });
   });
   return true;
 }
@@ -523,12 +380,7 @@ function respondQueued(res, sessionId) {
 async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null) {
   const dbSession = await db.getSession(sessionId);
   if (dbSession?.status === 'auth_failure') {
-    const targetUserId = dbSession.user_id || parseInt(sessionId.replace('user_', ''), 10);
-    kickSessionStart(sessionId, targetUserId, 'send_auth_failure_qr', {
-      forceFreshAuth: true,
-      forceQrFallback: true
-    });
-    return respondSessionQrRequired(res, sessionId, to, 'A autenticacao salva foi rejeitada pelo WhatsApp; QR Code sera preparado sem apagar a memoria salva');
+    return respondSessionQrRequired(res, sessionId, to, 'A autenticacao salva foi rejeitada pelo WhatsApp');
   }
 
   const liveSession = sessionManager.getSession(sessionId);
@@ -576,28 +428,21 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
     () => sessionManager.sendMessage(sessionId, to, message, mediaUrl),
     { sessionId, to }
   );
-  const deliveryFailed = result?.ack === -1 || result?.ackStatus === 'failed';
   const isPending = !!result?.unconfirmed || result?.status === 'pending';
-  const finalStatus = result?.skipped ? 'invalid_number' : (deliveryFailed ? 'failed' : (isPending ? 'pending' : 'sent'));
-  return res.status(result?.skipped ? 422 : (deliveryFailed ? 409 : (isPending ? 202 : 200))).json({
-    success: !result?.skipped && !isPending && !deliveryFailed,
-    status: deliveryFailed ? 'failed' : (result?.status || finalStatus),
+  const finalStatus = result?.skipped ? 'invalid_number' : (isPending ? 'pending' : 'sent');
+  return res.status(result?.skipped ? 422 : (isPending ? 202 : 200)).json({
+    success: !result?.skipped && !isPending,
+    status: result?.status || finalStatus,
     finalStatus,
-    shouldMarkLead: result?.skipped ? 'invalid' : (deliveryFailed || isPending ? 'pending' : 'sent'),
-    confirmed: !result?.skipped && !isPending && !deliveryFailed,
+    shouldMarkLead: result?.skipped ? 'invalid' : (isPending ? 'pending' : 'sent'),
+    confirmed: !result?.skipped && !isPending,
     invalidNumber: Boolean(result?.skipped || result?.status === 'invalid_number'),
-    messageId: result?.messageId || result?.id || null,
+    messageId: isPending ? null : (result?.messageId || result?.id || null),
     attemptId: result?.attemptId || null,
     skipped: !!result?.skipped,
     unconfirmed: !!result?.unconfirmed,
     sessionId,
-    errorType: deliveryFailed ? 'delivery_failed' : undefined,
-    action: deliveryFailed ? 'keep_pending_review_session' : undefined,
-    message: result?.skipped
-      ? 'Contato invalido ou nao resolvido pelo WhatsApp'
-      : (deliveryFailed
-        ? 'WhatsApp rejeitou ou nao entregou a mensagem nesta sessao; manter lead pendente e revisar a sessao do WhatsApp.'
-        : (isPending ? 'Envio nao confirmado pelo WhatsApp; manter pendente' : 'Mensagem enviada com sucesso')),
+    message: result?.skipped ? 'Contato invalido ou nao resolvido pelo WhatsApp' : (isPending ? 'Envio nao confirmado pelo WhatsApp; manter pendente' : 'Mensagem enviada com sucesso'),
     data: result
   });
 }
@@ -674,14 +519,7 @@ app.post('/api/auth/register', async (req, res) => {
 
     const existingUser = await db.getUserByEmail(email);
     if (existingUser) {
-      return res.status(409).json({
-        success: false,
-        error: 'Email ja cadastrado',
-        action: 'use_existing_user',
-        userId: existingUser.id,
-        email: existingUser.email,
-        message: 'Este email ja possui usuario. Use o login existente ou reative a sessao para preservar o WhatsApp salvo.'
-      });
+      return res.status(400).json({ error: 'Email já cadastrado' });
     }
 
     const userId = await db.createUser(email, password, name, company);
@@ -697,16 +535,6 @@ app.post('/api/auth/register', async (req, res) => {
       message: 'Usuário criado! Clique em criar sessão para gerar o QR Code quando estiver pronto para escanear.'
     });
   } catch (error) {
-    if (error.code === 'USER_EMAIL_EXISTS') {
-      return res.status(409).json({
-        success: false,
-        error: 'Email ja cadastrado',
-        action: 'use_existing_user',
-        userId: error.userId,
-        email: error.email,
-        message: 'Este email ja possui usuario. Use o login existente ou reative a sessao para preservar o WhatsApp salvo.'
-      });
-    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -737,13 +565,21 @@ app.post('/api/auth/login', async (req, res) => {
     let sessionStatus = 'not_found';
 
     if (existingSession) {
-      sessionStatus = existingSession.status;
+      if (existingSession.status === 'qr_code' && Date.now() - existingSession.lastSeen > 90 * 1000) {
+        console.log(`QR antigo para ${sessionId}; limpando Chromium sem recriar no login`);
+        await sessionManager.cleanupSession(sessionId);
+        sessionStatus = dbSession ? dbSession.status : 'not_created';
+      } else {
+        sessionStatus = existingSession.status;
+      }
     } else {
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-      const startupPath = resolveStartupPath(sessionId, dbSession?.status || 'not_created', hasRemoteAuth);
-      sessionStatus = dbSession && startupPath.recoverable
+      sessionStatus = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status)
         ? 'saved_auth'
         : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
+      if (sessionStatus === 'saved_auth') {
+        kickSessionReconnect(sessionId, 'login_saved_auth');
+      }
     }
 
     res.json({
@@ -757,7 +593,7 @@ app.post('/api/auth/login', async (req, res) => {
       },
       sessionId: sessionId,
       sessionStatus: sessionStatus,
-      reactivationStarted: false
+      reactivationStarted: sessionStatus === 'saved_auth'
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -793,9 +629,11 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
       const dbSession = await db.getSession(sessionId);
       if (dbSession) {
         const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-        const startupPath = resolveStartupPath(sessionId, dbSession.status, hasRemoteAuth);
-        const recoverable = startupPath.recoverable;
+        const recoverable = hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
         const status = recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(dbSession.status || 'disconnected');
+        const reactivationStarted = recoverable
+          ? kickSessionReconnect(sessionId, 'auth_me_saved_auth')
+          : false;
         sessionInfo = {
           sessionId: dbSession.id,
           status,
@@ -803,8 +641,7 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
           info: null,
           hasRemoteAuth,
           recoverable,
-          recentInitFailure: !!startupPath.recentFailure,
-          reactivationStarted: false
+          reactivationStarted
         };
       }
     }
@@ -901,68 +738,6 @@ app.post('/api/admin/cleanup-sessions', authMiddleware, async (req, res) => {
   }
 });
 
-app.post('/api/admin/drop-all-whatsapp-sessions', authMiddleware, async (req, res) => {
-  try {
-    const currentUser = await db.getUserById(req.userId);
-    if (currentUser.email !== 'admin@flow.com') {
-      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
-    }
-
-    const restart = req.body?.restart !== false;
-    const liveSessions = sessionManager.getAllSessions();
-    let liveDropped = 0;
-    let dbUpdated = 0;
-
-    for (const session of liveSessions) {
-      await sessionManager.cleanupSession(session.id);
-      liveDropped++;
-    }
-
-    const dbSessions = await db.getAllSessionsFromDB();
-    for (const session of dbSessions) {
-      const sessionId = session.id;
-      if (!sessionId || !sessionId.startsWith('user_')) continue;
-
-      const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-      const nextStatus = hasRemoteAuth ? 'saved_auth' : 'disconnected';
-      await db.updateSessionStatus(sessionId, nextStatus);
-      dbUpdated++;
-    }
-
-    try {
-      const { execSync } = require('child_process');
-      execSync('pkill -f chromium 2>/dev/null || true');
-      execSync('pkill -f chrome 2>/dev/null || true');
-    } catch (e) {
-      console.warn(`Falha ao matar Chromiums orfaos: ${e.message}`);
-    }
-
-    res.json({
-      success: true,
-      action: 'drop_all_whatsapp_sessions',
-      liveDropped,
-      dbUpdated,
-      restart,
-      message: restart
-        ? 'Todas as sessoes foram derrubadas e o processo sera reiniciado para limpar Chromiums orfaos.'
-        : 'Todas as sessoes foram derrubadas; o processo atual foi mantido.'
-    });
-
-    if (restart) {
-      setTimeout(() => {
-        console.log('[ADMIN DROP ALL] Reiniciando processo apos derrubar todas as sessoes WhatsApp.');
-        process.exit(1);
-      }, 1000).unref?.();
-    }
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      action: 'drop_all_whatsapp_sessions_error',
-      error: error.message
-    });
-  }
-});
-
 app.post('/api/admin/recover-auth-sessions', authMiddleware, async (req, res) => {
   try {
     const currentUser = await db.getUserById(req.userId);
@@ -996,6 +771,7 @@ app.post('/api/admin/recover-auth-sessions', authMiddleware, async (req, res) =>
 
       const live = sessionManager.getSession(session.id);
       if (live && live.status === 'connected') continue;
+      if (session.status === 'auth_failure') continue;
 
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(session.id);
       if (!hasRemoteAuth) continue;
@@ -1020,6 +796,10 @@ app.post('/api/admin/recover-auth-sessions', authMiddleware, async (req, res) =>
 
           try {
             console.log(`[RECOVER] Restaurando ${session.id} via RemoteAuth...`);
+            if (session.status === 'auth_failure') {
+              summary.push({ sessionId: session.id, status: 'qr_required', skipped: true });
+              continue;
+            }
             await db.updateSessionStatus(session.id, 'authenticated');
             const recovered = await Promise.race([
               sessionManager.autoReconnectForSend(session.id),
@@ -1101,9 +881,9 @@ app.get('/api/admin/reactivate-session/:sessionId', async (req, res) => {
       });
     }
 
-    const forceQr = String(req.query.forceQr || '').toLowerCase() === 'true';
+    const retrySavedAuth = String(req.query.retrySavedAuth || '').toLowerCase() === 'true';
 
-    if (dbSession.status === 'auth_failure' && forceQr) {
+    if (dbSession.status === 'auth_failure' && !retrySavedAuth) {
       return res.status(409).json({
         success: false,
         sessionId,
@@ -1111,12 +891,12 @@ app.get('/api/admin/reactivate-session/:sessionId', async (req, res) => {
         status: 'auth_failure',
         dbStatus: dbSession.status,
         hasRemoteAuth: true,
-        message: 'QR Code solicitado explicitamente. RemoteAuth foi preservado; use Criar Sessao para gerar novo QR sem apagar o usuario.'
+        message: 'O WhatsApp rejeitou a autenticacao salva. Use Criar Sessao para gerar um novo QR Code sem apagar o registro do usuario.'
       });
     }
 
-    if (dbSession.status === 'auth_failure') {
-      console.log(`[ADMIN REACTIVATE] Retestando RemoteAuth salvo para ${sessionId} apos auth_failure`);
+    if (dbSession.status === 'auth_failure' && retrySavedAuth) {
+      console.log(`[ADMIN REACTIVATE] Reteste unico do RemoteAuth salvo para ${sessionId} apos auth_failure`);
     }
 
     console.log(`[ADMIN REACTIVATE] Reativando ${sessionId} via RemoteAuth (sem apagar auth)`);
@@ -1205,164 +985,6 @@ app.post('/api/admin/require-qr/:sessionId', async (req, res) => {
   }
 });
 
-app.get('/api/admin/orphan-remote-auth', authMiddleware, async (req, res) => {
-  try {
-    const currentUser = await db.getUserById(req.userId);
-    if (!currentUser || currentUser.email !== 'admin@flow.com') {
-      return res.status(403).json({ success: false, error: 'Acesso negado. Apenas administradores.' });
-    }
-
-    if (!sessionManager.pgStore) {
-      return res.status(503).json({
-        success: false,
-        error: 'PostgresStore nao inicializado'
-      });
-    }
-
-    const [remoteSessions, dbSessions, users] = await Promise.all([
-      sessionManager.pgStore.listSessions(),
-      db.getAllSessionsFromDB(),
-      db.getAllUsers()
-    ]);
-
-    const dbSessionIds = new Set(dbSessions.map(s => s.id));
-    const userIds = new Set(users.map(u => Number(u.id)));
-
-    const orphans = remoteSessions
-      .filter(s => s.valid_zip || s.recoverable_from_backup)
-      .map(s => {
-        const dbSessionId = String(s.session_id || '').replace(/^RemoteAuth-/, '');
-        const numericUserId = Number(dbSessionId.replace(/^user_/, ''));
-        return {
-          remoteAuthId: s.session_id,
-          expectedSessionId: dbSessionId,
-          expectedUserId: Number.isFinite(numericUserId) ? numericUserId : null,
-          hasDbSession: dbSessionIds.has(dbSessionId),
-          hasUser: userIds.has(numericUserId),
-          sizeMB: (Number(s.data_size || 0) / 1024 / 1024).toFixed(2),
-          updatedAt: s.updated_at,
-          recoverableFromBackup: !!s.recoverable_from_backup
-        };
-      })
-      .filter(s => !s.hasDbSession || !s.hasUser);
-
-    res.json({
-      success: true,
-      totalRemoteAuth: remoteSessions.length,
-      orphanCount: orphans.length,
-      orphans
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      action: 'admin_orphan_remote_auth_error',
-      error: error.message
-    });
-  }
-});
-
-app.post('/api/admin/migrate-remote-auth', authMiddleware, async (req, res) => {
-  try {
-    const currentUser = await db.getUserById(req.userId);
-    if (!currentUser || currentUser.email !== 'admin@flow.com') {
-      return res.status(403).json({ success: false, error: 'Acesso negado. Apenas administradores.' });
-    }
-
-    if (!sessionManager.pgStore) {
-      return res.status(503).json({
-        success: false,
-        error: 'PostgresStore nao inicializado'
-      });
-    }
-
-    const fromSessionId = String(req.body.fromSessionId || req.body.from || '').trim();
-    const force = req.body.force === true || String(req.body.force || '').toLowerCase() === 'true';
-    const targetUserId = req.body.targetUserId ? Number(req.body.targetUserId) : null;
-    const toSessionId = String(req.body.toSessionId || req.body.to || (targetUserId ? `user_${targetUserId}` : '')).trim();
-
-    if (!fromSessionId || !toSessionId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Informe fromSessionId e toSessionId ou targetUserId.'
-      });
-    }
-
-    const targetUserIdFromSession = Number(toSessionId.replace(/^user_/, ''));
-    const resolvedTargetUserId = targetUserId || targetUserIdFromSession;
-    if (!Number.isFinite(resolvedTargetUserId)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Nao foi possivel identificar o usuario de destino.'
-      });
-    }
-
-    const targetUser = await db.getUserById(resolvedTargetUserId);
-    if (!targetUser) {
-      return res.status(404).json({
-        success: false,
-        error: `Usuario de destino ${resolvedTargetUserId} nao encontrado.`
-      });
-    }
-
-    let targetDbSession = await db.getSession(toSessionId);
-    if (targetDbSession && Number(targetDbSession.user_id) !== Number(resolvedTargetUserId)) {
-      return res.status(409).json({
-        success: false,
-        error: `Sessao ${toSessionId} pertence a outro usuario (${targetDbSession.user_id}).`
-      });
-    }
-
-    const liveSession = sessionManager.getSession(toSessionId);
-    if (liveSession?.status === 'connected' && !force) {
-      return res.status(409).json({
-        success: false,
-        sessionId: toSessionId,
-        action: 'connected_session_preserved',
-        message: 'Destino esta conectado. Nenhuma alteracao feita.'
-      });
-    }
-
-    if (liveSession && liveSession.status !== 'connected') {
-      await sessionManager.cleanupSession(toSessionId);
-    }
-
-    if (!targetDbSession) {
-      await db.createSession(toSessionId, resolvedTargetUserId);
-      targetDbSession = await db.getSession(toSessionId);
-    }
-
-    const migration = await sessionManager.pgStore.copyAuthSession({
-      fromSession: fromSessionId,
-      toSession: toSessionId,
-      overwrite: force
-    });
-
-    await db.updateSessionStatus(toSessionId, 'saved_auth');
-
-    console.log(`[ADMIN MIGRATE AUTH] ${migration.from} -> ${migration.to} (${migration.sizeMB}MB, source=${migration.sourceKind}, overwrite=${migration.overwritten})`);
-
-    res.json({
-      success: true,
-      action: 'remote_auth_migrated',
-      targetUser: {
-        id: targetUser.id,
-        email: targetUser.email,
-        name: targetUser.name
-      },
-      sessionId: toSessionId,
-      status: 'saved_auth',
-      migration,
-      message: 'RemoteAuth copiado para o usuario correto. Reative a sessao sob demanda para validar a conexao.'
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      action: 'admin_migrate_remote_auth_error',
-      error: error.message
-    });
-  }
-});
-
 app.get('/health', (req, res) => {
   // SEMPRE retorna 200 IMEDIATAMENTE para o Koyeb health check
   // Nunca faz queries ao banco — evita travar o health check
@@ -1433,7 +1055,20 @@ app.get('/api/prospecting/lists/:listId/statuses', async (req, res) => {
 app.put('/api/prospecting/lists/:listId/leads/:leadKey/status', async (req, res) => {
   try {
     const { listId, leadKey } = req.params;
-    const allowedStatuses = ['pending', 'researching', 'approached', 'replied', 'meeting', 'discarded'];
+    const allowedStatuses = [
+      'pending',
+      'researching',
+      'approached',
+      'replied',
+      'qualified',
+      'meeting',
+      'proposal',
+      'closed',
+      'active_client',
+      'nurture',
+      'discarded',
+      'not_fit'
+    ];
     const status = String(req.body.status || '');
     const leadName = String(req.body.leadName || '').trim().slice(0, 180);
     const ownerName = String(req.body.ownerName || '').trim().slice(0, 80);
@@ -1562,24 +1197,11 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
     if (!session) {
       const dbSession = await db.getSession(sessionId);
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-      const dbStatus = dbSession?.status || 'not_created';
-      const startupPath = resolveStartupPath(sessionId, dbStatus, hasRemoteAuth);
-      const recoverable = !!dbSession && startupPath.recoverable;
-      const shouldStartQr = startupPath.shouldStartQr;
+      const recoverable = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
+      const status = recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
       const reactivationStarted = recoverable
         ? kickSessionReconnect(sessionId, 'my_session_saved_auth')
         : false;
-      const qrStartStarted = !recoverable && shouldStartQr
-        ? kickSessionStart(sessionId, req.userId, startupPath.forceQrFallback ? 'my_session_recent_failure_qr' : 'my_session_qr_required', {
-          forceFreshAuth: startupPath.forceFreshAuth,
-          forceQrFallback: startupPath.forceQrFallback
-        })
-        : false;
-      const status = recoverable
-        ? 'saved_auth'
-        : shouldStartQr
-          ? 'initializing'
-          : normalizeStatusWithoutRemoteAuth(dbStatus);
       return res.json({
         success: true,
         sessionId,
@@ -1588,23 +1210,12 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
         hasRemoteAuth,
         recoverable: !!recoverable,
         reactivationStarted,
-        qrStartStarted,
-        action: recoverable
-          ? 'reactivate_saved_auth'
-          : shouldStartQr
-            ? 'create_qr'
-            : 'none',
         dbStatus: dbSession?.status || null,
-        recentInitFailure: !!startupPath.recentFailure,
         message: recoverable
           ? 'Sessao salva no RemoteAuth. Reativacao automatica iniciada; acompanhe o status.'
-          : shouldStartQr
-            ? (startupPath.forceQrFallback
-              ? 'Recuperacao da sessao salva falhou recentemente. Preparando QR Code sem apagar a memoria anterior.'
-              : 'Preparando sessao para gerar QR Code. Aguarde alguns segundos e atualize.')
-            : hasRemoteAuth
-              ? 'Sessao salva no RemoteAuth. Use reativar para reidratar.'
-              : 'Sessao ainda nao conectada. Preparando QR Code quando solicitado.'
+          : hasRemoteAuth
+          ? 'Sessao salva no RemoteAuth. Clique em criar sessao para reidratar.'
+          : 'Sessao ainda nao conectada. Clique em criar sessao para gerar QR.'
       });
     }
 
@@ -1629,24 +1240,11 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
     if (!session) {
       const dbSession = await db.getSession(sessionId);
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-      const dbStatus = dbSession?.status || 'not_created';
-      const startupPath = resolveStartupPath(sessionId, dbStatus, hasRemoteAuth);
-      const recoverable = !!dbSession && startupPath.recoverable;
-      const shouldStartQr = startupPath.shouldStartQr;
+      const recoverable = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
+      const status = recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
       const reactivationStarted = recoverable
         ? kickSessionReconnect(sessionId, 'my_qr_saved_auth')
         : false;
-      const qrStartStarted = !recoverable && shouldStartQr
-        ? kickSessionStart(sessionId, req.userId, startupPath.forceQrFallback ? 'my_qr_recent_failure_qr' : 'my_qr_required', {
-          forceFreshAuth: startupPath.forceFreshAuth,
-          forceQrFallback: startupPath.forceQrFallback
-        })
-        : false;
-      const status = recoverable
-        ? 'saved_auth'
-        : shouldStartQr
-          ? 'initializing'
-          : normalizeStatusWithoutRemoteAuth(dbStatus);
       return res.json({
         success: true,
         status,
@@ -1655,23 +1253,12 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
         hasRemoteAuth,
         recoverable: !!recoverable,
         reactivationStarted,
-        qrStartStarted,
-        action: recoverable
-          ? 'reactivate_saved_auth'
-          : shouldStartQr
-            ? 'create_qr'
-            : 'none',
         dbStatus: dbSession?.status || null,
-        recentInitFailure: !!startupPath.recentFailure,
         message: recoverable
           ? 'Sessao salva no RemoteAuth; reativacao automatica iniciada.'
-          : shouldStartQr
-            ? (startupPath.forceQrFallback
-              ? 'Recuperacao da sessao salva falhou recentemente. Preparando QR Code sem apagar a memoria anterior.'
-              : 'Preparando QR Code automaticamente. Aguarde alguns segundos.')
-            : hasRemoteAuth
-              ? 'Sessao salva no RemoteAuth; use reativar para reidratar.'
-              : 'Sessao sem RemoteAuth; solicite a criacao para gerar QR.'
+          : hasRemoteAuth
+          ? 'Sessao salva no RemoteAuth; clique em criar sessao para reidratar.'
+          : 'Sessao sem RemoteAuth; clique em criar sessao para gerar QR.'
       });
     }
 
@@ -1725,11 +1312,10 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       targetUserId = req.userId;
     }
 
-    const explicitForceQr = parseBooleanFlag(req.body?.forceQr || req.query?.forceQr);
     const existingSession = sessionManager.getSession(targetSessionId);
     if (existingSession) {
       // Se a sessão existe e está em estado ativo, retorna ela
-      if (shouldReuseExistingSession(existingSession) && !explicitForceQr) {
+      if (shouldReuseExistingSession(existingSession)) {
         const view = await getSessionView(targetSessionId);
         return res.json({
           success: true,
@@ -1742,10 +1328,6 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
           session: view || existingSession,
           message: existingSession.status === 'connected' ? 'WhatsApp já está conectado!' : 'Sessão já existe. Aguarde o QR Code.'
         });
-      }
-      if (explicitForceQr) {
-        console.warn(`[CREATE SESSION] forceQr=true para ${targetSessionId}; limpando estado vivo ${existingSession.status} sem apagar usuario.`);
-        await sessionManager.cleanupSession(targetSessionId);
       }
       // Se está em estado morto (failed, disconnected, auth_failure), limpa e recria
       console.log(`🔄 Sessão ${targetSessionId} está em estado '${existingSession.status}', recriando...`);
@@ -1767,10 +1349,7 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       });
     }
 
-    const startupPath = resolveStartupPath(targetSessionId, dbSession?.status || 'not_created', hasRemoteAuth);
-    const forceFreshAuth = explicitForceQr || startupPath.forceFreshAuth;
-    const forceQrFallback = explicitForceQr || startupPath.forceQrFallback;
-    const canTrustSavedAuth = !explicitForceQr && startupPath.canTrustSavedAuth;
+    const canTrustSavedAuth = hasRemoteAuth && dbSession?.status !== 'auth_failure';
 
     if (dbSession) {
       await db.updateSessionStatus(targetSessionId, canTrustSavedAuth ? 'authenticated' : 'initializing');
@@ -1781,15 +1360,14 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
         console.log(`🔄 Criando sessão ${targetSessionId} para usuário ${targetUserId}...`);
         await sessionManager.createSession(targetSessionId, targetUserId, {
           priority: true,
-          forceFreshAuth,
-          forceQrFallback
+          forceFreshAuth: hasRemoteAuth && !canTrustSavedAuth
         });
         console.log(`✅ Sessão ${targetSessionId} criada`);
       } catch (error) {
         console.error(`❌ Erro ao criar sessão ${targetSessionId}:`, error.message);
         // Marca como 'failed' no banco para que o polling do frontend detecte
         try {
-          await db.updateSessionStatus(targetSessionId, canTrustSavedAuth ? 'saved_auth' : 'failed');
+          await db.updateSessionStatus(targetSessionId, canTrustSavedAuth ? 'authenticated' : 'failed');
         } catch (_) { /* ignora */ }
         // Emite erro via Socket.IO (caso frontend suporte no futuro)
         io.to(`user_${targetUserId}`).emit('session_error', {
@@ -1799,22 +1377,11 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       }
     });
 
-    let fallbackForcedQr = false;
-    let progressedSession = await waitForSessionProgress(targetSessionId, req.body?.waitMs || 30000);
-    let view = await getSessionView(targetSessionId);
-    let status = progressedSession ? progressedSession.status : (view?.status || 'initializing');
-    let isReady = status === 'connected';
-    let needsQr = status === 'qr_code';
-
-    if (canTrustSavedAuth && !isReady && !needsQr) {
-      console.warn(`[CREATE SESSION] ${targetSessionId} nao conectou via RemoteAuth (status=${status}); liberando QR imediatamente.`);
-      fallbackForcedQr = true;
-      progressedSession = await forceQrForSession(targetSessionId, targetUserId, 'saved_auth_create_timeout', req.body?.waitMs || 30000);
-      view = await getSessionView(targetSessionId);
-      status = progressedSession ? progressedSession.status : (view?.status || 'initializing');
-      isReady = status === 'connected';
-      needsQr = status === 'qr_code';
-    }
+    const progressedSession = await waitForSessionProgress(targetSessionId, req.body?.waitMs || 30000);
+    const view = await getSessionView(targetSessionId);
+    const status = progressedSession ? progressedSession.status : (view?.status || 'initializing');
+    const isReady = status === 'connected';
+    const needsQr = status === 'qr_code';
 
     res.status(isReady || needsQr ? 200 : 202).json({
       success: true,
@@ -1824,21 +1391,14 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       canSend: view?.canSend || false,
       hasRemoteAuth: view?.hasRemoteAuth || hasRemoteAuth,
       recoverable: view?.recoverable || false,
-      recentInitFailure: !!startupPath.recentFailure,
-      forceQr: explicitForceQr,
-      fallbackForcedQr,
-      action: canTrustSavedAuth && !fallbackForcedQr ? 'reactivate_saved_auth' : 'create_qr',
+      action: canTrustSavedAuth ? 'reactivate_saved_auth' : 'create_qr',
       message: isReady
         ? 'Sessao pronta para disparo.'
         : needsQr
           ? 'QR Code disponivel para escanear.'
-          : canTrustSavedAuth && !fallbackForcedQr
+          : canTrustSavedAuth
             ? 'Reativacao iniciada pela sessao salva; acompanhe o status.'
-            : startupPath.forceQrFallback
-              ? 'Recuperacao da sessao salva falhou recentemente. QR sera preparado sem apagar a memoria anterior.'
-              : explicitForceQr
-                ? 'QR Code forçado para esta sessao sem apagar o usuario.'
-                : 'Criacao de QR iniciada; acompanhe o status.',
+            : 'Criacao de QR iniciada; acompanhe o status.',
       session: view || { id: targetSessionId, status, qrCode: null }
     });
   } catch (error) {
@@ -1869,9 +1429,8 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
     const remoteAuthAvailable = !!(sessionManager.useRemoteAuth && sessionManager.pgStore);
     const existingSession = sessionManager.getSession(sessionId);
     const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-    const explicitForceQr = parseBooleanFlag(req.body?.forceQr || req.query?.forceQr);
 
-    if (existingSession && shouldReuseExistingSession(existingSession) && !explicitForceQr) {
+    if (existingSession && shouldReuseExistingSession(existingSession)) {
       const view = await getSessionView(sessionId, dbSession);
       return res.json({
         success: true,
@@ -1898,15 +1457,12 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
     }
 
     if (existingSession) {
-      console.log(`[REACTIVATE] Limpando sessao viva em estado ${existingSession.status}: ${sessionId}${explicitForceQr ? ' (forceQr=true)' : ''}`);
+      console.log(`[REACTIVATE] Limpando sessao viva em estado ${existingSession.status}: ${sessionId}`);
       await sessionManager.cleanupSession(sessionId);
     }
 
     const targetUserId = dbSession.user_id || parseInt(sessionId.replace('user_', ''), 10);
-    const startupPath = resolveStartupPath(sessionId, dbSession.status, hasRemoteAuth);
-    const forceFreshAuth = explicitForceQr || startupPath.forceFreshAuth;
-    const forceQrFallback = explicitForceQr || startupPath.forceQrFallback;
-    const canTrustSavedAuth = !explicitForceQr && startupPath.canTrustSavedAuth;
+    const canTrustSavedAuth = hasRemoteAuth && dbSession.status !== 'auth_failure';
     const action = canTrustSavedAuth ? 'reactivate_saved_auth' : 'create_qr';
 
     await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'authenticated' : 'initializing');
@@ -1916,13 +1472,12 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
         console.log(`[REACTIVATE] ${action} para ${sessionId}`);
         await sessionManager.createSession(sessionId, targetUserId, {
           priority: true,
-          forceFreshAuth,
-          forceQrFallback
+          forceFreshAuth: hasRemoteAuth && !canTrustSavedAuth
         });
       } catch (error) {
         console.error(`[REACTIVATE] Falha ao reativar ${sessionId}:`, error.message);
         try {
-          await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'saved_auth' : 'failed');
+          await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'authenticated' : 'failed');
         } catch (_) { /* ignore */ }
         io.to(`user_${targetUserId}`).emit('session_error', {
           sessionId,
@@ -1931,22 +1486,11 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
       }
     });
 
-    let fallbackForcedQr = false;
-    let progressedSession = await waitForSessionProgress(sessionId, req.body?.waitMs);
-    let view = await getSessionView(sessionId);
-    let status = progressedSession ? progressedSession.status : view.status;
-    let isReady = status === 'connected';
-    let needsQr = status === 'qr_code';
-
-    if (canTrustSavedAuth && !isReady && !needsQr) {
-      console.warn(`[REACTIVATE] ${sessionId} nao conectou via RemoteAuth (status=${status}); liberando QR imediatamente.`);
-      fallbackForcedQr = true;
-      progressedSession = await forceQrForSession(sessionId, targetUserId, 'saved_auth_reactivate_timeout', req.body?.waitMs || 30000);
-      view = await getSessionView(sessionId);
-      status = progressedSession ? progressedSession.status : view.status;
-      isReady = status === 'connected';
-      needsQr = status === 'qr_code';
-    }
+    const progressedSession = await waitForSessionProgress(sessionId, req.body?.waitMs);
+    const view = await getSessionView(sessionId);
+    const status = progressedSession ? progressedSession.status : view.status;
+    const isReady = status === 'connected';
+    const needsQr = status === 'qr_code';
 
     res.status(isReady || needsQr ? 200 : 202).json({
       success: isReady || needsQr || status === 'initializing' || status === 'authenticated' || status === 'saved_auth',
@@ -1956,22 +1500,15 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
       dbStatus: view.dbStatus,
       hasRemoteAuth: view.hasRemoteAuth,
       recoverable: view.recoverable,
-      recentInitFailure: !!startupPath.recentFailure,
-      forceQr: explicitForceQr,
-      fallbackForcedQr,
       canSend: view.canSend,
       qrCode: view.qrCode,
       message: isReady
         ? 'Sessao reativada e pronta para disparo.'
         : needsQr
           ? 'QR Code disponivel para escanear.'
-          : canTrustSavedAuth && !fallbackForcedQr
+          : canTrustSavedAuth
             ? 'Reativacao iniciada pela sessao salva; acompanhe o status.'
-            : startupPath.forceQrFallback
-              ? 'Recuperacao da sessao salva falhou recentemente. QR sera preparado sem apagar a memoria anterior.'
-              : explicitForceQr
-                ? 'QR Code forcado para esta sessao sem apagar o usuario.'
-                : 'Criacao de QR iniciada; acompanhe o status.',
+            : 'Criacao de QR iniciada; acompanhe o status.',
       session: view
     });
   } catch (error) {
@@ -2040,59 +1577,10 @@ app.get('/api/sessions/:sessionId/qr', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Acesso negado' });
     }
 
-    const explicitForceQr = parseBooleanFlag(req.query?.forceQr);
-    let session = sessionManager.getSession(sessionId);
-
-    if (session && explicitForceQr) {
-      console.warn(`[GET QR] forceQr=true para ${sessionId}; limpando estado vivo ${session.status} sem apagar usuario.`);
-      await sessionManager.cleanupSession(sessionId);
-      session = null;
-    }
+    const session = sessionManager.getSession(sessionId);
 
     if (!session) {
-      const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-      const dbStatus = dbSession.status || 'disconnected';
-      const startupPath = resolveStartupPath(sessionId, dbStatus, hasRemoteAuth);
-      const recoverable = !explicitForceQr && startupPath.recoverable;
-      const shouldStartQr = explicitForceQr || startupPath.shouldStartQr;
-      const targetUserId = dbSession.user_id || parseInt(sessionId.replace('user_', ''), 10);
-
-      const reactivationStarted = recoverable
-        ? kickSessionReconnect(sessionId, 'session_qr_saved_auth')
-        : false;
-      const qrStartStarted = !recoverable && shouldStartQr
-        ? kickSessionStart(sessionId, targetUserId, explicitForceQr ? 'session_qr_forced' : (startupPath.forceQrFallback ? 'session_qr_recent_failure_qr' : 'session_qr_required'), {
-          forceFreshAuth: explicitForceQr || startupPath.forceFreshAuth,
-          forceQrFallback: explicitForceQr || startupPath.forceQrFallback
-        })
-        : false;
-
-      return res.status(202).json({
-        success: true,
-        qrCode: null,
-        status: recoverable ? 'saved_auth' : shouldStartQr ? 'initializing' : normalizeStatusWithoutRemoteAuth(dbStatus),
-        dbStatus,
-        hasRemoteAuth,
-        recoverable: !!recoverable,
-        recentInitFailure: !!startupPath.recentFailure,
-        forceQr: explicitForceQr,
-        reactivationStarted,
-        qrStartStarted,
-        action: recoverable
-          ? 'reactivate_saved_auth'
-          : shouldStartQr
-            ? 'create_qr'
-            : 'none',
-        message: recoverable
-          ? 'Sessao salva encontrada; reativacao iniciada. Atualize em alguns segundos.'
-          : shouldStartQr
-            ? (explicitForceQr
-              ? 'QR Code forcado para esta sessao sem apagar o usuario. Atualize em alguns segundos.'
-              : startupPath.forceQrFallback
-              ? 'Recuperacao da sessao salva falhou recentemente. Preparando QR Code sem apagar a memoria anterior.'
-              : 'Preparando QR Code. Atualize em alguns segundos.')
-            : 'Sessao nao esta ativa.'
-      });
+      return res.status(404).json({ error: 'Sessão não está ativa' });
     }
 
     if (!session.qrCode) {
@@ -2951,9 +2439,8 @@ setInterval(async () => {
     // O event handler cuida da maioria; esta varredura e apenas um fallback.
     if (s.status === 'authenticated' && s.lastSeen && (now - s.lastSeen) > AUTHENTICATED_ZOMBIE_TIMEOUT_MS) {
       console.warn(`🧟 Sessão zumbi: ${s.id} — "authenticated" por ${Math.round((now - s.lastSeen) / 1000)}s`);
-      const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(s.id);
       await sessionManager.cleanupSession(s.id);
-      await db.updateSessionStatus(s.id, hasRemoteAuth ? 'saved_auth' : 'disconnected');
+      await db.updateSessionStatus(s.id, await sessionManager.hasSavedRemoteAuth(s.id) ? 'authenticated' : 'disconnected');
     }
 
     // Caso 2: Sessão "connected" mas SEM ATIVIDADE por mais de 30 min
@@ -2963,17 +2450,33 @@ setInterval(async () => {
         const alive = await sessionManager.isSessionAlive(s.id);
         if (!alive) {
           console.warn(`🧟 Sessão ${s.id} — "connected" mas Chromium morto (inativa ${Math.round((now - s.lastSeen) / 60000)}min)`);
-          const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(s.id);
           await sessionManager.cleanupSession(s.id);
-          const nextStatus = hasRemoteAuth ? 'saved_auth' : 'disconnected';
-          await db.updateSessionStatus(s.id, nextStatus);
-          io.to(`user_${s.userId}`).emit('session_disconnected', {
-            sessionId: s.id,
-            status: nextStatus,
-            recoverable: hasRemoteAuth,
-            hibernated: hasRemoteAuth,
-            reason: 'CHROMIUM_DEAD_HIBERNATED'
-          });
+          await db.updateSessionStatus(s.id, await sessionManager.hasSavedRemoteAuth(s.id) ? 'authenticated' : 'disconnected');
+
+          // Tenta auto-reconexão antes de notificar desconexão
+          console.log(`🔄 [${s.id}] Tentando auto-reconexão após detectar Chromium morto...`);
+          try {
+            const reconSession = await sessionManager.autoReconnectForSend(s.id);
+            if (reconSession) {
+              console.log(`✅ [${s.id}] Auto-reconexão pós-zombie bem-sucedida! Sessão restaurada.`);
+              io.to(`user_${s.userId}`).emit('session_reconnected', {
+                sessionId: s.id,
+                reason: 'AUTO_RECONNECT_AFTER_ZOMBIE'
+              });
+            } else {
+              console.warn(`❌ [${s.id}] Auto-reconexão pós-zombie falhou — QR será necessário`);
+              io.to(`user_${s.userId}`).emit('session_disconnected', {
+                sessionId: s.id,
+                reason: 'CHROMIUM_DEAD'
+              });
+            }
+          } catch (reconErr) {
+            console.error(`❌ [${s.id}] Erro na auto-reconexão pós-zombie: ${reconErr.message}`);
+            io.to(`user_${s.userId}`).emit('session_disconnected', {
+              sessionId: s.id,
+              reason: 'CHROMIUM_DEAD'
+            });
+          }
         }
       } catch (e) {
         // Erro ao verificar NÃO mata a sessão — pode ser temporário
@@ -3351,7 +2854,7 @@ process.on('SIGTERM', async () => {
         }
       }
       // Marca como disconnected no banco (NÃO deleta)
-      await db.updateSessionStatus(session.id, await sessionManager.hasSavedRemoteAuth(session.id) ? 'saved_auth' : 'disconnected');
+      await db.updateSessionStatus(session.id, await sessionManager.hasSavedRemoteAuth(session.id) ? 'authenticated' : 'disconnected');
     } catch (error) {
       console.error(`❌ Erro ao encerrar ${session.id}:`, error.message);
     }
@@ -3395,17 +2898,25 @@ process.on('unhandledRejection', (reason, promise) => {
             try {
               const alive = await sessionManager.isSessionAlive(sid);
               if (!alive) {
-                console.error(`🧟 [${sid}] Chromium morto detectado via unhandledRejection! Hibernando para reativacao sob demanda...`);
-                const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sid);
+                console.error(`🧟 [${sid}] Chromium morto detectado via unhandledRejection! Reconectando...`);
                 await sessionManager.cleanupSession(sid);
-                await db.updateSessionStatus(sid, hasRemoteAuth ? 'saved_auth' : 'disconnected');
-                io.to(`user_${session.userId}`).emit('session_disconnected', {
-                  sessionId: sid,
-                  status: hasRemoteAuth ? 'saved_auth' : 'disconnected',
-                  recoverable: hasRemoteAuth,
-                  hibernated: hasRemoteAuth,
-                  reason: 'CHROMIUM_DEAD_UNHANDLED'
-                });
+                await db.updateSessionStatus(sid, await sessionManager.hasSavedRemoteAuth(sid) ? 'authenticated' : 'disconnected');
+                try {
+                  const reconSession = await sessionManager.autoReconnectForSend(sid);
+                  if (reconSession) {
+                    console.log(`✅ [${sid}] Auto-reconexão pós-unhandledRejection OK!`);
+                    io.to(`user_${session.userId}`).emit('session_reconnected', {
+                      sessionId: sid, reason: 'AUTO_RECONNECT_AFTER_UNHANDLED_REJECTION'
+                    });
+                  } else {
+                    console.warn(`❌ [${sid}] Auto-reconexão falhou — QR necessário`);
+                    io.to(`user_${session.userId}`).emit('session_disconnected', {
+                      sessionId: sid, reason: 'CHROMIUM_DEAD_UNHANDLED'
+                    });
+                  }
+                } catch (reconErr) {
+                  console.error(`❌ [${sid}] Erro reconexão: ${reconErr.message}`);
+                }
               }
             } catch (checkErr) {
               console.warn(`⚠️ [${sid}] Erro verificando saúde: ${checkErr.message}`);
