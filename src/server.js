@@ -1259,6 +1259,15 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
+app.get('/api/ping', (req, res) => {
+  res.json({
+    success: true,
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
 app.get('/api/my-session', authMiddleware, async (req, res) => {
   try {
     const sessionId = `user_${req.userId}`;
