@@ -13,7 +13,7 @@ const path = require('path');
 // ═══════════════════════════════════════════════════════════════════
 // LIMITES DE MEMÓRIA — Sessões sob demanda para 20+ usuários
 // ═══════════════════════════════════════════════════════════════════
-const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 30; // Capacidade maxima de sessoes ativas; inicializacao continua sequencial para nao derrubar Chromium
+const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 5; // Mantem poucos Chromiums vivos no Koyeb nano
 const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 1400;                         // Alinhado ao HealthGuard; 650MB derrubava sessoes com poucos Chromiums
 const QR_CODE_TIMEOUT_MS = parseInt(process.env.QR_CODE_TIMEOUT_MS) || 30 * 60 * 1000; // 30 minutos para escanear QR por padrao
 const MAX_ACTIVE_QR_SESSIONS = Math.max(
@@ -56,6 +56,7 @@ const SESSION_INIT_STAGGER_MS = parseInt(process.env.SESSION_INIT_STAGGER_MS) ||
 const REMOTE_AUTH_INIT_RETRIES = parseInt(process.env.REMOTE_AUTH_INIT_RETRIES) || 6;
 const REMOTE_AUTH_INIT_RETRY_DELAY_MS = parseInt(process.env.REMOTE_AUTH_INIT_RETRY_DELAY_MS) || 5000;
 const REQUIRE_REMOTE_AUTH = process.env.REQUIRE_REMOTE_AUTH !== 'false';
+const QR_REQUIRED_STATUSES = new Set(['auth_failure', 'disconnected', 'failed']);
 
 class SessionManager {
   constructor(database, io) {
@@ -1058,6 +1059,41 @@ class SessionManager {
     }
   }
 
+  async markSessionQrRequired(sessionData, reason = 'SESSION_LOST') {
+    if (!sessionData?.id) return;
+    const sessionId = sessionData.id;
+    if (sessionData.qrReleaseInProgress) return;
+    sessionData.qrReleaseInProgress = true;
+
+    console.warn(`[${sessionId}] Sessao perdeu conexao/autenticacao (${reason}). Limpando Chromium e liberando QR.`);
+
+    this.cancelReconnect(sessionId);
+    this.reconnectCancelled.add(sessionId);
+    this.reconnectPromises.delete(sessionId);
+    this.reconnectingSet.delete(sessionId);
+    this.sessionInitFailures.set(sessionId, {
+      message: `QR requerido: ${reason}`,
+      timestamp: Date.now()
+    });
+
+    sessionData.status = 'auth_failure';
+    sessionData.qrCode = null;
+    sessionData.lastSeen = Date.now();
+
+    await this.cleanupSession(sessionId);
+    await this.db.updateSessionStatus(sessionId, 'auth_failure');
+
+    this.io.to(`user_${sessionData.userId}`).emit('session_disconnected', {
+      sessionId,
+      reason,
+      status: 'auth_failure',
+      action: 'scan_qr',
+      hasRemoteAuth: await this.hasSavedRemoteAuth(sessionId),
+      recoverable: false,
+      message: 'Sessao desconectada. Novo QR Code liberado para leitura.'
+    });
+  }
+
   cleanupSessionFiles(sessionId) {
     const paths = [
       path.join(__dirname, '..', '.wwebjs_auth', `session-${sessionId}`),
@@ -1215,18 +1251,8 @@ class SessionManager {
 
       // Se é um erro fatal que indica que o Chromium morreu
       if (this.isFatalSessionError(error)) {
-        console.error(`💀 [${sessionData.id}] Erro FATAL detectado no event handler. Iniciando reconexão...`);
-        const nextStatus = await this.hasSavedRemoteAuth(sessionData.id) ? 'saved_auth' : 'disconnected';
-        sessionData.status = nextStatus;
-        await this.db.updateSessionStatus(sessionData.id, nextStatus);
-
-        this.io.to(`user_${sessionData.userId}`).emit('session_disconnected', {
-          sessionId: sessionData.id,
-          reason: 'CHROMIUM_CRASH'
-        });
-
-        // Reconectar automaticamente
-        this.attemptFullReconnect(sessionData);
+        console.error(`💀 [${sessionData.id}] Erro FATAL detectado. Liberando QR em vez de reconectar em loop.`);
+        await this.markSessionQrRequired(sessionData, 'CHROMIUM_CRASH');
       }
     });
 
@@ -1419,10 +1445,6 @@ class SessionManager {
 
     client.on('auth_failure', async (msg) => {
       console.error(`❌ Falha na autenticação: ${sessionData.id}`, msg);
-      sessionData.status = 'auth_failure';
-      sessionData.lastSeen = Date.now();
-
-      await this.db.updateSessionStatus(sessionData.id, 'auth_failure');
 
       // Auth falhou: preserva o registro e exige novo QR sem deletar dados automaticamente.
       if (this.pgStore) {
@@ -1435,14 +1457,7 @@ class SessionManager {
         }
       }
 
-      // Limpa recursos de Chromium mas mantém registro no banco
-      await this.cleanupSession(sessionData.id);
-
-      this.io.to(`user_${sessionData.userId}`).emit('session_error', {
-        sessionId: sessionData.id,
-        error: 'Falha na autenticação. Gere um novo QR Code para reativar este usuário.',
-        status: 'auth_failure'
-      });
+      await this.markSessionQrRequired(sessionData, 'AUTH_FAILURE');
     });
 
     client.on('disconnected', async (reason) => {
@@ -1454,28 +1469,7 @@ class SessionManager {
         return;
       }
 
-      const hasRemoteAuth = await this.hasSavedRemoteAuth(sessionData.id);
-      const shouldReconnect = reason !== 'LOGOUT' && reason !== 'CONFLICT' && hasRemoteAuth;
-      const nextStatus = shouldReconnect ? 'authenticated' : 'disconnected';
-      sessionData.status = nextStatus;
-
-      await this.db.updateSessionStatus(sessionData.id, nextStatus);
-
-      this.io.to(`user_${sessionData.userId}`).emit('session_disconnected', {
-        sessionId: sessionData.id,
-        reason,
-        status: nextStatus,
-        hasRemoteAuth,
-        recoverable: shouldReconnect
-      });
-
-      // Tenta reconectar apenas se o motivo não for logout manual
-      if (shouldReconnect) {
-        await this.attemptReconnect(sessionData);
-      } else {
-        // Limpa recursos de Chromium
-        await this.cleanupSession(sessionData.id);
-      }
+      await this.markSessionQrRequired(sessionData, reason || 'DISCONNECTED');
     });
 
     // (remote_session_saved já registrado acima — não duplicar)
@@ -2051,6 +2045,8 @@ class SessionManager {
       'execution context was destroyed',
       'protocol error',
       'chromium morto',
+      "cannot read properties of undefined (reading 'set')",
+      "cannot read properties of undefined (reading 'get')",
     ];
     return fatalPatterns.some(p => msg.includes(p));
   }
@@ -2115,6 +2111,11 @@ class SessionManager {
     const dbSession = await this.db.getSession(sessionId);
     if (!dbSession) {
       console.log(`❌ [${sessionId}] Sessão não existe no banco`);
+      return null;
+    }
+
+    if (QR_REQUIRED_STATUSES.has(dbSession.status)) {
+      console.log(`[${sessionId}] Status ${dbSession.status}; auto-reconexao bloqueada ate novo QR.`);
       return null;
     }
 
@@ -2353,15 +2354,9 @@ class SessionManager {
     if (staleForMs > STALE_SESSION_HEALTHCHECK_MS) {
       const alive = await this.isSessionAlive(sessionId);
       if (!alive) {
-        console.warn(`⚠️ [${sessionId}] Sessão marcada como connected, mas Chromium não respondeu. Reconectando antes do envio...`);
-        await this.cleanupSession(sessionId);
-        await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'saved_auth' : 'disconnected');
-        session = await this.autoReconnectForSend(sessionId);
-        if (!session || !session.client || session.status !== 'connected') {
-          throw new Error('Sessão conectada no banco, mas o Chromium não respondeu e a reconexão falhou. Tente novamente em 1 minuto.');
-        }
-        this.touchSession(sessionId);
-        client = session.client;
+        console.warn(`⚠️ [${sessionId}] Sessão marcada como connected, mas Chromium não respondeu. Liberando QR.`);
+        await this.markSessionQrRequired(session, 'STALE_CHROMIUM');
+        throw new Error('Sessão caiu e precisa escanear um novo QR Code antes de enviar.');
       }
     }
 
@@ -2508,14 +2503,12 @@ class SessionManager {
       } catch (error) {
         const errMsg = error.message || '';
         if (numberWasVerifiedBeforeSend && this.isFatalSessionError(error) && !isRetry) {
-          console.warn(`[${sessionId}] Erro fatal apos tentativa para numero ja validado (${normalizedPhone}); sem reenvio para evitar duplicidade`);
+          console.warn(`[${sessionId}] Erro fatal apos tentativa para numero ja validado (${normalizedPhone}); liberando QR sem reenvio para evitar duplicidade`);
           setImmediate(async () => {
             try {
-              await this.cleanupSession(sessionId);
-              await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'saved_auth' : 'disconnected');
-              await this.autoReconnectForSend(sessionId);
+              await this.markSessionQrRequired(session, 'SEND_CHROMIUM_CRASH');
             } catch (reconnectErr) {
-              console.error(`Erro no reconnect em background apos envio ambiguo ${sessionId}: ${reconnectErr.message}`);
+              console.error(`Erro ao liberar QR apos envio ambiguo ${sessionId}: ${reconnectErr.message}`);
             }
           });
 
@@ -2736,15 +2729,13 @@ class SessionManager {
 
         // Se e um erro fatal do Chromium E ainda nao tentamos reconectar
         if ((this.isFatalSessionError(error) || chromiumDead) && !isRetry) {
-          console.warn(`[${sessionId}] Erro fatal/ambíguo durante envio; sem reenvio automatico para evitar duplicidade.`);
+          console.warn(`[${sessionId}] Erro fatal/ambíguo durante envio; liberando QR e sem reenvio automatico para evitar duplicidade.`);
 
           setImmediate(async () => {
             try {
-              await this.cleanupSession(sessionId);
-              await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'saved_auth' : 'disconnected');
-              await this.autoReconnectForSend(sessionId);
+              await this.markSessionQrRequired(session, 'SEND_CHROMIUM_CRASH');
             } catch (reconErr) {
-              console.error(`Erro no reconnect em background apos envio ambiguo ${sessionId}: ${reconErr.message}`);
+              console.error(`Erro ao liberar QR apos envio ambiguo ${sessionId}: ${reconErr.message}`);
             }
           });
 
@@ -2774,7 +2765,7 @@ class SessionManager {
             fromMe: true,
             timestamp: Math.floor(Date.now() / 1000),
             status: 'pending',
-            note: 'WhatsApp Web caiu durante a tentativa. Reconnect iniciado em background e mensagem mantida pendente sem reenvio automatico.'
+            note: 'WhatsApp Web caiu durante a tentativa. Novo QR requerido e mensagem mantida pendente sem reenvio automatico.'
           };
         }
 
