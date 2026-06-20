@@ -16,13 +16,11 @@ const path = require('path');
 const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 5; // Mantem poucos Chromiums vivos no Koyeb nano
 const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 1400;                         // Alinhado ao HealthGuard; 650MB derrubava sessoes com poucos Chromiums
 const QR_CODE_TIMEOUT_MS = parseInt(process.env.QR_CODE_TIMEOUT_MS) || 30 * 60 * 1000; // 30 minutos para escanear QR por padrao
-const MAX_ACTIVE_QR_SESSIONS = Math.max(
-  1,
-  Math.min(MAX_CONCURRENT_SESSIONS, parseInt(process.env.MAX_ACTIVE_QR_SESSIONS ?? String(MAX_CONCURRENT_SESSIONS), 10) || MAX_CONCURRENT_SESSIONS)
-);
+const MAX_ACTIVE_QR_SESSIONS = MAX_CONCURRENT_SESSIONS;
 const QR_NO_AUTH_MIN_KEEPALIVE_MS = Math.max(
   QR_CODE_TIMEOUT_MS,
-  parseInt(process.env.QR_NO_AUTH_MIN_KEEPALIVE_MS ?? String(45 * 60 * 1000), 10) || 0
+  24 * 60 * 60 * 1000,
+  parseInt(process.env.QR_NO_AUTH_MIN_KEEPALIVE_MS ?? String(24 * 60 * 60 * 1000), 10) || 0
 );
 // Keep sessions alive only when explicitly requested. By default, idle Chromium
 // processes hibernate while RemoteAuth stays preserved in PostgreSQL.
@@ -30,7 +28,7 @@ const KEEP_SESSIONS_ALIVE = process.env.KEEP_SESSIONS_ALIVE === 'true';
 const DEFAULT_IDLE_DISCONNECT_MS = 60 * 60 * 1000;
 const IDLE_DISCONNECT_MS = KEEP_SESSIONS_ALIVE
   ? 0
-  : Math.max(0, parseInt(process.env.IDLE_DISCONNECT_MS ?? String(DEFAULT_IDLE_DISCONNECT_MS), 10) || 0);
+  : Math.max(DEFAULT_IDLE_DISCONNECT_MS, parseInt(process.env.IDLE_DISCONNECT_MS ?? String(DEFAULT_IDLE_DISCONNECT_MS), 10) || 0);
 const EVICT_IDLE_AFTER_MS = parseInt(process.env.EVICT_IDLE_AFTER_MS) || 20 * 60 * 1000; // não expulsar sessão usada recentemente
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;        // verifica a cada 2 minutos (economiza queries)
 const SESSION_INIT_TIMEOUT_MS = 240000;           // 4 minutos para Chromium iniciar em Koyeb sob carga
