@@ -18,7 +18,7 @@ const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 1400;                    
 const QR_CODE_TIMEOUT_MS = parseInt(process.env.QR_CODE_TIMEOUT_MS) || 30 * 60 * 1000; // 30 minutos para escanear QR por padrao
 const MAX_ACTIVE_QR_SESSIONS = Math.max(
   1,
-  Math.min(MAX_CONCURRENT_SESSIONS, parseInt(process.env.MAX_ACTIVE_QR_SESSIONS ?? '3', 10) || 3)
+  Math.min(MAX_CONCURRENT_SESSIONS, parseInt(process.env.MAX_ACTIVE_QR_SESSIONS ?? String(MAX_CONCURRENT_SESSIONS), 10) || MAX_CONCURRENT_SESSIONS)
 );
 const QR_NO_AUTH_MIN_KEEPALIVE_MS = Math.max(
   QR_CODE_TIMEOUT_MS,
@@ -27,7 +27,7 @@ const QR_NO_AUTH_MIN_KEEPALIVE_MS = Math.max(
 // Keep sessions alive only when explicitly requested. By default, idle Chromium
 // processes hibernate while RemoteAuth stays preserved in PostgreSQL.
 const KEEP_SESSIONS_ALIVE = process.env.KEEP_SESSIONS_ALIVE === 'true';
-const DEFAULT_IDLE_DISCONNECT_MS = 90 * 60 * 1000;
+const DEFAULT_IDLE_DISCONNECT_MS = 60 * 60 * 1000;
 const IDLE_DISCONNECT_MS = KEEP_SESSIONS_ALIVE
   ? 0
   : Math.max(0, parseInt(process.env.IDLE_DISCONNECT_MS ?? String(DEFAULT_IDLE_DISCONNECT_MS), 10) || 0);
@@ -114,6 +114,16 @@ class SessionManager {
     this.sessionLastActivity.set(sessionId, now);
   }
 
+  getLastDispatchActivity(sessionId, session = null) {
+    const sess = session || this.sessions.get(sessionId);
+    return this.lastMessageTime.get(sessionId) ||
+      sess?.lastSentAt ||
+      sess?.connectedAt ||
+      sess?.lastSeen ||
+      sess?.createdAt ||
+      Date.now();
+  }
+
   isSessionBusy(sessionId) {
     return this.sessionSendLock.has(sessionId) ||
       this.reconnectPromises.has(sessionId) ||
@@ -126,8 +136,6 @@ class SessionManager {
     if (!session) return false;
     if (this.isSessionBusy(sessionId)) return true;
     if (this.healthGuard && this.healthGuard._dispatchActive) return true;
-    const lastActivity = this.sessionLastActivity.get(sessionId) || session.lastSeen || session.createdAt || 0;
-    if (lastActivity && Date.now() - lastActivity < RECENT_ACTIVITY_PRESERVE_MS) return true;
     return ['initializing', 'qr_code', 'authenticated'].includes(session.status);
   }
 
@@ -1390,8 +1398,6 @@ class SessionManager {
     // (evento só dispara na PRIMEIRA vez; backups periódicos são silenciosos)
     client.on('remote_session_saved', () => {
       console.log(`💾 [${sessionData.id}] Sessão salva no PostgreSQL — sobrevive a deploys!`);
-      sessionData.lastSeen = Date.now();
-      this.sessionLastActivity.set(sessionData.id, Date.now());
     });
 
     client.on('ready', async () => {
@@ -1404,6 +1410,7 @@ class SessionManager {
       };
       sessionData.qrCode = null;
       sessionData.lastSeen = Date.now();
+      sessionData.connectedAt = Date.now();
       this.sessionLastActivity.set(sessionData.id, Date.now());
       this.reconnectAttempts.delete(sessionData.id);
 
@@ -2074,6 +2081,11 @@ class SessionManager {
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
     this.lastMessageTime.set(sessionId, Date.now());
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.lastSentAt = Date.now();
+      this.sessionLastActivity.set(sessionId, session.lastSentAt);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -2865,7 +2877,9 @@ class SessionManager {
         id: session.id,
         status: session.status,
         lastSeen: session.lastSeen,
+        lastDispatchActivity: this.getLastDispatchActivity(id, session),
         timeSinceLastSeen: Date.now() - session.lastSeen,
+        timeSinceLastDispatch: Date.now() - this.getLastDispatchActivity(id, session),
         whatsappState: 'unknown'
       };
 
@@ -3033,8 +3047,8 @@ class SessionManager {
       const toDisconnect = [];
       const noAuthQrSessions = [];
 
-      for (const [sid, lastTs] of this.sessionLastActivity.entries()) {
-        const sess = this.sessions.get(sid);
+      for (const [sid, sess] of this.sessions.entries()) {
+        const lastTs = this.sessionLastActivity.get(sid) || sess.lastSeen || sess.createdAt || now;
         if (!sess) {
           this.sessionLastActivity.delete(sid);
           this.qrGeneratedAt.delete(sid);
@@ -3043,10 +3057,10 @@ class SessionManager {
 
         // Sessões connected/authenticated IDLE → desconecta para liberar Chromium
         if ((sess.status === 'connected' || sess.status === 'authenticated') && sess.client) {
-          const idleTime = now - lastTs;
+          const lastDispatchTs = this.getLastDispatchActivity(sid, sess);
+          const idleTime = now - lastDispatchTs;
           if (IDLE_DISCONNECT_MS > 0 && idleTime > IDLE_DISCONNECT_MS) {
             if (this.shouldPreserveLiveSession(sid)) {
-              this.touchSession(sid);
               console.log(`Auto-hibernate ignorada: "${sid}" esta ocupada/em recuperacao.`);
               continue;
             }
