@@ -133,8 +133,7 @@ class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
     if (this.isSessionBusy(sessionId)) return true;
-    if (this.healthGuard && this.healthGuard._dispatchActive) return true;
-    return ['initializing', 'qr_code', 'authenticated'].includes(session.status);
+    return ['initializing', 'qr_code'].includes(session.status);
   }
 
   async initializePostgresStore(attempts = REMOTE_AUTH_INIT_RETRIES) {
@@ -466,7 +465,6 @@ class SessionManager {
     }
 
     if (this.shouldPreserveLiveSession(sessionId)) {
-      this.touchSession(sessionId);
       console.log(`[${sessionId}] Hibernacao ignorada: sessao ocupada ou em recuperacao.`);
       return false;
     }
@@ -533,12 +531,12 @@ class SessionManager {
     let oldestId = null;
     let oldestTime = Infinity;
 
-    for (const [sid, lastTs] of this.sessionLastActivity.entries()) {
+    for (const [sid, sess] of this.sessions.entries()) {
       if (sid === excludeId) continue;
-      const sess = this.sessions.get(sid);
       if (!sess || !sess.client) continue;
       if (sess.status !== 'connected' && sess.status !== 'authenticated') continue;
       if (this.shouldPreserveLiveSession(sid)) continue;
+      const lastTs = this.getLastDispatchActivity(sid, sess);
       if ((Date.now() - lastTs) < EVICT_IDLE_AFTER_MS) continue;
 
       if (lastTs < oldestTime) {
