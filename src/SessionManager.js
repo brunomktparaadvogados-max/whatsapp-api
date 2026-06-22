@@ -1054,6 +1054,10 @@ class SessionManager {
         console.error(`⚠️ Erro ao destruir cliente ${sessionId}:`, e.message);
       }
     }
+    if (session?.authReadyWatchdogTimer) {
+      clearTimeout(session.authReadyWatchdogTimer);
+      session.authReadyWatchdogTimer = null;
+    }
     setTimeout(() => this.intentionalShutdowns.delete(sessionId), 5000);
 
     // Limpa arquivos do disco para liberar espaço
@@ -1243,6 +1247,74 @@ class SessionManager {
     return new Client(clientConfig);
   }
 
+  scheduleAuthenticatedReadyWatchdog(sessionData) {
+    if (sessionData.authReadyWatchdogTimer) {
+      clearTimeout(sessionData.authReadyWatchdogTimer);
+    }
+
+    sessionData.authReadyWatchdogTimer = setTimeout(async () => {
+      const currentSession = this.sessions.get(sessionData.id);
+      if (!currentSession || currentSession !== sessionData || currentSession.status !== 'authenticated') {
+        return;
+      }
+
+      console.warn(`[${sessionData.id}] Sessao autenticada sem ready. Verificando RemoteAuth antes de limpar.`);
+      let hasAuth = await this.hasSavedRemoteAuth(sessionData.id);
+
+      if (!hasAuth) {
+        console.warn(`[${sessionData.id}] Sem RemoteAuth salvo. Tentando backup imediato para nao perder scan novo.`);
+        try {
+          await this.forceRemoteAuthBackup(sessionData.id, 'authenticated_timeout_protect');
+        } catch (backupError) {
+          console.warn(`[${sessionData.id}] Backup no watchdog autenticado falhou: ${backupError.message}`);
+        }
+        hasAuth = await this.hasSavedRemoteAuth(sessionData.id);
+      }
+
+      if (!hasAuth) {
+        sessionData.authenticatedReadyMisses = (sessionData.authenticatedReadyMisses || 0) + 1;
+        if (sessionData.authenticatedReadyMisses < 2) {
+          currentSession.lastSeen = Date.now();
+          this.sessionLastActivity.set(sessionData.id, Date.now());
+          await this.db.updateSessionStatus(sessionData.id, 'authenticated');
+          this.scheduleInitialRemoteAuthBackups(currentSession, 'authenticated_timeout_retry');
+          this.io.to(`user_${sessionData.userId}`).emit('session_reconnecting', {
+            sessionId: sessionData.id,
+            error: 'WhatsApp autenticou. Protegendo a sessao antes de reiniciar a conexao.',
+            status: 'authenticated'
+          });
+          this.scheduleAuthenticatedReadyWatchdog(sessionData);
+          return;
+        }
+
+        this.logRecentError(
+          sessionData.id,
+          new Error('authenticated_timeout_without_ready_or_remoteauth')
+        );
+        await this.markSessionQrRequired(currentSession, 'AUTHENTICATED_TIMEOUT_WITHOUT_READY');
+        return;
+      }
+
+      this.sessionInitFailures.set(sessionData.id, {
+        message: 'authenticated_timeout_without_ready',
+        timestamp: Date.now()
+      });
+
+      currentSession.status = 'saved_auth';
+      await this.cleanupSession(sessionData.id);
+      await this.db.updateSessionStatus(sessionData.id, 'saved_auth');
+      this.io.to(`user_${sessionData.userId}`).emit('session_error', {
+        sessionId: sessionData.id,
+        error: 'WhatsApp autenticou, mas nao ficou pronto. A memoria foi preservada; tente reativar novamente.',
+        status: 'saved_auth',
+        recoverable: true,
+        action: 'reactivate_saved_auth',
+        recentFailure: true
+      });
+    }, AUTHENTICATED_READY_TIMEOUT_MS);
+    sessionData.authReadyWatchdogTimer.unref?.();
+  }
+
   setupClientEvents(client, sessionData) {
     client.on('error', async (error) => {
       // Erros ignoráveis do WhatsApp Web (não afetam funcionalidade)
@@ -1344,50 +1416,7 @@ class SessionManager {
       // Safety net: se 'ready' não disparar em 180s após autenticação,
       // marca como failed para o frontend não ficar preso em "Autenticado"
       // Give WhatsApp Web time to finish navigating under load before recovery.
-      setTimeout(async () => {
-        const currentSession = this.sessions.get(sessionData.id);
-        // A timer from an older Chromium must never tear down its replacement.
-        if (currentSession && currentSession === sessionData && currentSession.status === 'authenticated') {
-          console.warn(`[${sessionData.id}] Sessao autenticada sem ready. Verificando RemoteAuth antes de limpar.`);
-          let hasAuth = await this.hasSavedRemoteAuth(sessionData.id);
-
-          if (!hasAuth) {
-            console.warn(`[${sessionData.id}] Sem RemoteAuth salvo. Tentando backup imediato e preservando Chromium para nao perder scan novo.`);
-            await this.forceRemoteAuthBackup(sessionData.id, 'authenticated_timeout_protect');
-            hasAuth = await this.hasSavedRemoteAuth(sessionData.id);
-          }
-
-          if (!hasAuth) {
-            currentSession.lastSeen = Date.now();
-            this.sessionLastActivity.set(sessionData.id, Date.now());
-            await this.db.updateSessionStatus(sessionData.id, 'authenticated');
-            this.scheduleInitialRemoteAuthBackups(currentSession, 'authenticated_timeout_retry');
-            this.io.to(`user_${sessionData.userId}`).emit('session_reconnecting', {
-              sessionId: sessionData.id,
-              error: 'WhatsApp autenticou. Protegendo a sessao antes de reiniciar a conexao.',
-              status: 'authenticated'
-            });
-            return;
-          }
-
-          this.sessionInitFailures.set(sessionData.id, {
-            message: 'authenticated_timeout_without_ready',
-            timestamp: Date.now()
-          });
-
-          currentSession.status = 'saved_auth';
-          await this.cleanupSession(sessionData.id);
-          await this.db.updateSessionStatus(sessionData.id, 'saved_auth');
-          this.io.to(`user_${sessionData.userId}`).emit('session_error', {
-            sessionId: sessionData.id,
-            error: 'WhatsApp autenticou, mas nao ficou pronto. A memoria foi preservada; tente reativar novamente.',
-            status: 'saved_auth',
-            recoverable: true,
-            action: 'reactivate_saved_auth',
-            recentFailure: true
-          });
-        }
-      }, AUTHENTICATED_READY_TIMEOUT_MS);
+      this.scheduleAuthenticatedReadyWatchdog(sessionData);
     });
 
     // RemoteAuth: sessão salva no PostgreSQL com sucesso
@@ -1409,6 +1438,11 @@ class SessionManager {
       sessionData.connectedAt = Date.now();
       this.sessionLastActivity.set(sessionData.id, Date.now());
       this.reconnectAttempts.delete(sessionData.id);
+      if (sessionData.authReadyWatchdogTimer) {
+        clearTimeout(sessionData.authReadyWatchdogTimer);
+        sessionData.authReadyWatchdogTimer = null;
+      }
+      sessionData.authenticatedReadyMisses = 0;
 
       await this.db.updateSessionStatus(
         sessionData.id,

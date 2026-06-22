@@ -70,7 +70,6 @@ const GLOBAL_SEND_CONCURRENCY = parseInt(process.env.WHATSAPP_GLOBAL_SEND_CONCUR
 const GLOBAL_SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_GLOBAL_SEND_TIMEOUT_MS) || 120000;
 const SEND_RECONNECT_WAIT_MS = parseInt(process.env.WHATSAPP_SEND_RECONNECT_WAIT_MS) || 240000;
 const SESSION_CREATE_STALE_MS = parseInt(process.env.WHATSAPP_SESSION_CREATE_STALE_MS) || 180000;
-const QR_CREATE_STALE_MS = parseInt(process.env.WHATSAPP_QR_CREATE_STALE_MS) || 90000;
 let activeGlobalSends = 0;
 const globalSendQueue = [];
 
@@ -179,12 +178,47 @@ function shouldReuseExistingSession(session) {
   if (session.status === 'connected') return true;
 
   const ageMs = Date.now() - (session.lastSeen || session.createdAt || 0);
-  if (session.status === 'qr_code') return ageMs <= QR_CREATE_STALE_MS;
+  if (session.status === 'qr_code') return !!session.qrCode;
   if (session.status === 'authenticated' || session.status === 'initializing') {
     return ageMs <= SESSION_CREATE_STALE_MS;
   }
 
   return false;
+}
+
+function isStuckLiveSession(session) {
+  if (!session) return false;
+  if (session.status === 'connected') return false;
+
+  const ageMs = Date.now() - (session.lastSeen || session.createdAt || 0);
+  if (session.status === 'qr_code') {
+    return !session.qrCode && ageMs > 15000;
+  }
+  if (session.status === 'authenticated' || session.status === 'initializing') {
+    return ageMs > SESSION_CREATE_STALE_MS;
+  }
+
+  return ['failed', 'disconnected', 'auth_failure'].includes(session.status);
+}
+
+async function normalizeLiveSessionForRequest(sessionId, dbSession = null, reason = 'request') {
+  const session = sessionManager.getSession(sessionId);
+  if (!session) return null;
+  if (shouldReuseExistingSession(session)) return session;
+  if (!isStuckLiveSession(session)) return session;
+
+  const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
+  console.warn(`[${sessionId}] Sessao em memoria travada (${session.status}) durante ${reason}; limpando Chromium para permitir reativacao/QR.`);
+  await sessionManager.cleanupSession(sessionId);
+
+  if (dbSession) {
+    const nextStatus = session.status === 'auth_failure'
+      ? 'auth_failure'
+      : (hasRemoteAuth ? 'saved_auth' : 'disconnected');
+    await db.updateSessionStatus(sessionId, nextStatus);
+  }
+
+  return null;
 }
 
 async function getSessionView(sessionId, dbSession = null) {
@@ -229,13 +263,14 @@ async function waitForSessionProgress(sessionId, waitMs) {
 }
 
 async function ensureQrOrSessionProgress(sessionId, userId, dbSession, waitMs = 30000) {
-  const existingSession = sessionManager.getSession(sessionId);
+  const existingSession = await normalizeLiveSessionForRequest(sessionId, dbSession, 'ensure_qr_or_progress');
   if (existingSession && shouldReuseExistingSession(existingSession)) {
     return existingSession;
   }
 
-  if (existingSession) {
-    console.log(`[QR] Limpando sessao viva em estado ${existingSession.status}: ${sessionId}`);
+  const staleSession = sessionManager.getSession(sessionId);
+  if (staleSession) {
+    console.log(`[QR] Limpando sessao viva em estado ${staleSession.status}: ${sessionId}`);
     await sessionManager.cleanupSession(sessionId);
   }
 
@@ -609,18 +644,12 @@ app.post('/api/auth/login', async (req, res) => {
     const token = generateToken(user.id);
     const sessionId = `user_${user.id}`;
 
-    const existingSession = sessionManager.getSession(sessionId);
     const dbSession = await db.getSession(sessionId);
+    const existingSession = await normalizeLiveSessionForRequest(sessionId, dbSession, 'login');
     let sessionStatus = 'not_found';
 
     if (existingSession) {
-      if (existingSession.status === 'qr_code' && Date.now() - existingSession.lastSeen > 90 * 1000) {
-        console.log(`QR antigo para ${sessionId}; limpando Chromium sem recriar no login`);
-        await sessionManager.cleanupSession(sessionId);
-        sessionStatus = dbSession ? dbSession.status : 'not_created';
-      } else {
-        sessionStatus = existingSession.status;
-      }
+      sessionStatus = existingSession.status;
     } else {
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
       sessionStatus = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status)
@@ -664,7 +693,8 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
     }
 
     const sessionId = `user_${req.userId}`;
-    const session = sessionManager.getSession(sessionId);
+    const dbSession = await db.getSession(sessionId);
+    const session = await normalizeLiveSessionForRequest(sessionId, dbSession, 'auth_me');
 
     let sessionInfo = {
       sessionId: sessionId,
@@ -682,7 +712,6 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
     } else {
       // Sessão não está em memória — verifica no banco de dados
       // Isso cobre o caso onde a sessão foi desconectada e removida da memória
-      const dbSession = await db.getSession(sessionId);
       if (dbSession) {
         const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
         const recoverable = hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
@@ -1271,10 +1300,10 @@ app.get('/api/ping', (req, res) => {
 app.get('/api/my-session', authMiddleware, async (req, res) => {
   try {
     const sessionId = `user_${req.userId}`;
-    const session = sessionManager.getSession(sessionId);
+    const dbSession = await db.getSession(sessionId);
+    const session = await normalizeLiveSessionForRequest(sessionId, dbSession, 'my_session');
     
     if (!session) {
-      const dbSession = await db.getSession(sessionId);
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
       const recoverable = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
       const status = recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
@@ -1321,10 +1350,10 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
 app.get('/api/my-qr', authMiddleware, async (req, res) => {
   try {
     const sessionId = `user_${req.userId}`;
-    let session = sessionManager.getSession(sessionId);
+    const dbSession = await db.getSession(sessionId);
+    let session = await normalizeLiveSessionForRequest(sessionId, dbSession, 'my_qr');
     
     if (!session) {
-      const dbSession = await db.getSession(sessionId);
       session = await ensureQrOrSessionProgress(sessionId, req.userId, dbSession, req.query.waitMs || 30000);
     }
 
@@ -1388,7 +1417,8 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       targetUserId = req.userId;
     }
 
-    const existingSession = sessionManager.getSession(targetSessionId);
+    const dbSession = await db.getSession(targetSessionId);
+    const existingSession = await normalizeLiveSessionForRequest(targetSessionId, dbSession, 'create_session');
     if (existingSession) {
       // Se a sessão existe e está em estado ativo, retorna ela
       if (shouldReuseExistingSession(existingSession)) {
@@ -1409,7 +1439,6 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       console.log(`🔄 Sessão ${targetSessionId} está em estado '${existingSession.status}', recriando...`);
     }
 
-    const dbSession = await db.getSession(targetSessionId);
     const remoteAuthAvailable = !!(sessionManager.useRemoteAuth && sessionManager.pgStore);
     const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(targetSessionId);
 
@@ -1503,7 +1532,7 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
     }
 
     const remoteAuthAvailable = !!(sessionManager.useRemoteAuth && sessionManager.pgStore);
-    const existingSession = sessionManager.getSession(sessionId);
+    const existingSession = await normalizeLiveSessionForRequest(sessionId, dbSession, 'reactivate');
     const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
 
     if (existingSession && shouldReuseExistingSession(existingSession)) {
@@ -1626,7 +1655,8 @@ app.get('/api/sessions/:sessionId', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Acesso negado' });
     }
 
-    const sessionView = await getSessionView(sessionId, dbSession);
+    await normalizeLiveSessionForRequest(sessionId, dbSession, 'session_view');
+    const sessionView = await getSessionView(sessionId);
 
     res.json({
       success: true,
@@ -1653,7 +1683,7 @@ app.get('/api/sessions/:sessionId/qr', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Acesso negado' });
     }
 
-    let session = sessionManager.getSession(sessionId);
+    let session = await normalizeLiveSessionForRequest(sessionId, dbSession, 'session_qr');
 
     if (!session) {
       session = await ensureQrOrSessionProgress(sessionId, dbSession.user_id, dbSession, req.query.waitMs || 30000);
