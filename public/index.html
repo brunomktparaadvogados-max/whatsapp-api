@@ -765,8 +765,12 @@
                     document.getElementById('createSessionSection').style.display = 'block';
                     document.getElementById('qrCodeSection').style.display = 'none';
                     document.getElementById('connectedSection').style.display = 'none';
-                    document.getElementById('createSessionMessage').textContent = 'Sessão salva encontrada. A reativação automática foi iniciada; use o botão para tentar novamente agora.';
+                    document.getElementById('createSessionMessage').textContent = 'Sessão salva encontrada. Iniciando reativação agora; aguarde o status atualizar.';
                     document.getElementById('createSessionButton').textContent = '🔄 Reativar Sessão Salva';
+                    if (!window._autoReactivateMySession) {
+                        window._autoReactivateMySession = true;
+                        setTimeout(createMySession, 500);
+                    }
                 } else if (session.status === 'not_created' || session.status === 'not_found' || session.status === 'failed' || session.status === 'disconnected' || session.status === 'auth_failure') {
                     document.getElementById('createSessionSection').style.display = 'block';
                     document.getElementById('qrCodeSection').style.display = 'none';
@@ -783,6 +787,9 @@
                     document.getElementById('createSessionSection').style.display = 'none';
                     document.getElementById('qrCodeSection').style.display = 'block';
                     document.getElementById('connectedSection').style.display = 'none';
+                    if (session.status === 'qr_code') {
+                        window._autoReactivateMySession = false;
+                    }
 
                     if (session.qrCode) {
                         document.getElementById('qrCodeContainer').innerHTML = `
@@ -798,6 +805,7 @@
                     document.getElementById('qrCodeSection').style.display = 'none';
                     document.getElementById('connectedSection').style.display = 'block';
                     window._waitingForSession = false;
+                    window._autoReactivateMySession = false;
 
                     if (session.info) {
                         document.getElementById('phoneInfo').innerHTML = `
@@ -849,7 +857,7 @@
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                     },
-                    body: JSON.stringify({ waitMs: 30000, forceQr })
+                    body: JSON.stringify({ waitMs: 12000, forceQr })
                 });
 
                 if (response.status === 404) {
@@ -859,7 +867,7 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                         },
-                        body: JSON.stringify({ waitMs: 30000, forceQr })
+                        body: JSON.stringify({ waitMs: 12000, forceQr })
                     });
                 }
 
@@ -1439,6 +1447,9 @@
                 const session = data.session;
 
                 renderUserSessionPanel(userId, sessionId, session);
+                if (['saved_auth', 'disconnected', 'failed', 'auth_failure'].includes(session?.status)) {
+                    setTimeout(() => createUserSession(userId, session.status === 'auth_failure'), 300);
+                }
             } catch (error) {
                 contentDiv.innerHTML = `<p>❌ Erro: ${error.message}</p>`;
             }
@@ -1460,7 +1471,7 @@
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                     },
-                    body: JSON.stringify({ waitMs: 60000, forceQr })
+                    body: JSON.stringify({ waitMs: 12000, forceQr })
                 });
 
                 if (response.status === 404) {
@@ -1470,7 +1481,7 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                         },
-                        body: JSON.stringify({ sessionId, waitMs: 60000, forceQr })
+                        body: JSON.stringify({ sessionId, waitMs: 12000, forceQr })
                     });
                 }
 
