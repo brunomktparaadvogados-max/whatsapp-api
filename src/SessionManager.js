@@ -15,12 +15,15 @@ const path = require('path');
 // ═══════════════════════════════════════════════════════════════════
 const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 5; // Mantem poucos Chromiums vivos no Koyeb nano
 const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 1400;                         // Alinhado ao HealthGuard; 650MB derrubava sessoes com poucos Chromiums
-const QR_CODE_TIMEOUT_MS = parseInt(process.env.QR_CODE_TIMEOUT_MS) || 30 * 60 * 1000; // 30 minutos para escanear QR por padrao
+const QR_CODE_TIMEOUT_MS = parseInt(process.env.QR_CODE_TIMEOUT_MS) || 30 * 60 * 1000; // 30 minutos para expirar QR com RemoteAuth salvo
+const QR_ACTIVE_KEEPALIVE_MS = Math.max(
+  2 * 60 * 1000,
+  parseInt(process.env.QR_ACTIVE_KEEPALIVE_MS ?? String(10 * 60 * 1000), 10) || 0
+);
 const MAX_ACTIVE_QR_SESSIONS = MAX_CONCURRENT_SESSIONS;
 const QR_NO_AUTH_MIN_KEEPALIVE_MS = Math.max(
-  QR_CODE_TIMEOUT_MS,
-  24 * 60 * 60 * 1000,
-  parseInt(process.env.QR_NO_AUTH_MIN_KEEPALIVE_MS ?? String(24 * 60 * 60 * 1000), 10) || 0
+  QR_ACTIVE_KEEPALIVE_MS,
+  parseInt(process.env.QR_NO_AUTH_MIN_KEEPALIVE_MS ?? String(QR_ACTIVE_KEEPALIVE_MS), 10) || 0
 );
 // Keep sessions alive only when explicitly requested. By default, idle Chromium
 // processes hibernate while RemoteAuth stays preserved in PostgreSQL.
@@ -132,7 +135,6 @@ class SessionManager {
   shouldPreserveLiveSession(sessionId) {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
-    if (this.isSessionBusy(sessionId)) return true;
     return ['initializing', 'qr_code'].includes(session.status);
   }
 
@@ -599,6 +601,39 @@ class SessionManager {
     return true;
   }
 
+  async evictOldestQrSession(excludeId = null, minAgeMs = QR_ACTIVE_KEEPALIVE_MS) {
+    let oldestId = null;
+    let oldestQrTs = Infinity;
+    const now = Date.now();
+
+    for (const [sid, sess] of this.sessions.entries()) {
+      if (sid === excludeId) continue;
+      if (!sess?.client || sess.status !== 'qr_code') continue;
+      if (this.isSessionBusy(sid)) continue;
+
+      const qrTs = this.qrGeneratedAt.get(sid) || sess.qrGeneratedAt || sess.lastSeen || sess.createdAt || now;
+      if ((now - qrTs) < minAgeMs) continue;
+
+      if (qrTs < oldestQrTs) {
+        oldestQrTs = qrTs;
+        oldestId = sid;
+      }
+    }
+
+    if (!oldestId) return false;
+
+    const sess = this.sessions.get(oldestId);
+    const hasRemoteAuth = await this.hasSavedRemoteAuth(oldestId);
+    const nextStatus = sess?.qrFromRejectedAuth
+      ? 'auth_failure'
+      : (hasRemoteAuth ? 'saved_auth' : 'disconnected');
+
+    console.log(`Evicting QR ocioso: ${oldestId} (idade ${Math.round((now - oldestQrTs) / 1000)}s) -> ${nextStatus}`);
+    await this.cleanupSession(oldestId);
+    await this.db.updateSessionStatus(oldestId, nextStatus);
+    return true;
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   // STARTUP: Marca todas as sessões como desconectadas (não cria Chromium)
   // Isso evita 21 processos Chromium no startup que causa crash de memória
@@ -810,6 +845,11 @@ class SessionManager {
       newCount = this.getActiveChromiumCount();
       if (newCount >= MAX_CONCURRENT_SESSIONS) {
         await this.evictOldestQrWithoutSavedAuth(sessionId);
+      }
+
+      newCount = this.getActiveChromiumCount();
+      if (newCount >= MAX_CONCURRENT_SESSIONS) {
+        await this.evictOldestQrSession(sessionId);
       }
 
       newCount = this.getActiveChromiumCount();
@@ -2156,11 +2196,6 @@ class SessionManager {
       return null;
     }
 
-    if (QR_REQUIRED_STATUSES.has(dbSession.status)) {
-      console.log(`[${sessionId}] Status ${dbSession.status}; auto-reconexao bloqueada ate novo QR.`);
-      return null;
-    }
-
     // Verificar se RemoteAuth tem dados salvos
     if (!this.pgStore || !this.useRemoteAuth) {
       console.log(`❌ [${sessionId}] RemoteAuth não disponível — QR necessário`);
@@ -2181,8 +2216,8 @@ class SessionManager {
     }
 
     // Marcar como reconectando (evita múltiplas reconexões paralelas)
-    if (dbSession.status === 'auth_failure') {
-      console.log(`[${sessionId}] Retestando RemoteAuth valido mesmo apos auth_failure anterior.`);
+    if (QR_REQUIRED_STATUSES.has(dbSession.status)) {
+      console.log(`[${sessionId}] Retestando RemoteAuth valido mesmo com status ${dbSession.status}.`);
       await this.db.updateSessionStatus(sessionId, 'authenticated');
     }
 
@@ -2197,6 +2232,10 @@ class SessionManager {
         const evicted = await this.evictOldestIdleSession(sessionId);
         if (!evicted) {
           await this.forceCleanupDeadSessions();
+        }
+        activeCount = this.getActiveChromiumCount();
+        if (activeCount >= MAX_CONCURRENT_SESSIONS) {
+          await this.evictOldestQrSession(sessionId);
         }
         activeCount = this.getActiveChromiumCount();
         if (activeCount >= MAX_CONCURRENT_SESSIONS) {
@@ -2882,6 +2921,7 @@ class SessionManager {
       remoteAuthError: this.remoteAuthInitError?.message || null,
       maxConcurrent: MAX_CONCURRENT_SESSIONS,
       maxActiveQrSessions: MAX_ACTIVE_QR_SESSIONS,
+      qrActiveKeepaliveMs: QR_ACTIVE_KEEPALIVE_MS,
       activeQrWithoutSavedAuth: this.getActiveQrWithoutSavedAuthCount(),
       qrNoAuthMinKeepaliveMs: QR_NO_AUTH_MIN_KEEPALIVE_MS,
       idleDisconnectMs: IDLE_DISCONNECT_MS,
@@ -3104,6 +3144,11 @@ class SessionManager {
         if (sess.status === 'qr_code') {
           const qrTs = this.qrGeneratedAt.get(sid) || sess.qrGeneratedAt || lastTs;
           const qrAgeMs = now - qrTs;
+
+          if (qrAgeMs > QR_ACTIVE_KEEPALIVE_MS) {
+            toDestroy.push({ sid, reason: `QR ocioso (${Math.round(qrAgeMs / 1000)}s)` });
+            continue;
+          }
 
           if (this.isQrWithoutSavedAuth(sess)) {
             noAuthQrSessions.push({ sid, qrTs, qrAgeMs });
