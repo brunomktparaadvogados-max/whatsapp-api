@@ -1142,6 +1142,47 @@ class SessionManager {
     });
   }
 
+  async markSessionRecoverableOrQr(sessionData, reason = 'SESSION_LOST') {
+    if (!sessionData?.id) return false;
+    const sessionId = sessionData.id;
+    const hasRemoteAuth = await this.hasSavedRemoteAuth(sessionId);
+
+    if (!hasRemoteAuth) {
+      await this.markSessionQrRequired(sessionData, reason);
+      return false;
+    }
+
+    if (sessionData.qrReleaseInProgress) return true;
+    sessionData.qrReleaseInProgress = true;
+
+    console.warn(`[${sessionId}] Sessao perdeu conexao (${reason}). RemoteAuth preservado; hibernando para reativacao sob demanda.`);
+
+    this.cancelReconnect(sessionId);
+    this.reconnectPromises.delete(sessionId);
+    this.reconnectingSet.delete(sessionId);
+    this.sessionInitFailures.delete(sessionId);
+
+    sessionData.status = 'saved_auth';
+    sessionData.qrCode = null;
+    sessionData.lastSeen = Date.now();
+
+    await this.cleanupSession(sessionId);
+    await this.db.updateSessionStatus(sessionId, 'saved_auth');
+
+    this.io.to(`user_${sessionData.userId}`).emit('session_disconnected', {
+      sessionId,
+      reason,
+      status: 'saved_auth',
+      action: 'reactivate_saved_auth',
+      hasRemoteAuth: true,
+      recoverable: true,
+      hibernated: true,
+      message: 'Conexao caiu, mas a sessao salva foi preservada. Reative para reconectar sem novo QR.'
+    });
+
+    return true;
+  }
+
   cleanupSessionFiles(sessionId) {
     const paths = [
       path.join(__dirname, '..', '.wwebjs_auth', `session-${sessionId}`),
@@ -1367,8 +1408,8 @@ class SessionManager {
 
       // Se é um erro fatal que indica que o Chromium morreu
       if (this.isFatalSessionError(error)) {
-        console.error(`💀 [${sessionData.id}] Erro FATAL detectado. Liberando QR em vez de reconectar em loop.`);
-        await this.markSessionQrRequired(sessionData, 'CHROMIUM_CRASH');
+        console.error(`💀 [${sessionData.id}] Erro FATAL detectado. Preservando RemoteAuth quando existir.`);
+        await this.markSessionRecoverableOrQr(sessionData, 'CHROMIUM_CRASH');
       }
     });
 
@@ -1546,7 +1587,7 @@ class SessionManager {
         return;
       }
 
-      await this.markSessionQrRequired(sessionData, reason || 'DISCONNECTED');
+      await this.markSessionRecoverableOrQr(sessionData, reason || 'DISCONNECTED');
     });
 
     // (remote_session_saved já registrado acima — não duplicar)
@@ -2435,9 +2476,11 @@ class SessionManager {
     if (staleForMs > STALE_SESSION_HEALTHCHECK_MS) {
       const alive = await this.isSessionAlive(sessionId);
       if (!alive) {
-        console.warn(`⚠️ [${sessionId}] Sessão marcada como connected, mas Chromium não respondeu. Liberando QR.`);
-        await this.markSessionQrRequired(session, 'STALE_CHROMIUM');
-        throw new Error('Sessão caiu e precisa escanear um novo QR Code antes de enviar.');
+        console.warn(`⚠️ [${sessionId}] Sessão marcada como connected, mas Chromium não respondeu. Preservando auth se possivel.`);
+        const recoverable = await this.markSessionRecoverableOrQr(session, 'STALE_CHROMIUM');
+        throw new Error(recoverable
+          ? 'Sessão caiu, mas a memória foi preservada. Reative a sessão e tente enviar novamente.'
+          : 'Sessão caiu e precisa escanear um novo QR Code antes de enviar.');
       }
     }
 
@@ -2584,12 +2627,12 @@ class SessionManager {
       } catch (error) {
         const errMsg = error.message || '';
         if (numberWasVerifiedBeforeSend && this.isFatalSessionError(error) && !isRetry) {
-          console.warn(`[${sessionId}] Erro fatal apos tentativa para numero ja validado (${normalizedPhone}); liberando QR sem reenvio para evitar duplicidade`);
+          console.warn(`[${sessionId}] Erro fatal apos tentativa para numero ja validado (${normalizedPhone}); preservando auth sem reenvio para evitar duplicidade`);
           setImmediate(async () => {
             try {
-              await this.markSessionQrRequired(session, 'SEND_CHROMIUM_CRASH');
+              await this.markSessionRecoverableOrQr(session, 'SEND_CHROMIUM_CRASH');
             } catch (reconnectErr) {
-              console.error(`Erro ao liberar QR apos envio ambiguo ${sessionId}: ${reconnectErr.message}`);
+              console.error(`Erro ao preservar sessao apos envio ambiguo ${sessionId}: ${reconnectErr.message}`);
             }
           });
 
@@ -2614,7 +2657,7 @@ class SessionManager {
             fromMe: true,
             timestamp: Math.floor(Date.now() / 1000),
             status: 'pending',
-            note: 'Numero validado antes do envio, mas o WhatsApp nao confirmou entrega. Mantido pendente para evitar falso enviado e evitar duplicidade.'
+            note: 'Numero validado antes do envio, mas o WhatsApp nao confirmou entrega. Sessao salva preservada quando possivel; mensagem mantida pendente.'
           };
 
           return messageData;
@@ -2810,13 +2853,13 @@ class SessionManager {
 
         // Se e um erro fatal do Chromium E ainda nao tentamos reconectar
         if ((this.isFatalSessionError(error) || chromiumDead) && !isRetry) {
-          console.warn(`[${sessionId}] Erro fatal/ambíguo durante envio; liberando QR e sem reenvio automatico para evitar duplicidade.`);
+          console.warn(`[${sessionId}] Erro fatal/ambíguo durante envio; preservando auth se possivel e sem reenvio automatico para evitar duplicidade.`);
 
           setImmediate(async () => {
             try {
-              await this.markSessionQrRequired(session, 'SEND_CHROMIUM_CRASH');
+              await this.markSessionRecoverableOrQr(session, 'SEND_CHROMIUM_CRASH');
             } catch (reconErr) {
-              console.error(`Erro ao liberar QR apos envio ambiguo ${sessionId}: ${reconErr.message}`);
+              console.error(`Erro ao preservar sessao apos envio ambiguo ${sessionId}: ${reconErr.message}`);
             }
           });
 
@@ -2846,7 +2889,7 @@ class SessionManager {
             fromMe: true,
             timestamp: Math.floor(Date.now() / 1000),
             status: 'pending',
-            note: 'WhatsApp Web caiu durante a tentativa. Novo QR requerido e mensagem mantida pendente sem reenvio automatico.'
+            note: 'WhatsApp Web caiu durante a tentativa. Sessao salva preservada quando possivel; mensagem mantida pendente sem reenvio automatico.'
           };
         }
 
