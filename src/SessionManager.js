@@ -809,7 +809,7 @@ class SessionManager {
     if (!hasRemoteAuth) {
       const activeQrWithoutAuth = this.getActiveQrWithoutSavedAuthCount(sessionId);
       if (activeQrWithoutAuth >= MAX_ACTIVE_QR_SESSIONS) {
-        const evictedQr = await this.evictOldestQrWithoutSavedAuth(sessionId);
+        const evictedQr = await this.evictOldestQrWithoutSavedAuth(sessionId, 0);
         if (!evictedQr) {
           throw new Error(`Limite de QR Codes aguardando leitura atingido (${MAX_ACTIVE_QR_SESSIONS}). Aguarde um usuario escanear ou tente novamente em alguns minutos.`);
         }
@@ -821,14 +821,10 @@ class SessionManager {
     if (activeCount >= MAX_CONCURRENT_SESSIONS) {
       console.warn(`⚠️ Limite de ${MAX_CONCURRENT_SESSIONS} sessões Chromium atingido (${activeCount} ativas)`);
 
-      // 1. Tenta desconectar a sessão connected mais ociosa para liberar slot
-      const evicted = await this.evictOldestIdleSession(sessionId);
-      if (!evicted) {
-        // 2. Tenta limpar sessões mortas (failed, disconnected, etc)
-        await this.forceCleanupDeadSessions();
-      }
+      // Preserve connected sessions first; QR sessions can be regenerated on demand.
+      await this.forceCleanupDeadSessions();
 
-      // 3. Se ainda cheio, limpa apenas estados mortos. Nunca mata QR/init/authenticated para liberar slot.
+      // Se ainda cheio, limpa apenas estados mortos.
       let newCount = this.getActiveChromiumCount();
       if (newCount >= MAX_CONCURRENT_SESSIONS) {
         for (const [sid, sess] of this.sessions.entries()) {
@@ -844,12 +840,17 @@ class SessionManager {
 
       newCount = this.getActiveChromiumCount();
       if (newCount >= MAX_CONCURRENT_SESSIONS) {
-        await this.evictOldestQrWithoutSavedAuth(sessionId);
+        await this.evictOldestQrWithoutSavedAuth(sessionId, 0);
       }
 
       newCount = this.getActiveChromiumCount();
       if (newCount >= MAX_CONCURRENT_SESSIONS) {
-        await this.evictOldestQrSession(sessionId);
+        await this.evictOldestQrSession(sessionId, 0);
+      }
+
+      newCount = this.getActiveChromiumCount();
+      if (newCount >= MAX_CONCURRENT_SESSIONS) {
+        await this.evictOldestIdleSession(sessionId);
       }
 
       newCount = this.getActiveChromiumCount();
@@ -2270,13 +2271,18 @@ class SessionManager {
       let activeCount = this.getActiveChromiumCount();
       if (activeCount >= MAX_CONCURRENT_SESSIONS) {
         console.log(`⚠️ [${sessionId}] Limite atingido (${activeCount}/${MAX_CONCURRENT_SESSIONS}). Evicting sessão ociosa...`);
-        const evicted = await this.evictOldestIdleSession(sessionId);
-        if (!evicted) {
-          await this.forceCleanupDeadSessions();
+        await this.forceCleanupDeadSessions();
+        activeCount = this.getActiveChromiumCount();
+        if (activeCount >= MAX_CONCURRENT_SESSIONS) {
+          await this.evictOldestQrWithoutSavedAuth(sessionId, 0);
         }
         activeCount = this.getActiveChromiumCount();
         if (activeCount >= MAX_CONCURRENT_SESSIONS) {
-          await this.evictOldestQrSession(sessionId);
+          await this.evictOldestQrSession(sessionId, 0);
+        }
+        activeCount = this.getActiveChromiumCount();
+        if (activeCount >= MAX_CONCURRENT_SESSIONS) {
+          await this.evictOldestIdleSession(sessionId);
         }
         activeCount = this.getActiveChromiumCount();
         if (activeCount >= MAX_CONCURRENT_SESSIONS) {

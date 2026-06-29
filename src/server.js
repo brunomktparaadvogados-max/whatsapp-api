@@ -165,6 +165,12 @@ function needsLiveSessionReconnect(dbStatus) {
   return ['connected', 'authenticated', 'reconnecting', 'initializing', 'saved_auth', 'auth_failure', 'disconnected', 'failed'].includes(dbStatus);
 }
 
+function isRecentDbProgressStatus(dbSession, maxAgeMs = 5 * 60 * 1000) {
+  if (!dbSession || !['initializing', 'authenticated', 'reconnecting'].includes(dbSession.status)) return false;
+  const updatedAt = dbSession.updated_at ? new Date(dbSession.updated_at).getTime() : 0;
+  return updatedAt > 0 && (Date.now() - updatedAt) <= maxAgeMs;
+}
+
 function normalizeStatusWithoutRemoteAuth(dbStatus) {
   if (!dbStatus || dbStatus === 'not_created') return dbStatus || 'not_created';
   if (['connected', 'authenticated', 'reconnecting', 'initializing', 'saved_auth', 'qr_code', 'failed'].includes(dbStatus)) {
@@ -230,7 +236,9 @@ async function getSessionView(sessionId, dbSession = null) {
   const recoverable = !liveSession && hasRemoteAuth && needsLiveSessionReconnect(savedDbSession.status);
   const status = liveSession
     ? liveSession.status
-    : (recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(savedDbSession.status));
+    : (recoverable
+      ? 'saved_auth'
+      : (isRecentDbProgressStatus(savedDbSession) ? savedDbSession.status : normalizeStatusWithoutRemoteAuth(savedDbSession.status)));
 
   return {
     ...savedDbSession,
@@ -1439,7 +1447,7 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
     }
 
     const forceQr = req.body?.forceQr === true;
-    const dbSession = await db.getSession(targetSessionId);
+    let dbSession = await db.getSession(targetSessionId);
     const existingSession = await normalizeLiveSessionForRequest(targetSessionId, dbSession, 'create_session');
     if (existingSession) {
       // Se a sessão existe e está em estado ativo, retorna ela
@@ -1478,8 +1486,14 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
 
     const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession?.status, forceQr);
 
+    if (!dbSession) {
+      await db.createSession(targetSessionId, targetUserId);
+      dbSession = await db.getSession(targetSessionId);
+    }
+
     if (dbSession) {
       await db.updateSessionStatus(targetSessionId, canTrustSavedAuth ? 'authenticated' : 'initializing');
+      dbSession = { ...dbSession, status: canTrustSavedAuth ? 'authenticated' : 'initializing' };
     }
 
     setImmediate(async () => {

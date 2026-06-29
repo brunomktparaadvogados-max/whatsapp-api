@@ -360,7 +360,11 @@ class DatabaseManager {
   }
 
   async createSession(sessionId, userId) {
-    return await this.run('INSERT INTO sessions (id, user_id) VALUES ($1, $2)', [sessionId, userId]);
+    return await this.run(`
+      INSERT INTO sessions (id, user_id)
+      VALUES ($1, $2)
+      ON CONFLICT (id) DO NOTHING
+    `, [sessionId, userId]);
   }
 
   async updateSessionStatus(sessionId, status, phoneNumber = null, phoneName = null) {
