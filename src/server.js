@@ -244,6 +244,16 @@ async function getSessionView(sessionId, dbSession = null) {
   if (!savedDbSession) return null;
 
   const liveSession = sessionManager.getSession(sessionId);
+  const liveDbStatuses = new Set(['qr_code', 'connected', 'authenticated', 'failed', 'auth_failure', 'disconnected']);
+  if (liveSession && liveDbStatuses.has(liveSession.status) && savedDbSession.status !== liveSession.status) {
+    try {
+      await db.updateSessionStatus(sessionId, liveSession.status);
+      savedDbSession.status = liveSession.status;
+    } catch (error) {
+      console.warn(`[${sessionId}] Falha ao sincronizar status vivo '${liveSession.status}' no banco: ${error.message}`);
+    }
+  }
+
   const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
   const recoverable = !liveSession && hasRemoteAuth && needsLiveSessionReconnect(savedDbSession.status);
   const status = liveSession
