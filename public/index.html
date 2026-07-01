@@ -874,7 +874,7 @@
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                     },
-                    body: JSON.stringify({ waitMs: 45000, forceQr })
+                    body: JSON.stringify({ waitMs: 30000, forceQr })
                 });
 
                 if (response.status === 404) {
@@ -884,7 +884,7 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                         },
-                        body: JSON.stringify({ waitMs: 45000, forceQr })
+                        body: JSON.stringify({ waitMs: 30000, forceQr })
                     });
                 }
 
@@ -1481,20 +1481,21 @@
         async function createUserSession(userId, forceQr = false) {
             const sessionDiv = document.getElementById(`session-${userId}`);
             const contentDiv = document.getElementById(`session-content-${userId}`);
+            const sessionId = `user_${userId}`;
             if (sessionDiv) {
                 sessionDiv.classList.add('active');
             }
-            contentDiv.innerHTML = '<div class="loading">Reativando sessao ou gerando QR Code...</div>';
+            renderUserSessionPanel(userId, sessionId, { id: sessionId, status: 'initializing' });
+            scheduleUserSessionRefresh(userId, 3000);
 
             try {
-                const sessionId = `user_${userId}`;
                 let response = await fetch(`${API_URL}/api/sessions/${sessionId}/reactivate`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                     },
-                    body: JSON.stringify({ waitMs: 45000, forceQr })
+                    body: JSON.stringify({ waitMs: 30000, forceQr })
                 });
 
                 if (response.status === 404) {
@@ -1504,7 +1505,7 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                         },
-                        body: JSON.stringify({ sessionId, waitMs: 45000, forceQr })
+                        body: JSON.stringify({ sessionId, waitMs: 30000, forceQr })
                     });
                 }
 

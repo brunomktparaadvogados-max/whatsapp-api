@@ -875,6 +875,7 @@ class SessionManager {
       authClientId,
       info: null,
       hasRemoteAuth,
+      forceQrFallback: options.forceQrFallback === true,
       allowQrFallback: options.forceFreshAuth === true || options.forceQrFallback === true,
       qrFromRejectedAuth: options.forceQrFallback === true,
       qrGeneratedAt: null,
@@ -1014,8 +1015,9 @@ class SessionManager {
 
       const hasRemoteAuth = await this.hasSavedRemoteAuth(sessionData.id);
       const isTransientError = this.isTransientInitError(error);
-      const qrRejectedSavedAuth = sessionData.qrFromRejectedAuth === true || sessionData.status === 'auth_failure';
-      if (isTransientError && attempt < SESSION_INIT_MAX_ATTEMPTS && !qrRejectedSavedAuth) {
+      const forcedQrFallback = sessionData.forceQrFallback === true;
+      const savedAuthWasRejected = sessionData.status === 'auth_failure' || (sessionData.qrFromRejectedAuth === true && !forcedQrFallback);
+      if (isTransientError && attempt < SESSION_INIT_MAX_ATTEMPTS && !savedAuthWasRejected) {
         const retryMode = hasRemoteAuth ? 'sem perder RemoteAuth' : 'para liberar QR de nova sessão';
         console.warn(`[${sessionData.id}] Falha transiente do Chromium/WhatsApp Web. Recriando cliente ${retryMode}...`);
 
@@ -1029,9 +1031,12 @@ class SessionManager {
         this.sessionLastActivity.delete(sessionData.id);
         this.qrGeneratedAt.delete(sessionData.id);
         this.cleanupSessionFiles(sessionData.id);
+        if (sessionData.authClientId && sessionData.authClientId !== sessionData.id) {
+          this.cleanupSessionFiles(sessionData.authClientId);
+        }
         await new Promise(r => setTimeout(r, SESSION_INIT_RETRY_DELAY_MS * attempt));
 
-        const retryClient = await this.createWhatsAppClient(sessionData.id);
+        const retryClient = await this.createWhatsAppClient(sessionData.authClientId || sessionData.id);
         this.setupClientEvents(retryClient, sessionData);
         sessionData.client = retryClient;
         sessionData.status = 'initializing';
@@ -1052,7 +1057,6 @@ class SessionManager {
       } catch (_dbStatusError) {
         latestDbStatus = null;
       }
-      const savedAuthWasRejected = qrRejectedSavedAuth === true;
       const failedStatus = savedAuthWasRejected ? 'auth_failure' : (hasRemoteAuth ? 'saved_auth' : 'failed');
       this.sessionInitFailures.set(sessionData.id, {
         message: errorMessage,
