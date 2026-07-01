@@ -1444,7 +1444,7 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       targetUserId = req.userId;
     }
 
-    const forceQr = req.body?.forceQr === true;
+    let forceQr = req.body?.forceQr === true;
     let dbSession = await db.getSession(targetSessionId);
     const existingSession = await normalizeLiveSessionForRequest(targetSessionId, dbSession, 'create_session');
     if (existingSession) {
@@ -1474,6 +1474,11 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
 
     const remoteAuthAvailable = !!(sessionManager.useRemoteAuth && sessionManager.pgStore);
     const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(targetSessionId);
+    const recentInitFailure = hasRemoteAuth ? sessionManager.getRecentInitFailure(targetSessionId) : null;
+    if (!forceQr && recentInitFailure) {
+      console.warn(`[CREATE SESSION] ${targetSessionId} teve falha recente de reidratacao; liberando QR fallback automaticamente.`);
+      forceQr = true;
+    }
 
     if (!remoteAuthAvailable) {
       return res.status(503).json({
@@ -1572,9 +1577,14 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
     }
 
     const remoteAuthAvailable = !!(sessionManager.useRemoteAuth && sessionManager.pgStore);
-    const forceQr = req.body?.forceQr === true;
+    let forceQr = req.body?.forceQr === true;
     const existingSession = await normalizeLiveSessionForRequest(sessionId, dbSession, 'reactivate');
     const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
+    const recentInitFailure = hasRemoteAuth ? sessionManager.getRecentInitFailure(sessionId) : null;
+    if (!forceQr && recentInitFailure) {
+      console.warn(`[REACTIVATE] ${sessionId} teve falha recente de reidratacao; liberando QR fallback automaticamente.`);
+      forceQr = true;
+    }
 
     if (existingSession && !forceQr && shouldReuseExistingSession(existingSession)) {
       const shouldWaitForProgress = ['initializing', 'authenticated', 'reconnecting'].includes(existingSession.status);
