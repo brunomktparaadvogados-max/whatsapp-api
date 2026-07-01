@@ -51,7 +51,8 @@ const MAX_SEND_RETRIES = 0;                       // SEM retries — evita mensa
 const AUTO_RECONNECT_TIMEOUT_MS = 420000;         // 7 min máx para auto-reconexão no envio
 const AUTHENTICATED_READY_TIMEOUT_MS = parseInt(process.env.AUTHENTICATED_READY_TIMEOUT_MS) || 360000;
 const STARTUP_RESTORE_LIMIT = parseInt(process.env.STARTUP_RESTORE_LIMIT || '0', 10);
-const SESSION_INIT_MAX_ATTEMPTS = parseInt(process.env.SESSION_INIT_MAX_ATTEMPTS) || 2;
+const SESSION_INIT_MAX_ATTEMPTS = parseInt(process.env.SESSION_INIT_MAX_ATTEMPTS) || 4;
+const SESSION_INIT_RETRY_DELAY_MS = parseInt(process.env.SESSION_INIT_RETRY_DELAY_MS) || 5000;
 const SESSION_INIT_CONCURRENCY = parseInt(process.env.SESSION_INIT_CONCURRENCY) || 1;
 const SESSION_INIT_STAGGER_MS = parseInt(process.env.SESSION_INIT_STAGGER_MS) || 15000;
 const REMOTE_AUTH_INIT_RETRIES = parseInt(process.env.REMOTE_AUTH_INIT_RETRIES) || 6;
@@ -1028,7 +1029,7 @@ class SessionManager {
         this.sessionLastActivity.delete(sessionData.id);
         this.qrGeneratedAt.delete(sessionData.id);
         this.cleanupSessionFiles(sessionData.id);
-        await new Promise(r => setTimeout(r, 10000 * attempt));
+        await new Promise(r => setTimeout(r, SESSION_INIT_RETRY_DELAY_MS * attempt));
 
         const retryClient = await this.createWhatsAppClient(sessionData.id);
         this.setupClientEvents(retryClient, sessionData);
