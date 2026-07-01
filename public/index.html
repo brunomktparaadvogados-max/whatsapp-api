@@ -849,6 +849,7 @@
                 'not_found': '❌ Não encontrada',
                 'initializing': '🔄 Inicializando...',
                 'qr_code': '📱 Aguardando QR Code',
+                'qr_required': '📱 Aguardando QR Code',
                 'saved_auth': '💾 Sessão salva; reconectar sob demanda',
                 'authenticated': '🔄 Autenticado, conectando...',
                 'connected': '✅ Conectado',
@@ -1309,7 +1310,10 @@
                         console.log('Sessão não encontrada para', user.email);
                     }
 
-                    const status = sessionInfo?.status || 'not_created';
+                    let status = sessionInfo?.status || 'not_created';
+                    if (status === 'disconnected' && sessionInfo?.hasRemoteAuth === false) {
+                        status = 'qr_required';
+                    }
                     const statusText = getStatusText(status);
                     const statusClass = getStatusClass(status);
 
@@ -1360,6 +1364,7 @@
                     return 'status-connected';
                 case 'authenticated':
                 case 'qr_code':
+                case 'qr_required':
                 case 'initializing':
                     return 'status-qr';
                 case 'disconnected':
@@ -1457,12 +1462,8 @@
                 });
 
                 if (response.status === 404) {
-                    contentDiv.innerHTML = `
-                        <p>Esta sessão ainda não foi criada.</p>
-                        <button onclick="createUserSession(${userId})" style="margin-top: 10px;">
-                            📱 Criar Sessão WhatsApp
-                        </button>
-                    `;
+                    renderUserSessionPanel(userId, sessionId, { id: sessionId, status: 'initializing' });
+                    setTimeout(() => createUserSession(userId, true), 300);
                     return;
                 }
 
@@ -1471,7 +1472,8 @@
 
                 renderUserSessionPanel(userId, sessionId, session);
                 if (['saved_auth', 'disconnected', 'failed', 'auth_failure'].includes(session?.status)) {
-                    setTimeout(() => createUserSession(userId, session.status === 'auth_failure'), 300);
+                    const needsQr = session.status === 'auth_failure' || session.hasRemoteAuth === false;
+                    setTimeout(() => createUserSession(userId, needsQr), 300);
                 }
             } catch (error) {
                 contentDiv.innerHTML = `<p>❌ Erro: ${error.message}</p>`;
@@ -1569,13 +1571,8 @@
             });
 
             if (response.status === 404) {
-                clearUserSessionRefresh(userId);
-                contentDiv.innerHTML = `
-                    <p>Esta sessão ainda não foi criada.</p>
-                    <button onclick="createUserSession(${userId})" style="margin-top: 10px;">
-                        📱 Criar Sessão WhatsApp
-                    </button>
-                `;
+                renderUserSessionPanel(userId, sessionId, { id: sessionId, status: 'initializing' });
+                setTimeout(() => createUserSession(userId, true), 300);
                 return;
             }
 

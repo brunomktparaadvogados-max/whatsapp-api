@@ -922,6 +922,8 @@ class SessionManager {
       message.includes('attempted to use detached frame') ||
       message.includes('session closed') ||
       message.includes('page has been closed') ||
+      message.includes("cannot read properties of undefined (reading 'get')") ||
+      message.includes('reading \'get\'') ||
       message.includes('timeout');
   }
 
@@ -2128,7 +2130,9 @@ class SessionManager {
       'getStatus',
       'No LID for user',
       "Cannot read properties of undefined (reading 'isBot')",
+      "Cannot read properties of undefined (reading 'get')",
       'reading \'isBot\'',
+      'reading \'get\'',
       'getIsMyContact',
       'detached Frame',                // Puppeteer frame bug (não fatal com --disable-site-isolation)
       'Attempted to use detached',     // Variação do mesmo bug
