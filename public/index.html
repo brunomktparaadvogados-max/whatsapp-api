@@ -624,6 +624,23 @@
 
     <script>
         const API_URL = window.location.origin;
+        const userSessionRefreshTimers = {};
+
+        function clearUserSessionRefresh(userId) {
+            if (userSessionRefreshTimers[userId]) {
+                clearTimeout(userSessionRefreshTimers[userId]);
+                delete userSessionRefreshTimers[userId];
+            }
+        }
+
+        function scheduleUserSessionRefresh(userId, delayMs = 3000) {
+            clearUserSessionRefresh(userId);
+            userSessionRefreshTimers[userId] = setTimeout(() => {
+                refreshUserSession(userId).catch(error => {
+                    console.error('Erro ao atualizar sessao:', error);
+                });
+            }, delayMs);
+        }
 
         window.onload = function() {
             checkAuth();
@@ -857,7 +874,7 @@
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                     },
-                    body: JSON.stringify({ waitMs: 12000, forceQr })
+                    body: JSON.stringify({ waitMs: 45000, forceQr })
                 });
 
                 if (response.status === 404) {
@@ -867,7 +884,7 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                         },
-                        body: JSON.stringify({ waitMs: 12000, forceQr })
+                        body: JSON.stringify({ waitMs: 45000, forceQr })
                     });
                 }
 
@@ -1358,6 +1375,9 @@
             const qrCode = session?.qrCode || session?.qr_code || null;
 
             if (status === 'qr_code' || status === 'initializing' || status === 'authenticated') {
+                if (qrCode || status === 'qr_code') {
+                    clearUserSessionRefresh(userId);
+                }
                 contentDiv.innerHTML = `
                     <p><strong>Status:</strong> ${getStatusText(status)}</p>
                     <p>Escaneie o QR Code abaixo com o WhatsApp do usuario:</p>
@@ -1372,12 +1392,13 @@
                 `;
 
                 if (!qrCode) {
-                    setTimeout(() => refreshUserSession(userId), 5000);
+                    scheduleUserSessionRefresh(userId, 3000);
                 }
                 return;
             }
 
             if (status === 'connected') {
+                clearUserSessionRefresh(userId);
                 contentDiv.innerHTML = `
                     <div class="success-box">
                         <h4>WhatsApp Conectado!</h4>
@@ -1394,6 +1415,7 @@
             }
 
             if (status === 'saved_auth') {
+                clearUserSessionRefresh(userId);
                 contentDiv.innerHTML = `
                     <p><strong>Status:</strong> ${getStatusText(status)}</p>
                     <p>Sessao salva encontrada. Clique para tentar recuperar sem QR Code.</p>
@@ -1407,6 +1429,7 @@
                 return;
             }
 
+            clearUserSessionRefresh(userId);
             contentDiv.innerHTML = `
                 <p><strong>Status:</strong> ${getStatusText(status)}</p>
                 <button onclick="createUserSession(${userId}, ${status === 'auth_failure' ? 'true' : 'false'})" style="margin-top: 10px;">
@@ -1471,7 +1494,7 @@
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                     },
-                    body: JSON.stringify({ waitMs: 12000, forceQr })
+                    body: JSON.stringify({ waitMs: 45000, forceQr })
                 });
 
                 if (response.status === 404) {
@@ -1481,7 +1504,7 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                         },
-                        body: JSON.stringify({ sessionId, waitMs: 12000, forceQr })
+                        body: JSON.stringify({ sessionId, waitMs: 45000, forceQr })
                     });
                 }
 
@@ -1498,7 +1521,7 @@
                     };
                     renderUserSessionPanel(userId, sessionId, session);
                     if (['initializing', 'authenticated', 'saved_auth'].includes(session.status)) {
-                        setTimeout(() => refreshUserSession(userId), 5000);
+                        scheduleUserSessionRefresh(userId, 3000);
                     }
                 } else {
                     contentDiv.innerHTML = `
@@ -1533,10 +1556,36 @@
 
         async function refreshUserSession(userId) {
             const sessionDiv = document.getElementById(`session-${userId}`);
-            if (sessionDiv && sessionDiv.classList.contains('active')) {
-                sessionDiv.classList.remove('active');
+            const contentDiv = document.getElementById(`session-content-${userId}`);
+            if (!sessionDiv || !contentDiv || !sessionDiv.classList.contains('active')) {
+                clearUserSessionRefresh(userId);
+                return;
             }
-            await toggleUserSession(userId);
+
+            const sessionId = `user_${userId}`;
+            const response = await fetch(`${API_URL}/api/sessions/${sessionId}`, {
+                headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` }
+            });
+
+            if (response.status === 404) {
+                clearUserSessionRefresh(userId);
+                contentDiv.innerHTML = `
+                    <p>Esta sessão ainda não foi criada.</p>
+                    <button onclick="createUserSession(${userId})" style="margin-top: 10px;">
+                        📱 Criar Sessão WhatsApp
+                    </button>
+                `;
+                return;
+            }
+
+            const data = await response.json();
+            if (!data.success) {
+                contentDiv.innerHTML = `<p>Erro: ${data.error || 'Falha ao atualizar sessão'}</p>`;
+                scheduleUserSessionRefresh(userId, 5000);
+                return;
+            }
+
+            renderUserSessionPanel(userId, sessionId, data.session);
         }
 
         async function disconnectUserSession(sessionId) {

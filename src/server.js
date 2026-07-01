@@ -1452,16 +1452,21 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
     if (existingSession) {
       // Se a sessão existe e está em estado ativo, retorna ela
       if (!forceQr && shouldReuseExistingSession(existingSession)) {
+        const shouldWaitForProgress = ['initializing', 'authenticated', 'reconnecting'].includes(existingSession.status);
+        const progressedSession = shouldWaitForProgress
+          ? await waitForSessionProgress(targetSessionId, req.body?.waitMs || 15000)
+          : null;
         const view = await getSessionView(targetSessionId);
+        const status = progressedSession ? progressedSession.status : (view?.status || existingSession.status);
         return res.json({
           success: true,
           sessionId: existingSession.id,
-          status: existingSession.status,
-          qrCode: existingSession.qrCode || null,
+          status,
+          qrCode: view?.qrCode || progressedSession?.qrCode || existingSession.qrCode || null,
           canSend: view?.canSend || false,
           hasRemoteAuth: view?.hasRemoteAuth || false,
           recoverable: view?.recoverable || false,
-          session: view || existingSession,
+          session: view || progressedSession || existingSession,
           message: existingSession.status === 'connected' ? 'WhatsApp já está conectado!' : 'Sessão já existe. Aguarde o QR Code.'
         });
       }
@@ -1574,11 +1579,21 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
     const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
 
     if (existingSession && !forceQr && shouldReuseExistingSession(existingSession)) {
+      const shouldWaitForProgress = ['initializing', 'authenticated', 'reconnecting'].includes(existingSession.status);
+      const progressedSession = shouldWaitForProgress
+        ? await waitForSessionProgress(sessionId, req.body?.waitMs || 15000)
+        : null;
       const view = await getSessionView(sessionId, dbSession);
+      const status = progressedSession ? progressedSession.status : (view?.status || existingSession.status);
       return res.json({
         success: true,
-        action: existingSession.status === 'connected' ? 'already_connected' : 'already_in_progress',
-        message: existingSession.status === 'connected'
+        action: status === 'connected' ? 'already_connected' : 'already_in_progress',
+        status,
+        qrCode: view?.qrCode || progressedSession?.qrCode || null,
+        canSend: view?.canSend || false,
+        hasRemoteAuth: view?.hasRemoteAuth || false,
+        recoverable: view?.recoverable || false,
+        message: status === 'connected'
           ? 'Sessao ja esta conectada.'
           : 'Sessao ja esta em inicializacao; continue acompanhando o status.',
         session: view
