@@ -236,9 +236,7 @@ async function getSessionView(sessionId, dbSession = null) {
   const recoverable = !liveSession && hasRemoteAuth && needsLiveSessionReconnect(savedDbSession.status);
   const status = liveSession
     ? liveSession.status
-    : (recoverable
-      ? 'saved_auth'
-      : (isRecentDbProgressStatus(savedDbSession) ? savedDbSession.status : normalizeStatusWithoutRemoteAuth(savedDbSession.status)));
+    : (recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(savedDbSession.status));
 
   return {
     ...savedDbSession,
