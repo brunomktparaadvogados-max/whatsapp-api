@@ -1045,6 +1045,21 @@ class SessionManager {
       const isTransientError = this.isTransientInitError(error);
       const forcedQrFallback = sessionData.forceQrFallback === true;
       const savedAuthWasRejected = sessionData.status === 'auth_failure' || (sessionData.qrFromRejectedAuth === true && !forcedQrFallback);
+      const qrAgeMs = Date.now() - (this.qrGeneratedAt.get(sessionData.id) || sessionData.qrGeneratedAt || sessionData.lastSeen || Date.now());
+      const hasLiveQr = sessionData.status === 'qr_code' && !!sessionData.qrCode && qrAgeMs <= QR_CODE_TIMEOUT_MS;
+      if (hasLiveQr && (isTransientError || savedAuthWasRejected)) {
+        console.warn(`[${sessionData.id}] Inicializacao retornou erro apos QR valido (${errorMessage}); preservando QR em memoria para scan.`);
+        this.sessions.set(sessionData.id, sessionData);
+        this.qrGeneratedAt.set(sessionData.id, sessionData.qrGeneratedAt || Date.now());
+        this.sessionInitFailures.delete(sessionData.id);
+        await this.db.updateSessionStatus(sessionData.id, 'qr_code');
+        this.io.to(`user_${sessionData.userId}`).emit('qr_code', {
+          sessionId: sessionData.id,
+          qrCode: sessionData.qrCode
+        });
+        return;
+      }
+
       if (isTransientError && attempt < SESSION_INIT_MAX_ATTEMPTS && !savedAuthWasRejected) {
         const retryMode = hasRemoteAuth ? 'sem perder RemoteAuth' : 'para liberar QR de nova sessão';
         console.warn(`[${sessionData.id}] Falha transiente do Chromium/WhatsApp Web. Recriando cliente ${retryMode}...`);
