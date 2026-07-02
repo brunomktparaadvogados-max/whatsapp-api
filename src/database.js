@@ -444,6 +444,10 @@ class DatabaseManager {
     return result.rowCount > 0;
   }
 
+  async releaseWhatsAppSendLock(lockKey) {
+    return await this.run('DELETE FROM whatsapp_send_locks WHERE lock_key = $1', [lockKey]);
+  }
+
   async updateMessageStatus(messageId, status) {
     try {
       return await this.run('UPDATE messages SET status = $1 WHERE id = $2', [status, messageId]);
