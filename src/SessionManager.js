@@ -1079,6 +1079,19 @@ class SessionManager {
         }
         await new Promise(r => setTimeout(r, SESSION_INIT_RETRY_DELAY_MS * attempt));
 
+        if (forcedQrFallback || !hasRemoteAuth) {
+          sessionData.authClientId = `${sessionData.id}-qr-${Date.now()}-${uuidv4().slice(0, 8)}`;
+          if (forcedQrFallback && this.pgStore) {
+            this.pgStore.aliasSession({
+              fromSession: sessionData.authClientId,
+              toSession: sessionData.id,
+              suppressSource: true
+            });
+            this.pgStore.forceNextSave(`RemoteAuth-${sessionData.id}`);
+          }
+          console.warn(`[${sessionData.id}] Retry de QR usando perfil temporario novo: ${sessionData.authClientId}`);
+        }
+
         const retryClient = await this.createWhatsAppClient(sessionData.authClientId || sessionData.id);
         this.setupClientEvents(retryClient, sessionData);
         sessionData.client = retryClient;
@@ -1100,7 +1113,7 @@ class SessionManager {
       } catch (_dbStatusError) {
         latestDbStatus = null;
       }
-      const failedStatus = savedAuthWasRejected ? 'auth_failure' : (hasRemoteAuth ? 'saved_auth' : 'failed');
+      const failedStatus = (savedAuthWasRejected || forcedQrFallback) ? 'auth_failure' : (hasRemoteAuth ? 'saved_auth' : 'failed');
       this.sessionInitFailures.set(sessionData.id, {
         message: errorMessage,
         timestamp: Date.now()
@@ -1118,7 +1131,7 @@ class SessionManager {
           : 'Falha ao inicializar sessão. Tente criar novamente.',
         status: failedStatus,
         recoverable: true,
-        action: savedAuthWasRejected ? 'scan_qr' : (hasRemoteAuth ? 'reactivate_saved_auth' : 'retry'),
+        action: (savedAuthWasRejected || forcedQrFallback) ? 'scan_qr' : (hasRemoteAuth ? 'reactivate_saved_auth' : 'retry'),
         recentFailure: true
       });
     }
