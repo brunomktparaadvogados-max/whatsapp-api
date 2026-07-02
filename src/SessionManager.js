@@ -98,6 +98,7 @@ class SessionManager {
     this._contactCache = new Map();          // Cache de contatos: "session_phone" → timestamp (evita upsert repetido)
     this._contactCacheTTL = 10 * 60 * 1000; // 10 min TTL — mesmo contato não faz upsert de novo por 10 min
     this.remoteAuthRejectedAt = new Map();  // WhatsApp Web rejeitou o RemoteAuth salvo (pediu QR) — evita loop de reativacao
+    this.qrGeneratedAt = new Map();       // timestamp do ultimo QR gerado por sessao (usado por cleanup e timeout de QR)
 
     this.init();
   }
