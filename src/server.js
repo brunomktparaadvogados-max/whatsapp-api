@@ -979,6 +979,61 @@ app.post('/api/admin/cleanup-sessions', authMiddleware, async (req, res) => {
   }
 });
 
+app.post('/api/admin/reset-whatsapp-sessions', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = await db.getUserById(req.userId);
+    if (currentUser.email !== 'admin@flow.com') {
+      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
+    }
+
+    const forceConnected = req.body?.forceConnected === true;
+    const allSessions = await db.getAllSessionsFromDB();
+    const summary = [];
+
+    for (const session of allSessions) {
+      if (!session.id || !session.id.startsWith('user_')) {
+        summary.push({ sessionId: session.id, action: 'skipped_invalid_id' });
+        continue;
+      }
+
+      const liveSession = sessionManager.getSession(session.id);
+      if (liveSession?.status === 'connected' && !forceConnected) {
+        summary.push({ sessionId: session.id, status: 'connected', action: 'preserved_connected' });
+        continue;
+      }
+
+      if (liveSession) {
+        await sessionManager.cleanupSession(session.id);
+      }
+
+      await db.updateSessionStatus(session.id, 'auth_failure');
+      summary.push({
+        sessionId: session.id,
+        previousStatus: session.status,
+        liveStatus: liveSession?.status || null,
+        action: 'reset_to_qr_required'
+      });
+    }
+
+    res.json({
+      success: true,
+      action: 'reset_whatsapp_sessions',
+      forceConnected,
+      total: allSessions.length,
+      reset: summary.filter(item => item.action === 'reset_to_qr_required').length,
+      preservedConnected: summary.filter(item => item.action === 'preserved_connected').length,
+      summary,
+      message: 'Sessoes resetadas para gerar QR no proximo acesso. Usuarios, contatos e RemoteAuth foram preservados.'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      action: 'reset_whatsapp_sessions_error',
+      error: error.message
+    });
+  }
+});
+
 app.post('/api/admin/recover-auth-sessions', authMiddleware, async (req, res) => {
   try {
     const currentUser = await db.getUserById(req.userId);
