@@ -1434,6 +1434,11 @@ class SessionManager {
     });
 
     client.on('qr', async (qr) => {
+      if (sessionData.status === 'connected') {
+        console.warn(`[${sessionData.id}] QR recebido apos ready; ignorando para nao derrubar sessao conectada.`);
+        return;
+      }
+
       console.log(`📱 QR Code gerado para sessão: ${sessionData.id}`);
       let hadSavedAuth = false;
       try {

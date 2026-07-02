@@ -584,7 +584,7 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
   const sendClaim = await claimWhatsAppSendGlobal(sessionId, to, message, mediaUrl);
   if (sendClaim.duplicate) {
     const duplicateAttemptId = `duplicate_${sessionId}_${Date.now()}`;
-    return res.status(202).json({
+    return res.status(409).json({
       success: false,
       status: 'pending',
       finalStatus: 'pending',
@@ -617,7 +617,7 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
   );
   const isPending = !!result?.unconfirmed || result?.status === 'pending';
   const finalStatus = result?.skipped ? 'invalid_number' : (isPending ? 'pending' : 'sent');
-  return res.status(result?.skipped ? 422 : (isPending ? 202 : 200)).json({
+  return res.status(result?.skipped ? 422 : (isPending ? 409 : 200)).json({
     success: !result?.skipped && !isPending,
     status: result?.status || finalStatus,
     finalStatus,
@@ -2083,14 +2083,17 @@ app.post('/api/sessions/:sessionId/messages/media', authMiddleware, async (req, 
       { sessionId, to, media: true }
     );
     if (!res.headersSent) {
-      res.json({
-        success: true,
-        status: 'sent',
-        finalStatus: 'sent',
-        shouldMarkLead: 'sent',
-        confirmed: true,
+      const isPending = !!result?.unconfirmed || result?.status === 'pending';
+      res.status(isPending ? 409 : 200).json({
+        success: !isPending,
+        status: result?.status || (isPending ? 'pending' : 'sent'),
+        finalStatus: isPending ? 'pending' : 'sent',
+        shouldMarkLead: isPending ? 'pending' : 'sent',
+        confirmed: !isPending,
         invalidNumber: false,
-        messageId: result?.messageId || result?.id || null,
+        messageId: isPending ? null : (result?.messageId || result?.id || null),
+        unconfirmed: isPending,
+        message: isPending ? 'Envio de mídia nao confirmado pelo WhatsApp; manter pendente' : 'Mídia enviada com sucesso',
         data: result
       });
     }
@@ -2537,16 +2540,28 @@ cron.schedule('*/5 * * * *', async () => {  // A cada 5 min (era a cada 1 min)
 
   for (const msg of pendingMessages) {
     try {
+      let result;
       if (msg.media_url) {
-        await withGlobalWhatsAppSendLimit(
+        result = await withGlobalWhatsAppSendLimit(
           () => sessionManager.sendMedia(msg.session_id, msg.contact_phone, msg.media_url, msg.message),
           { sessionId: msg.session_id, to: msg.contact_phone, scheduled: true, media: true }
         );
       } else {
-        await withGlobalWhatsAppSendLimit(
+        result = await withGlobalWhatsAppSendLimit(
           () => sessionManager.sendMessage(msg.session_id, msg.contact_phone, msg.message),
           { sessionId: msg.session_id, to: msg.contact_phone, scheduled: true }
         );
+      }
+
+      if (result?.unconfirmed || result?.status === 'pending') {
+        console.warn(`Mensagem agendada ${msg.id} ficou pendente sem ACK; nao marcando como sent.`);
+        continue;
+      }
+
+      if (result?.skipped || result?.status === 'invalid_number') {
+        console.warn(`Mensagem agendada ${msg.id} tem contato invalido; marcando como failed.`);
+        await db.updateScheduledMessageStatus(msg.id, 'failed');
+        continue;
       }
 
       await db.updateScheduledMessageStatus(msg.id, 'sent', new Date().toISOString());
@@ -3168,8 +3183,6 @@ process.on('unhandledRejection', (reason, promise) => {
     'browser disconnected',
     'browser has disconnected',
     'chromium morto',
-    "cannot read properties of undefined (reading 'set')",
-    "cannot read properties of undefined (reading 'get')",
   ];
 
   if (fatalPatterns.some(p => errMsg.includes(p))) {
@@ -3181,6 +3194,10 @@ process.on('unhandledRejection', (reason, promise) => {
         for (const session of activeSessions) {
           const sid = session.id;
           if (session.client) {
+            if (['qr_code', 'initializing', 'authenticated', 'reconnecting'].includes(session.status)) {
+              console.warn(`🧟 [${sid}] Unhandled durante ${session.status}; mantendo sessão viva para concluir QR/autenticação.`);
+              continue;
+            }
             try {
               const alive = await sessionManager.isSessionAlive(sid);
               if (!alive) {
