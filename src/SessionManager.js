@@ -38,9 +38,11 @@ const SESSION_INIT_TIMEOUT_MS = 240000;           // 4 minutos para Chromium ini
 const MESSAGE_SEND_TIMEOUT_MS = 30000;            // 30 segundos timeout por mensagem (reduzido de 60s para feedback rápido)
 const MESSAGE_ACK_TIMEOUT_MS = parseInt(process.env.MESSAGE_ACK_TIMEOUT_MS) || 30000;
 const RAW_MESSAGE_CONFIRM_ACK = parseInt(process.env.MESSAGE_CONFIRM_ACK, 10);
-const MESSAGE_CONFIRM_ACK = process.env.ALLOW_SERVER_ACK_AS_SENT === 'true'
-  ? Math.max(1, RAW_MESSAGE_CONFIRM_ACK || 2)
-  : Math.max(2, RAW_MESSAGE_CONFIRM_ACK || 2); // 2 = delivered; 1 only means WhatsApp server accepted it.
+// ACK 1 = servidor do WhatsApp aceitou a mensagem (um tique cinza) — criterio
+// padrao de "enviado" de qualquer cliente WhatsApp. Exigir ACK 2 (entregue no
+// aparelho) fazia destinatario offline virar "pending" eterno, alimentando o
+// ciclo retry -> dedupe -> falso enviado. Endureca via env MESSAGE_CONFIRM_ACK=2.
+const MESSAGE_CONFIRM_ACK = Math.max(1, RAW_MESSAGE_CONFIRM_ACK || 1);
 const RECENT_ACTIVITY_PRESERVE_MS = Math.max(
   5 * 60 * 1000,
   parseInt(process.env.RECENT_ACTIVITY_PRESERVE_MS ?? String(10 * 60 * 1000), 10) || 0
@@ -54,7 +56,9 @@ const STARTUP_RESTORE_LIMIT = parseInt(process.env.STARTUP_RESTORE_LIMIT || '0',
 const SESSION_INIT_MAX_ATTEMPTS = parseInt(process.env.SESSION_INIT_MAX_ATTEMPTS) || 4;
 const SESSION_INIT_RETRY_DELAY_MS = parseInt(process.env.SESSION_INIT_RETRY_DELAY_MS) || 5000;
 const SESSION_INIT_CONCURRENCY = parseInt(process.env.SESSION_INIT_CONCURRENCY) || 1;
-const SESSION_INIT_STAGGER_MS = parseInt(process.env.SESSION_INIT_STAGGER_MS) || 15000;
+// 3s: com concorrencia 1, 15s de stagger somava minutos de espera extra na fila
+// de inicializacao so para gerar um QR — usuario via "Gerando QR..." eterno.
+const SESSION_INIT_STAGGER_MS = parseInt(process.env.SESSION_INIT_STAGGER_MS) || 3000;
 const REMOTE_AUTH_INIT_RETRIES = parseInt(process.env.REMOTE_AUTH_INIT_RETRIES) || 6;
 const REMOTE_AUTH_INIT_RETRY_DELAY_MS = parseInt(process.env.REMOTE_AUTH_INIT_RETRY_DELAY_MS) || 5000;
 const REQUIRE_REMOTE_AUTH = process.env.REQUIRE_REMOTE_AUTH !== 'false';
@@ -93,6 +97,7 @@ class SessionManager {
     this.intentionalShutdowns = new Set();    // Destroy controlado nao deve disparar auto-reconnect
     this._contactCache = new Map();          // Cache de contatos: "session_phone" → timestamp (evita upsert repetido)
     this._contactCacheTTL = 10 * 60 * 1000; // 10 min TTL — mesmo contato não faz upsert de novo por 10 min
+    this.remoteAuthRejectedAt = new Map();  // WhatsApp Web rejeitou o RemoteAuth salvo (pediu QR) — evita loop de reativacao
 
     this.init();
   }
@@ -114,6 +119,26 @@ class SessionManager {
     const session = this.sessions.get(sessionId);
     if (session) session.lastSeen = now;
     this.sessionLastActivity.set(sessionId, now);
+  }
+
+  markRemoteAuthRejected(sessionId) {
+    this.remoteAuthRejectedAt.set(sessionId, Date.now());
+  }
+
+  clearRemoteAuthRejected(sessionId) {
+    this.remoteAuthRejectedAt.delete(sessionId);
+  }
+
+  // O WhatsApp Web rejeitou o blob salvo ha pouco tempo: reativar de novo so
+  // repetiria o ciclo destruir/recriar Chromium e atrasaria o QR do usuario.
+  wasRemoteAuthRecentlyRejected(sessionId, maxAgeMs = 10 * 60 * 1000) {
+    const rejectedAt = this.remoteAuthRejectedAt.get(sessionId);
+    if (!rejectedAt) return false;
+    if (Date.now() - rejectedAt > maxAgeMs) {
+      this.remoteAuthRejectedAt.delete(sessionId);
+      return false;
+    }
+    return true;
   }
 
   getLastDispatchActivity(sessionId, session = null) {
@@ -1322,15 +1347,20 @@ class SessionManager {
       authStrategy: new RemoteAuth({
         clientId: sessionId,
         store: this.pgStore,
-        backupSyncIntervalMs: 60 * 1000 // Salva frequentemente para proteger novos scans contra deploy/restart
+        // 10 min: zipar o perfil (50-200MB) a cada 60s saturava a CPU da instancia
+        // e o PostgresStore descartava quase todos os saves mesmo assim (throttle).
+        // Os saves criticos (primeiro scan, forceNextSave) continuam imediatos.
+        backupSyncIntervalMs: 10 * 60 * 1000
       }),
       markOnlineAvailable: false,
       syncFullHistory: false,
       disableAutoSeen: true,
-      webVersionCache: {
-        type: 'local',
-        strict: false
-      }
+      // Versao do WhatsApp Web: pinar via env WA_WEB_VERSION_URL (html do repo
+      // wppconnect-team/wa-version) evita que uma atualizacao do WhatsApp quebre
+      // a reativacao das sessoes salvas. Sem a env, mantem cache local.
+      webVersionCache: process.env.WA_WEB_VERSION_URL
+        ? { type: 'remote', remotePath: process.env.WA_WEB_VERSION_URL, strict: true }
+        : { type: 'local', strict: false }
     };
 
     return new Client(clientConfig);
@@ -1443,6 +1473,11 @@ class SessionManager {
       let hadSavedAuth = false;
       try {
         hadSavedAuth = await this.hasSavedRemoteAuth(sessionData.id);
+        if (hadSavedAuth) {
+          // Registra a rejeicao: as proximas ativacoes vao direto para o QR em
+          // vez de tentar reidratar o mesmo blob rejeitado em loop.
+          this.markRemoteAuthRejected(sessionData.id);
+        }
         if (hadSavedAuth && !sessionData.allowQrFallback) {
           this.logRecentError(
             sessionData.id,
@@ -1532,6 +1567,7 @@ class SessionManager {
       sessionData.connectedAt = Date.now();
       this.sessionLastActivity.set(sessionData.id, Date.now());
       this.reconnectAttempts.delete(sessionData.id);
+      this.clearRemoteAuthRejected(sessionData.id);
       if (sessionData.authReadyWatchdogTimer) {
         clearTimeout(sessionData.authReadyWatchdogTimer);
         sessionData.authReadyWatchdogTimer = null;
@@ -2268,6 +2304,11 @@ class SessionManager {
 
     if (!hasAuth) {
       console.log(`❌ [${sessionId}] Sem RemoteAuth salvo — QR necessário`);
+      return null;
+    }
+
+    if (this.wasRemoteAuthRecentlyRejected(sessionId)) {
+      console.log(`⛔ [${sessionId}] RemoteAuth foi rejeitado pelo WhatsApp Web ha pouco tempo — sem nova reativacao automatica; QR necessario`);
       return null;
     }
 
