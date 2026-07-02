@@ -116,6 +116,14 @@ function claimWhatsAppSend(sessionId, to, message, mediaUrl = null) {
   return { duplicate: false, key };
 }
 
+function releaseWhatsAppSendClaim(sessionId, to, message, mediaUrl = null) {
+  const { key } = getWhatsAppSendKey(sessionId, to, message, mediaUrl);
+  recentWhatsAppSends.delete(key);
+  db.releaseWhatsAppSendLock(key).catch(error => {
+    console.warn(`Falha ao liberar trava global de envio (${sessionId}): ${error.message}`);
+  });
+}
+
 async function claimWhatsAppSendGlobal(sessionId, to, message, mediaUrl = null) {
   const localClaim = claimWhatsAppSend(sessionId, to, message, mediaUrl);
   if (localClaim.duplicate) return localClaim;
@@ -161,8 +169,12 @@ function isQrRequiredDbStatus(status) {
   return QR_REQUIRED_DB_STATUSES.has(status);
 }
 
-function isSavedAuthTrusted(hasRemoteAuth, status, forceQr = false) {
-  return !!hasRemoteAuth && !forceQr;
+function isSavedAuthTrusted(hasRemoteAuth, status, forceQr = false, sessionId = null) {
+  if (!hasRemoteAuth || forceQr) return false;
+  // Blob rejeitado pelo WhatsApp Web ha pouco: reativar de novo so repete o
+  // loop destruir/recriar Chromium. Vai direto para o QR (sem apagar memoria).
+  if (sessionId && sessionManager.wasRemoteAuthRecentlyRejected(sessionId)) return false;
+  return true;
 }
 
 function getRequestWaitMs(value, defaultMs = 30000) {
@@ -314,6 +326,11 @@ async function beginSessionActivation(sessionId, targetUserId, hasRemoteAuth, ca
 }
 
 async function waitWithSavedAuthQrFallback(sessionId, targetUserId, hasRemoteAuth, canTrustSavedAuth, waitMs, context) {
+  // Rejeicao recente do RemoteAuth: nao ha o que esperar da reidratacao — o
+  // caminho ja e o QR. Evita o ciclo espera 15s -> destruir -> recriar.
+  if (canTrustSavedAuth && sessionManager.wasRemoteAuthRecentlyRejected(sessionId)) {
+    canTrustSavedAuth = false;
+  }
   const totalWaitMs = getRequestWaitMs(waitMs, 30000);
   const firstWaitMs = canTrustSavedAuth && hasRemoteAuth
     ? Math.min(totalWaitMs, SAVED_AUTH_AUTO_QR_FALLBACK_MS)
@@ -357,7 +374,7 @@ async function ensureQrOrSessionProgress(sessionId, userId, dbSession, waitMs = 
   }
 
   const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-  const trustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession?.status, forceQr);
+  const trustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession?.status, forceQr, sessionId);
   const targetStatus = trustSavedAuth ? 'authenticated' : 'initializing';
 
   if (dbSession) {
@@ -611,11 +628,29 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
     });
   }
 
-  const result = await withGlobalWhatsAppSendLimit(
-    () => sessionManager.sendMessage(sessionId, to, message, mediaUrl),
-    { sessionId, to }
-  );
+  let result;
+  try {
+    result = await withGlobalWhatsAppSendLimit(
+      () => sessionManager.sendMessage(sessionId, to, message, mediaUrl),
+      { sessionId, to }
+    );
+  } catch (sendError) {
+    // Erro de sessao ANTES de criar a mensagem no WhatsApp Web: libera a trava
+    // de dedupe para a retentativa nao ser suprimida como "duplicada" por 15min.
+    // Timeouts sao ambiguos (mensagem pode ter sido criada) — trava mantida.
+    const msg = String(sendError?.message || '').toLowerCase();
+    if (!msg.includes('timeout')) {
+      releaseWhatsAppSendClaim(sessionId, to, message, mediaUrl);
+    }
+    throw sendError;
+  }
   const isPending = !!result?.unconfirmed || result?.status === 'pending';
+  // Envio nao confirmado E mensagem NAO criada no WhatsApp Web (sem messageId):
+  // libera a trava para permitir retry real. Com messageId a mensagem existe —
+  // manter a trava evita duplicar no destinatario.
+  if ((result?.skipped || isPending) && !result?.messageId && !result?.id) {
+    releaseWhatsAppSendClaim(sessionId, to, message, mediaUrl);
+  }
   const finalStatus = result?.skipped ? 'invalid_number' : (isPending ? 'pending' : 'sent');
   return res.status(result?.skipped ? 422 : (isPending ? 409 : 200)).json({
     success: !result?.skipped && !isPending,
@@ -1573,7 +1608,7 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       });
     }
 
-    const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession?.status, forceQr);
+    const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession?.status, forceQr, targetSessionId);
 
     if (!dbSession) {
       await db.createSession(targetSessionId, targetUserId);
@@ -1723,7 +1758,7 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
     }
 
     const targetUserId = dbSession.user_id || parseInt(sessionId.replace('user_', ''), 10);
-    const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession.status, forceQr);
+    const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession.status, forceQr, sessionId);
     const action = canTrustSavedAuth ? 'reactivate_saved_auth' : 'create_qr';
 
     await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'authenticated' : 'initializing');
