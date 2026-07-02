@@ -171,7 +171,7 @@ class SessionManager {
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
         if (!this.pgStore) {
-          this.pgStore = new PostgresStore({ pool: this.db.pool });
+          this.pgStore = new PostgresStore({ pool: this.db.pool, database: this.db });
         } else {
           this.pgStore.pool = this.db.pool;
         }
@@ -211,7 +211,7 @@ class SessionManager {
     // Usa o mesmo banco PostgreSQL que já funciona, sem MongoDB
     // ═══════════════════════════════════════════════════════════════
     try {
-      this.pgStore = new PostgresStore({ pool: this.db.pool });
+      this.pgStore = new PostgresStore({ pool: this.db.pool, database: this.db });
       await this.pgStore.init();
       this.useRemoteAuth = true;
       console.log('✅ PostgresStore conectado — sessões WhatsApp persistidas no Supabase!');

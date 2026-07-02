@@ -325,6 +325,92 @@ class DatabaseManager {
         ['admin@flow.com', hashedPassword, 'Administrador', 'Flow System']
       );
     }
+
+    await this.applySecurityAdvisorFixes();
+  }
+
+  async applySecurityAdvisorFixes() {
+    try {
+      await this.run(`
+        DO $$
+        DECLARE
+          table_name TEXT;
+          function_identity TEXT;
+          rls_tables TEXT[] := ARRAY[
+            'users',
+            'sessions',
+            'contacts',
+            'messages',
+            'auto_replies',
+            'scheduled_messages',
+            'meta_configs',
+            'prospecting_lead_status',
+            'whatsapp_send_locks',
+            'whatsapp_auth_sessions',
+            'whatsapp_auth_session_backups',
+            'whatsapp_accounts',
+            'message_templates',
+            'campaigns',
+            'client_webhooks'
+          ];
+          sensitive_tables TEXT[] := ARRAY[
+            'users',
+            'sessions',
+            'contacts',
+            'messages',
+            'meta_configs',
+            'whatsapp_send_locks',
+            'whatsapp_auth_sessions',
+            'whatsapp_auth_session_backups',
+            'whatsapp_accounts',
+            'message_templates',
+            'campaigns',
+            'client_webhooks'
+          ];
+        BEGIN
+          FOREACH table_name IN ARRAY rls_tables LOOP
+            IF to_regclass('public.' || table_name) IS NOT NULL THEN
+              EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', table_name);
+            END IF;
+          END LOOP;
+
+          FOR table_name IN
+            SELECT c.relname
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public'
+              AND c.relkind IN ('r', 'p')
+          LOOP
+            EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', table_name);
+          END LOOP;
+
+          FOREACH table_name IN ARRAY sensitive_tables LOOP
+            IF to_regclass('public.' || table_name) IS NOT NULL THEN
+              EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC', table_name);
+              IF to_regrole('anon') IS NOT NULL THEN
+                EXECUTE format('REVOKE ALL ON TABLE public.%I FROM anon', table_name);
+              END IF;
+              IF to_regrole('authenticated') IS NOT NULL THEN
+                EXECUTE format('REVOKE ALL ON TABLE public.%I FROM authenticated', table_name);
+              END IF;
+            END IF;
+          END LOOP;
+
+          FOR function_identity IN
+            SELECT p.oid::regprocedure::TEXT
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'public'
+              AND p.proname IN ('prospecting_hash', 'prospecting_normalize', 'delete_old_messages')
+          LOOP
+            EXECUTE format('ALTER FUNCTION %s SET search_path = public, pg_temp', function_identity);
+          END LOOP;
+        END $$;
+      `);
+      console.log('✅ Supabase Security Advisor: RLS/revokes/search_path verificados');
+    } catch (error) {
+      console.warn('⚠️ Não foi possível aplicar hardening do Security Advisor:', error.message);
+    }
   }
 
   async createUser(email, password, name, company = null) {

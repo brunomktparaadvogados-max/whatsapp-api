@@ -1034,6 +1034,92 @@ app.post('/api/admin/reset-whatsapp-sessions', authMiddleware, async (req, res) 
   }
 });
 
+async function getSecurityAdvisorStatus() {
+  const sensitiveTables = [
+    'users',
+    'sessions',
+    'contacts',
+    'messages',
+    'meta_configs',
+    'whatsapp_send_locks',
+    'whatsapp_auth_sessions',
+    'whatsapp_auth_session_backups',
+    'whatsapp_accounts',
+    'message_templates',
+    'campaigns',
+    'client_webhooks'
+  ];
+
+  const tables = await db.all(`
+    SELECT c.relname AS table_name, c.relrowsecurity AS rls_enabled
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p')
+    ORDER BY c.relname
+  `);
+  const disabledRls = tables.filter(table => !table.rls_enabled).map(table => table.table_name);
+
+  const exposedGrants = await db.all(`
+    SELECT table_name, grantee, privilege_type
+    FROM information_schema.table_privileges
+    WHERE table_schema = 'public'
+      AND table_name = ANY($1)
+      AND grantee IN ('PUBLIC', 'anon', 'authenticated')
+    ORDER BY table_name, grantee, privilege_type
+  `, [sensitiveTables]);
+
+  const functions = await db.all(`
+    SELECT p.oid::regprocedure::TEXT AS function_identity, p.proconfig
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.proname IN ('prospecting_hash', 'prospecting_normalize', 'delete_old_messages')
+    ORDER BY p.proname
+  `);
+  const mutableSearchPath = functions
+    .filter(fn => !Array.isArray(fn.proconfig) || !fn.proconfig.some(config => String(config).startsWith('search_path=')))
+    .map(fn => fn.function_identity);
+
+  return {
+    disabledRls,
+    exposedGrants,
+    mutableSearchPath,
+    checkedTables: tables.length,
+    checkedFunctions: functions.length,
+    secure: disabledRls.length === 0 && exposedGrants.length === 0 && mutableSearchPath.length === 0
+  };
+}
+
+app.get('/api/admin/security-advisor-status', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = await db.getUserById(req.userId);
+    if (currentUser.email !== 'admin@flow.com') {
+      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
+    }
+
+    const status = await getSecurityAdvisorStatus();
+    res.json({ success: true, ...status });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/admin/apply-security-advisor-fixes', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = await db.getUserById(req.userId);
+    if (currentUser.email !== 'admin@flow.com') {
+      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
+    }
+
+    await db.applySecurityAdvisorFixes();
+    const status = await getSecurityAdvisorStatus();
+    res.json({ success: true, action: 'security_advisor_fixes_applied', ...status });
+  } catch (error) {
+    res.status(500).json({ success: false, action: 'security_advisor_fixes_error', error: error.message });
+  }
+});
+
 app.post('/api/admin/recover-auth-sessions', authMiddleware, async (req, res) => {
   try {
     const currentUser = await db.getUserById(req.userId);

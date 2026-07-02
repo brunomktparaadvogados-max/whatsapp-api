@@ -28,9 +28,10 @@ const MIN_AUTH_BLOB_BYTES = parseInt(process.env.MIN_REMOTE_AUTH_BLOB_BYTES) || 
  * extract() PODE lançar exceções (RemoteAuth trata o caso de sessão inexistente).
  */
 class PostgresStore {
-  constructor({ pool }) {
+  constructor({ pool, database = null }) {
     if (!pool) throw new Error('A valid pg Pool instance is required for PostgresStore.');
     this.pool = pool;
+    this.db = database;
     this._initialized = false;
     this._lastSaveTime = new Map();  // Throttle: evita saves muito frequentes
     this._savedSessions = new Set(); // Sessões que JÁ foram salvas pelo menos 1x (proteção contra perda)
@@ -119,6 +120,10 @@ class PostgresStore {
         CREATE INDEX IF NOT EXISTS idx_whatsapp_auth_backups_session_created
         ON whatsapp_auth_session_backups (session_id, created_at DESC)
       `);
+
+      if (typeof this.db?.applySecurityAdvisorFixes === 'function') {
+        await this.db.applySecurityAdvisorFixes();
+      }
       this._initialized = true;
 
       // Remove apenas historico redundante. O ZIP principal e o backup
