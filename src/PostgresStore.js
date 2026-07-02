@@ -37,7 +37,10 @@ class PostgresStore {
     this._forceSaveSessions = new Set(); // Proximo save deve ignorar throttle/HealthGuard
     this._freshAuthSessions = new Set(); // Sessao marcada para ignorar auth antigo e liberar QR fresco
     this._sessionAliases = new Map(); // RemoteAuth temporario -> RemoteAuth real
-    this._minSaveInterval = 30 * 60 * 1000; // Mínimo 30 minutos entre saves (reduz carga no Supabase durante disparos)
+    // 8 min: blob com 30+ min de defasagem era rejeitado pelo WhatsApp Web na
+    // reativacao ("RemoteAuth salvo existe, mas pediu QR"). Com o backup a cada
+    // 10 min, isso persiste no maximo 1 save por ciclo, sempre fresco.
+    this._minSaveInterval = 8 * 60 * 1000;
     this._maxSaveBytes = 15 * 1024 * 1024;  // Máximo 15MB por sessão — blobs maiores são cache acumulado
     // O ZIP principal ja e a copia ativa. Backups completos duplicam dezenas
     // de MB no Supabase e podem impedir novos scans de serem persistidos.
