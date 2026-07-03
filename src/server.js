@@ -653,27 +653,28 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
     }
     throw sendError;
   }
-  const isPending = !!result?.unconfirmed || result?.status === 'pending';
+  const isConfirmed = result?.confirmed === true && !result?.unconfirmed && !result?.skipped;
+  const isPending = !isConfirmed;
   // Envio nao confirmado E mensagem NAO criada no WhatsApp Web (sem messageId):
   // libera a trava para permitir retry real. Com messageId a mensagem existe —
   // manter a trava evita duplicar no destinatario.
   if ((result?.skipped || isPending) && !result?.messageId && !result?.id) {
     releaseWhatsAppSendClaim(sessionId, to, message, mediaUrl);
   }
-  const finalStatus = result?.skipped ? 'invalid_number' : (isPending ? 'pending' : 'sent');
+  const finalStatus = result?.skipped ? 'invalid_number' : (isPending ? 'pending' : (result?.status || 'delivered'));
   return res.status(result?.skipped ? 422 : (isPending ? 409 : 200)).json({
-    success: !result?.skipped && !isPending,
+    success: isConfirmed,
     status: result?.status || finalStatus,
     finalStatus,
     shouldMarkLead: result?.skipped ? 'invalid' : (isPending ? 'pending' : 'sent'),
-    confirmed: !result?.skipped && !isPending,
+    confirmed: isConfirmed,
     invalidNumber: Boolean(result?.skipped || result?.status === 'invalid_number'),
     messageId: isPending ? null : (result?.messageId || result?.id || null),
     attemptId: result?.attemptId || null,
     skipped: !!result?.skipped,
     unconfirmed: !!result?.unconfirmed,
     sessionId,
-    message: result?.skipped ? 'Contato invalido ou nao resolvido pelo WhatsApp' : (isPending ? 'Envio nao confirmado pelo WhatsApp; manter pendente' : 'Mensagem enviada com sucesso'),
+    message: result?.skipped ? 'Contato invalido ou nao resolvido pelo WhatsApp' : (isPending ? 'Envio nao entregue pelo WhatsApp; manter pendente' : 'Mensagem entregue pelo WhatsApp'),
     data: result
   });
 }
@@ -2270,13 +2271,14 @@ app.post('/api/sessions/:sessionId/messages/media', authMiddleware, async (req, 
       { sessionId, to, media: true }
     );
     if (!res.headersSent) {
-      const isPending = !!result?.unconfirmed || result?.status === 'pending';
+      const isConfirmed = result?.confirmed === true && !result?.unconfirmed;
+      const isPending = !isConfirmed;
       res.status(isPending ? 409 : 200).json({
-        success: !isPending,
-        status: result?.status || (isPending ? 'pending' : 'sent'),
-        finalStatus: isPending ? 'pending' : 'sent',
+        success: isConfirmed,
+        status: result?.status || (isPending ? 'pending' : 'delivered'),
+        finalStatus: isPending ? 'pending' : (result?.status || 'delivered'),
         shouldMarkLead: isPending ? 'pending' : 'sent',
-        confirmed: !isPending,
+        confirmed: isConfirmed,
         invalidNumber: false,
         messageId: isPending ? null : (result?.messageId || result?.id || null),
         unconfirmed: isPending,
@@ -2740,8 +2742,8 @@ cron.schedule('*/5 * * * *', async () => {  // A cada 5 min (era a cada 1 min)
         );
       }
 
-      if (result?.unconfirmed || result?.status === 'pending') {
-        console.warn(`Mensagem agendada ${msg.id} ficou pendente sem ACK; nao marcando como sent.`);
+      if (result?.confirmed !== true || result?.unconfirmed || result?.status === 'pending') {
+        console.warn(`Mensagem agendada ${msg.id} ficou pendente sem ACK de entrega; nao marcando como sent.`);
         continue;
       }
 

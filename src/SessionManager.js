@@ -38,11 +38,9 @@ const SESSION_INIT_TIMEOUT_MS = 240000;           // 4 minutos para Chromium ini
 const MESSAGE_SEND_TIMEOUT_MS = 30000;            // 30 segundos timeout por mensagem (reduzido de 60s para feedback rápido)
 const MESSAGE_ACK_TIMEOUT_MS = parseInt(process.env.MESSAGE_ACK_TIMEOUT_MS) || 30000;
 const RAW_MESSAGE_CONFIRM_ACK = parseInt(process.env.MESSAGE_CONFIRM_ACK, 10);
-// ACK 1 = servidor do WhatsApp aceitou a mensagem (um tique cinza) — criterio
-// padrao de "enviado" de qualquer cliente WhatsApp. Exigir ACK 2 (entregue no
-// aparelho) fazia destinatario offline virar "pending" eterno, alimentando o
-// ciclo retry -> dedupe -> falso enviado. Endureca via env MESSAGE_CONFIRM_ACK=2.
-const MESSAGE_CONFIRM_ACK = Math.max(1, RAW_MESSAGE_CONFIRM_ACK || 1);
+// ACK 2 = entregue ao WhatsApp do destinatario. ACK 1 so confirma que o servidor
+// aceitou a mensagem; nao pode marcar lead como enviado/entregue.
+const MESSAGE_CONFIRM_ACK = Math.max(2, RAW_MESSAGE_CONFIRM_ACK || 2);
 const RECENT_ACTIVITY_PRESERVE_MS = Math.max(
   5 * 60 * 1000,
   parseInt(process.env.RECENT_ACTIVITY_PRESERVE_MS ?? String(10 * 60 * 1000), 10) || 0
@@ -2437,7 +2435,7 @@ class SessionManager {
     const statusMap = {
       [-1]: 'failed',
       0: 'pending',
-      1: 'sent',
+      1: 'accepted',
       2: 'delivered',
       3: 'read',
       4: 'played'
@@ -2705,7 +2703,7 @@ class SessionManager {
           mediaMimetype: null,
           fromMe: true,
           timestamp: sentMessage.timestamp,
-          status: 'sent'
+          status: ackResult.status
         };
 
         await this.cachedUpsertContact(sessionId, normalizedPhone);
@@ -3164,7 +3162,7 @@ class SessionManager {
       success: ackResult.confirmed,
       confirmed: ackResult.confirmed,
       unconfirmed: !ackResult.confirmed,
-      status: ackResult.confirmed ? 'sent' : 'pending',
+      status: ackResult.confirmed ? ackResult.status : 'pending',
       ack: ackResult.ack,
       ackStatus: ackResult.status,
       messageId,
