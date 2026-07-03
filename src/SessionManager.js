@@ -53,6 +53,10 @@ const AUTHENTICATED_READY_TIMEOUT_MS = parseInt(process.env.AUTHENTICATED_READY_
 const STARTUP_RESTORE_LIMIT = parseInt(process.env.STARTUP_RESTORE_LIMIT || '0', 10);
 const SESSION_INIT_MAX_ATTEMPTS = parseInt(process.env.SESSION_INIT_MAX_ATTEMPTS) || 4;
 const QR_INIT_MAX_ATTEMPTS = Math.max(1, parseInt(process.env.QR_INIT_MAX_ATTEMPTS || '2', 10) || 2);
+const QR_INIT_TIMEOUT_MS = Math.max(
+  30000,
+  Math.min(parseInt(process.env.QR_INIT_TIMEOUT_MS || '60000', 10) || 60000, SESSION_INIT_TIMEOUT_MS)
+);
 const SESSION_INIT_RETRY_DELAY_MS = parseInt(process.env.SESSION_INIT_RETRY_DELAY_MS) || 5000;
 const SESSION_INIT_CONCURRENCY = parseInt(process.env.SESSION_INIT_CONCURRENCY) || 1;
 // 3s: com concorrencia 1, 15s de stagger somava minutos de espera extra na fila
@@ -1071,13 +1075,14 @@ class SessionManager {
 
   async _initializeClientInBackground(client, sessionData, attempt = 1) {
     const maxAttemptsForSession = sessionData.forceQrFallback === true ? QR_INIT_MAX_ATTEMPTS : SESSION_INIT_MAX_ATTEMPTS;
+    const initTimeoutMs = sessionData.forceQrFallback === true ? QR_INIT_TIMEOUT_MS : SESSION_INIT_TIMEOUT_MS;
     try {
       console.log(`🚀 Inicializando cliente ${sessionData.id} em background... tentativa ${attempt}/${maxAttemptsForSession}`);
-      console.log(`⏱️ Timeout configurado: ${SESSION_INIT_TIMEOUT_MS / 1000} segundos`);
+      console.log(`⏱️ Timeout configurado: ${initTimeoutMs / 1000} segundos`);
 
       const initPromise = client.initialize();
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`Timeout: Chromium não inicializou em ${SESSION_INIT_TIMEOUT_MS / 1000} segundos`)), SESSION_INIT_TIMEOUT_MS)
+        setTimeout(() => reject(new Error(`Timeout: Chromium não inicializou em ${initTimeoutMs / 1000} segundos`)), initTimeoutMs)
       );
 
       await Promise.race([initPromise, timeoutPromise]);

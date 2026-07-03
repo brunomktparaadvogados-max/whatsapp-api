@@ -187,6 +187,10 @@ function getRequestWaitMs(value, defaultMs = 30000) {
   return Math.max(0, Math.min(parseInt(value || defaultMs, 10), 60000));
 }
 
+function wantsImmediateSessionActivation(req) {
+  return req.query?.activate === 'true' || req.query?.autoActivate === 'true';
+}
+
 function hasUserVisibleSessionProgress(status) {
   return ['connected', 'qr_code', 'failed', 'auth_failure'].includes(status);
 }
@@ -2015,7 +2019,56 @@ app.get('/api/sessions/:sessionId', authMiddleware, async (req, res) => {
     }
 
     await normalizeLiveSessionForRequest(sessionId, dbSession, 'session_view');
-    const sessionView = await getSessionView(sessionId);
+    let sessionView = await getSessionView(sessionId);
+
+    if (wantsImmediateSessionActivation(req) && sessionView && !sessionView.canSend) {
+      const targetUserId = dbSession.user_id || parseInt(sessionId.replace('user_', ''), 10);
+      const shouldStart = sessionView.status === 'saved_auth' ||
+        sessionView.recoverable ||
+        ['disconnected', 'failed', 'auth_failure', 'qr_code'].includes(sessionView.dbStatus || sessionView.status);
+
+      if (shouldStart) {
+        const forceQr = req.query?.forceQr === 'true' ||
+          shouldForceQrForDbStatus(sessionView.dbStatus || dbSession.status) ||
+          sessionView.hasRemoteAuth === false;
+
+        try {
+          await ensureQrOrSessionProgress(
+            sessionId,
+            targetUserId,
+            dbSession,
+            req.query?.waitMs || 30000,
+            forceQr
+          );
+        } catch (activationError) {
+          console.warn(`[SESSION VIEW] Falha ao ativar ${sessionId} sob demanda: ${activationError.message}`);
+        }
+
+        sessionView = await getSessionView(sessionId, dbSession);
+      }
+
+      if (sessionView && sessionView.hasRemoteAuth && ['saved_auth', 'initializing', 'authenticated'].includes(sessionView.status)) {
+        try {
+          await waitWithSavedAuthQrFallback(
+            sessionId,
+            targetUserId,
+            true,
+            true,
+            req.query?.waitMs || 30000,
+            'SESSION_VIEW_ACTIVATE'
+          );
+        } catch (fallbackError) {
+          console.warn(`[SESSION VIEW] Falha no fallback automatico de ${sessionId}: ${fallbackError.message}`);
+        }
+
+        sessionView = await getSessionView(sessionId);
+      }
+
+      if (sessionView?.status === 'saved_auth') {
+        sessionView.status = 'initializing';
+        sessionView.reactivationStarted = true;
+      }
+    }
 
     res.json({
       success: true,

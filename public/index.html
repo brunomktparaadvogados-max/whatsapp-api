@@ -850,7 +850,7 @@
                 'initializing': '🔄 Inicializando...',
                 'qr_code': '📱 Aguardando QR Code',
                 'qr_required': '📱 Aguardando QR Code',
-                'saved_auth': '💾 Sessão salva; reconectar sob demanda',
+                'saved_auth': '🔄 Sessão salva; reativando automaticamente',
                 'authenticated': '🔄 Autenticado, conectando...',
                 'connected': '✅ Conectado',
                 'disconnected': '🔴 Desconectado',
@@ -1378,6 +1378,9 @@
             const contentDiv = document.getElementById(`session-content-${userId}`);
             const status = session?.status || 'not_created';
             const qrCode = session?.qrCode || session?.qr_code || null;
+            if (status !== 'saved_auth') {
+                window[`autoReactivate_${userId}`] = false;
+            }
 
             if (status === 'qr_code' || status === 'initializing' || status === 'authenticated') {
                 if (qrCode || status === 'qr_code') {
@@ -1420,17 +1423,17 @@
             }
 
             if (status === 'saved_auth') {
-                clearUserSessionRefresh(userId);
+                const autoKey = `autoReactivate_${userId}`;
                 contentDiv.innerHTML = `
                     <p><strong>Status:</strong> ${getStatusText(status)}</p>
-                    <p>Sessao salva encontrada. Clique para tentar recuperar sem QR Code.</p>
-                    <button onclick="createUserSession(${userId})" style="margin-top: 10px;">
-                        Reativar sessao salva
-                    </button>
-                    <button onclick="createUserSession(${userId}, true)" style="margin-top: 10px; margin-left: 10px;">
-                        Forcar novo QR
-                    </button>
+                    <p>Recuperando a sessao agora. Se nao conectar rapidamente, o QR Code sera liberado automaticamente.</p>
+                    <div class="loading">Reativando...</div>
                 `;
+                if (!window[autoKey]) {
+                    window[autoKey] = true;
+                    setTimeout(() => createUserSession(userId), 200);
+                }
+                scheduleUserSessionRefresh(userId, 3000);
                 return;
             }
 
@@ -1457,7 +1460,7 @@
 
             try {
                 const sessionId = `user_${userId}`;
-                const response = await fetch(`${API_URL}/api/sessions/${sessionId}`, {
+                const response = await fetch(`${API_URL}/api/sessions/${sessionId}?activate=true&waitMs=30000`, {
                     headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` }
                 });
 
@@ -1473,7 +1476,7 @@
                 renderUserSessionPanel(userId, sessionId, session);
                 if (['saved_auth', 'disconnected', 'failed', 'auth_failure'].includes(session?.status)) {
                     const needsQr = session.status === 'auth_failure' || session.hasRemoteAuth === false;
-                    setTimeout(() => createUserSession(userId, needsQr), 300);
+                    setTimeout(() => createUserSession(userId, needsQr), 200);
                 }
             } catch (error) {
                 contentDiv.innerHTML = `<p>❌ Erro: ${error.message}</p>`;
@@ -1523,6 +1526,10 @@
                         recoverable: data.recoverable
                     };
                     renderUserSessionPanel(userId, sessionId, session);
+                    if (session.status === 'saved_auth' && !forceQr) {
+                        setTimeout(() => createUserSession(userId, true), 500);
+                        return;
+                    }
                     if (['initializing', 'authenticated', 'saved_auth'].includes(session.status)) {
                         scheduleUserSessionRefresh(userId, 3000);
                     }
@@ -1566,7 +1573,7 @@
             }
 
             const sessionId = `user_${userId}`;
-            const response = await fetch(`${API_URL}/api/sessions/${sessionId}`, {
+            const response = await fetch(`${API_URL}/api/sessions/${sessionId}?activate=true&waitMs=30000`, {
                 headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` }
             });
 
