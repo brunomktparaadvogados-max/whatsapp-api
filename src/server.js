@@ -71,8 +71,8 @@ const GLOBAL_SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_GLOBAL_SEND_TIMEOUT
 const SEND_RECONNECT_WAIT_MS = parseInt(process.env.WHATSAPP_SEND_RECONNECT_WAIT_MS) || 240000;
 const SESSION_CREATE_STALE_MS = parseInt(process.env.WHATSAPP_SESSION_CREATE_STALE_MS) || 180000;
 const SAVED_AUTH_AUTO_QR_FALLBACK_MS = Math.max(
-  5000,
-  parseInt(process.env.SAVED_AUTH_AUTO_QR_FALLBACK_MS || '15000', 10)
+  3000,
+  Math.min(parseInt(process.env.SAVED_AUTH_AUTO_QR_FALLBACK_MS || '5000', 10) || 5000, 10000)
 );
 let activeGlobalSends = 0;
 const globalSendQueue = [];

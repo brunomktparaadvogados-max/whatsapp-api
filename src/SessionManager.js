@@ -15,7 +15,7 @@ const path = require('path');
 // ═══════════════════════════════════════════════════════════════════
 const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 5; // Mantem poucos Chromiums vivos no Koyeb nano
 const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 1400;                         // Alinhado ao HealthGuard; 650MB derrubava sessoes com poucos Chromiums
-const QR_CODE_TIMEOUT_MS = parseInt(process.env.QR_CODE_TIMEOUT_MS) || 30 * 60 * 1000; // 30 minutos para expirar QR com RemoteAuth salvo
+const QR_CODE_TIMEOUT_MS = parseInt(process.env.QR_CODE_TIMEOUT_MS) || 30 * 60 * 1000; // janela de reutilizacao do mesmo QR na UI
 const QR_ACTIVE_KEEPALIVE_MS = Math.max(
   2 * 60 * 1000,
   parseInt(process.env.QR_ACTIVE_KEEPALIVE_MS ?? String(10 * 60 * 1000), 10) || 0
@@ -3241,7 +3241,7 @@ class SessionManager {
   // ═══════════════════════════════════════════════════════════════════
   startAutoCleanup() {
     console.log(`🔄 Auto-limpeza inteligente iniciada (verifica a cada ${CLEANUP_INTERVAL_MS / 1000}s)`);
-    console.log(`   - QR Code timeout: ${QR_CODE_TIMEOUT_MS / 1000}s`);
+    console.log(`   - QR pendente: sem hibernar por idade; limite por slots ativos`);
     console.log(`   - Idle disconnect: ${IDLE_DISCONNECT_MS > 0 ? `${IDLE_DISCONNECT_MS / 1000}s` : 'desabilitado'}`);
 
     setInterval(async () => {
@@ -3272,24 +3272,15 @@ class SessionManager {
           continue;
         }
 
-        // QR sem RemoteAuth precisa ficar vivo para o usuario escanear.
-        // A protecao de carga acontece por limite de QRs ativos, nao por timeout simples.
+        // QR pendente precisa ficar vivo para o usuario escanear. O WhatsApp Web
+        // renova o QR via eventos; encerrar por idade causa loop de "Gerando QR".
+        // A protecao de carga acontece por limite de QRs ativos, nao por timeout.
         if (sess.status === 'qr_code') {
           const qrTs = this.qrGeneratedAt.get(sid) || sess.qrGeneratedAt || lastTs;
           const qrAgeMs = now - qrTs;
 
-          if (qrAgeMs > QR_ACTIVE_KEEPALIVE_MS) {
-            toDestroy.push({ sid, reason: `QR ocioso (${Math.round(qrAgeMs / 1000)}s)` });
-            continue;
-          }
-
           if (this.isQrWithoutSavedAuth(sess)) {
             noAuthQrSessions.push({ sid, qrTs, qrAgeMs });
-            continue;
-          }
-
-          if (qrAgeMs > QR_CODE_TIMEOUT_MS) {
-            toDestroy.push({ sid, reason: `QR expirado (${Math.round(qrAgeMs / 1000)}s)` });
           }
           continue;
         }
