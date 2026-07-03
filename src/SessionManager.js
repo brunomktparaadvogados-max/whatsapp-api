@@ -52,6 +52,7 @@ const AUTO_RECONNECT_TIMEOUT_MS = 420000;         // 7 min máx para auto-recone
 const AUTHENTICATED_READY_TIMEOUT_MS = parseInt(process.env.AUTHENTICATED_READY_TIMEOUT_MS) || 360000;
 const STARTUP_RESTORE_LIMIT = parseInt(process.env.STARTUP_RESTORE_LIMIT || '0', 10);
 const SESSION_INIT_MAX_ATTEMPTS = parseInt(process.env.SESSION_INIT_MAX_ATTEMPTS) || 4;
+const QR_INIT_MAX_ATTEMPTS = Math.max(1, parseInt(process.env.QR_INIT_MAX_ATTEMPTS || '2', 10) || 2);
 const SESSION_INIT_RETRY_DELAY_MS = parseInt(process.env.SESSION_INIT_RETRY_DELAY_MS) || 5000;
 const SESSION_INIT_CONCURRENCY = parseInt(process.env.SESSION_INIT_CONCURRENCY) || 1;
 // 3s: com concorrencia 1, 15s de stagger somava minutos de espera extra na fila
@@ -1069,8 +1070,9 @@ class SessionManager {
   }
 
   async _initializeClientInBackground(client, sessionData, attempt = 1) {
+    const maxAttemptsForSession = sessionData.forceQrFallback === true ? QR_INIT_MAX_ATTEMPTS : SESSION_INIT_MAX_ATTEMPTS;
     try {
-      console.log(`🚀 Inicializando cliente ${sessionData.id} em background... tentativa ${attempt}/${SESSION_INIT_MAX_ATTEMPTS}`);
+      console.log(`🚀 Inicializando cliente ${sessionData.id} em background... tentativa ${attempt}/${maxAttemptsForSession}`);
       console.log(`⏱️ Timeout configurado: ${SESSION_INIT_TIMEOUT_MS / 1000} segundos`);
 
       const initPromise = client.initialize();
@@ -1085,8 +1087,8 @@ class SessionManager {
       this.sessionInitFailures.delete(sessionData.id);
     } catch (error) {
       const errorMessage = this.getErrorMessage(error);
-      console.error(`❌ Erro ao inicializar cliente ${sessionData.id} (tentativa ${attempt}/${SESSION_INIT_MAX_ATTEMPTS}):`, errorMessage);
-      this.logRecentError(sessionData.id, new Error(`init attempt ${attempt}/${SESSION_INIT_MAX_ATTEMPTS}: ${errorMessage}`));
+      console.error(`❌ Erro ao inicializar cliente ${sessionData.id} (tentativa ${attempt}/${maxAttemptsForSession}):`, errorMessage);
+      this.logRecentError(sessionData.id, new Error(`init attempt ${attempt}/${maxAttemptsForSession}: ${errorMessage}`));
 
       // Timeout NÃO deleta RemoteAuth — é condição temporária (CPU sobrecarregada),
       // NÃO corrupção de dados. Deletar forçaria todos a escanear QR de novo.
@@ -1114,7 +1116,7 @@ class SessionManager {
         return;
       }
 
-      if (isTransientError && attempt < SESSION_INIT_MAX_ATTEMPTS && !savedAuthWasRejected) {
+      if (isTransientError && attempt < maxAttemptsForSession && !savedAuthWasRejected) {
         const retryMode = hasRemoteAuth ? 'sem perder RemoteAuth' : 'para liberar QR de nova sessão';
         console.warn(`[${sessionData.id}] Falha transiente do Chromium/WhatsApp Web. Recriando cliente ${retryMode}...`);
 
