@@ -28,7 +28,7 @@ const QR_NO_AUTH_MIN_KEEPALIVE_MS = Math.max(
 // Keep sessions alive only when explicitly requested. By default, idle Chromium
 // processes hibernate while RemoteAuth stays preserved in PostgreSQL.
 const KEEP_SESSIONS_ALIVE = process.env.KEEP_SESSIONS_ALIVE === 'true';
-const DEFAULT_IDLE_DISCONNECT_MS = 60 * 60 * 1000;
+const DEFAULT_IDLE_DISCONNECT_MS = 3 * 60 * 60 * 1000;
 const IDLE_DISCONNECT_MS = KEEP_SESSIONS_ALIVE
   ? 0
   : Math.max(DEFAULT_IDLE_DISCONNECT_MS, parseInt(process.env.IDLE_DISCONNECT_MS ?? String(DEFAULT_IDLE_DISCONNECT_MS), 10) || 0);
@@ -554,7 +554,7 @@ class SessionManager {
   }
 
   // Encontra e desconecta a sessão connected mais ociosa (exceto excludeId)
-  async evictOldestIdleSession(excludeId = null) {
+  async evictOldestIdleSession(excludeId = null, minAgeMs = EVICT_IDLE_AFTER_MS) {
     let oldestId = null;
     let oldestTime = Infinity;
 
@@ -564,7 +564,7 @@ class SessionManager {
       if (sess.status !== 'connected' && sess.status !== 'authenticated') continue;
       if (this.shouldPreserveLiveSession(sid)) continue;
       const lastTs = this.getLastDispatchActivity(sid, sess);
-      if ((Date.now() - lastTs) < EVICT_IDLE_AFTER_MS) continue;
+      if ((Date.now() - lastTs) < minAgeMs) continue;
 
       if (lastTs < oldestTime) {
         oldestTime = lastTs;
@@ -578,6 +578,58 @@ class SessionManager {
       return true;
     }
 
+    return false;
+  }
+
+  async evictOldestBootingSession(excludeId = null, minAgeMs = 30000) {
+    let oldestId = null;
+    let oldestTime = Infinity;
+    const now = Date.now();
+
+    for (const [sid, sess] of this.sessions.entries()) {
+      if (sid === excludeId) continue;
+      if (!sess || !sess.client) continue;
+      if (!['initializing', 'authenticated', 'reconnecting'].includes(sess.status)) continue;
+      if (this.isSessionBusy(sid) && (now - (sess.lastSeen || sess.createdAt || now)) < minAgeMs) continue;
+
+      const lastTs = sess.lastSeen || sess.createdAt || now;
+      if ((now - lastTs) < minAgeMs) continue;
+      if (lastTs < oldestTime) {
+        oldestTime = lastTs;
+        oldestId = sid;
+      }
+    }
+
+    if (!oldestId) return false;
+
+    const sess = this.sessions.get(oldestId);
+    const hasRemoteAuth = await this.hasSavedRemoteAuth(oldestId);
+    const nextStatus = sess?.qrFromRejectedAuth ? 'auth_failure' : (hasRemoteAuth ? 'saved_auth' : 'disconnected');
+    console.log(`Sobrecarga: hibernando inicializacao mais antiga ${oldestId} (${Math.round((now - oldestTime) / 1000)}s) -> ${nextStatus}`);
+    await this.cleanupSession(oldestId);
+    await this.db.updateSessionStatus(oldestId, nextStatus);
+    return true;
+  }
+
+  async freeChromiumSlotFor(sessionId, reason = 'capacity') {
+    if (this.getActiveChromiumCount() < MAX_CONCURRENT_SESSIONS) return true;
+
+    await this.forceCleanupDeadSessions();
+    if (this.getActiveChromiumCount() < MAX_CONCURRENT_SESSIONS) return true;
+
+    await this.evictOldestBootingSession(sessionId, 30000);
+    if (this.getActiveChromiumCount() < MAX_CONCURRENT_SESSIONS) return true;
+
+    await this.evictOldestIdleSession(sessionId, 0);
+    if (this.getActiveChromiumCount() < MAX_CONCURRENT_SESSIONS) return true;
+
+    await this.evictOldestQrWithoutSavedAuth(sessionId, 0);
+    if (this.getActiveChromiumCount() < MAX_CONCURRENT_SESSIONS) return true;
+
+    await this.evictOldestQrSession(sessionId, 0);
+    if (this.getActiveChromiumCount() < MAX_CONCURRENT_SESSIONS) return true;
+
+    console.warn(`[${sessionId}] Nao foi possivel liberar slot de Chromium para ${reason}. Ativos: ${this.getActiveChromiumCount()}/${MAX_CONCURRENT_SESSIONS}`);
     return false;
   }
 
@@ -845,6 +897,10 @@ class SessionManager {
     const activeCount = this.getActiveChromiumCount();
     if (activeCount >= MAX_CONCURRENT_SESSIONS) {
       console.warn(`⚠️ Limite de ${MAX_CONCURRENT_SESSIONS} sessões Chromium atingido (${activeCount} ativas)`);
+      const slotFreed = await this.freeChromiumSlotFor(sessionId, 'new_session');
+      if (!slotFreed) {
+        throw new Error('Sistema em sobrecarga: nao foi possivel liberar um slot de WhatsApp agora. Tente novamente em instantes.');
+      }
 
       // Preserve connected sessions first; QR sessions can be regenerated on demand.
       await this.forceCleanupDeadSessions();
@@ -1973,7 +2029,8 @@ class SessionManager {
         const activeCount = this.getActiveChromiumCount();
         if (activeCount >= MAX_CONCURRENT_SESSIONS) {
           console.warn(`⚠️ [${sessionId}] Sem espaço para reconexão (${activeCount}/${MAX_CONCURRENT_SESSIONS})`);
-          await this.forceCleanupDeadSessions();
+          const slotFreed = await this.freeChromiumSlotFor(sessionId, 'scheduled_reconnect');
+          if (!slotFreed) return;
         }
 
         // 3. Cria um novo cliente WhatsApp
@@ -2353,6 +2410,11 @@ class SessionManager {
       let activeCount = this.getActiveChromiumCount();
       if (activeCount >= MAX_CONCURRENT_SESSIONS) {
         console.log(`⚠️ [${sessionId}] Limite atingido (${activeCount}/${MAX_CONCURRENT_SESSIONS}). Evicting sessão ociosa...`);
+        const slotFreed = await this.freeChromiumSlotFor(sessionId, 'auto_reconnect_for_send');
+        if (!slotFreed) {
+          console.error(`âŒ [${sessionId}] Sem espaÃ§o para reconexÃ£o`);
+          return null;
+        }
         await this.forceCleanupDeadSessions();
         activeCount = this.getActiveChromiumCount();
         if (activeCount >= MAX_CONCURRENT_SESSIONS) {
