@@ -264,7 +264,7 @@ async function normalizeLiveSessionForRequest(sessionId, dbSession = null, reaso
   if (dbSession) {
     const nextStatus = session.status === 'auth_failure'
       ? 'auth_failure'
-      : (hasRemoteAuth ? 'saved_auth' : 'disconnected');
+      : (shouldForceQrForDbStatus(dbSession.status) ? dbSession.status : (hasRemoteAuth ? 'saved_auth' : 'disconnected'));
     await db.updateSessionStatus(sessionId, nextStatus);
   }
 
@@ -1596,7 +1596,8 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
     
     if (!session) {
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-      const recoverable = dbSession && hasRemoteAuth && needsLiveSessionReconnect(dbSession.status);
+      const forceQrRequired = dbSession && shouldForceQrForDbStatus(dbSession.status);
+      const recoverable = dbSession && hasRemoteAuth && !forceQrRequired && needsLiveSessionReconnect(dbSession.status);
       const status = recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
       const reactivationStarted = recoverable
         ? kickSessionReconnect(sessionId, 'my_session_saved_auth')
@@ -1619,6 +1620,8 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
         dbStatus: dbSession?.status || null,
         message: recoverable
           ? 'Sessao salva no RemoteAuth. Reativacao automatica iniciada; acompanhe o status.'
+          : forceQrRequired
+          ? 'QR Code necessario. O QR sera liberado automaticamente para escanear.'
           : hasRemoteAuth
           ? 'Sessao salva no RemoteAuth. Clique em criar sessao para reidratar.'
           : 'Sessao ainda nao conectada. Clique em criar sessao para gerar QR.'
@@ -1708,8 +1711,8 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       targetUserId = req.userId;
     }
 
-    let forceQr = req.body?.forceQr === true;
     let dbSession = await db.getSession(targetSessionId);
+    let forceQr = req.body?.forceQr === true || shouldForceQrForDbStatus(dbSession?.status);
     const remoteAuthAvailable = !!(sessionManager.useRemoteAuth && sessionManager.pgStore);
     const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(targetSessionId);
     const recentInitFailure = hasRemoteAuth ? sessionManager.getRecentInitFailure(targetSessionId) : null;
@@ -1854,7 +1857,7 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
     }
 
     const remoteAuthAvailable = !!(sessionManager.useRemoteAuth && sessionManager.pgStore);
-    let forceQr = req.body?.forceQr === true;
+    let forceQr = req.body?.forceQr === true || shouldForceQrForDbStatus(dbSession.status);
     const existingSession = await normalizeLiveSessionForRequest(sessionId, dbSession, 'reactivate');
     const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
     const recentInitFailure = hasRemoteAuth ? sessionManager.getRecentInitFailure(sessionId) : null;

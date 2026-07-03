@@ -868,7 +868,7 @@
 
                 const user = JSON.parse(localStorage.getItem('user') || '{}');
                 const sessionId = `user_${user.id}`;
-                const forceQr = window._lastSessionStatus === 'auth_failure';
+                const forceQr = window._lastSessionStatus === 'auth_failure' || window._lastSessionStatus === 'qr_code';
                 let response = await fetch(`${API_URL}/api/sessions/${sessionId}/reactivate`, {
                     method: 'POST',
                     headers: {
