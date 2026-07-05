@@ -80,6 +80,10 @@ const SAVED_AUTH_AUTO_QR_FALLBACK_MS = Math.max(
   3000,
   Math.min(parseInt(process.env.SAVED_AUTH_AUTO_QR_FALLBACK_MS || '5000', 10) || 5000, 10000)
 );
+const REMOTE_AUTH_REJECTED_STALE_MS = Math.max(
+  3000,
+  Math.min(parseInt(process.env.REMOTE_AUTH_REJECTED_STALE_MS || '5000', 10) || 5000, 10000)
+);
 let activeGlobalSends = 0;
 const globalSendQueue = [];
 
@@ -245,7 +249,7 @@ function shouldReuseExistingSession(session) {
   const ageMs = Date.now() - (session.lastSeen || session.createdAt || 0);
   if (session.status === 'qr_code') return !!session.qrCode;
   if (session.status === 'authenticated' || session.status === 'initializing') {
-    if (sessionManager.wasRemoteAuthRecentlyRejected(session.id) && ageMs > 10000) {
+    if (sessionManager.wasRemoteAuthRecentlyRejected(session.id) && ageMs > REMOTE_AUTH_REJECTED_STALE_MS) {
       return false;
     }
     return ageMs <= SESSION_CREATE_STALE_MS;
@@ -263,7 +267,7 @@ function isStuckLiveSession(session) {
     return !session.qrCode && ageMs > 15000;
   }
   if (session.status === 'authenticated' || session.status === 'initializing') {
-    if (sessionManager.wasRemoteAuthRecentlyRejected(session.id) && ageMs > 10000) {
+    if (sessionManager.wasRemoteAuthRecentlyRejected(session.id) && ageMs > REMOTE_AUTH_REJECTED_STALE_MS) {
       return true;
     }
     return ageMs > SESSION_CREATE_STALE_MS;
