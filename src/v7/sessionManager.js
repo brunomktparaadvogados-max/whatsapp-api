@@ -275,6 +275,24 @@ class SessionManagerV7 {
     }
   }
 
+  // Força um QR NOVO agora: descarta a credencial atual e recria o socket.
+  // Usado pelo botão "Forçar QR Code" — quebra qualquer socket travado em
+  // 'initializing' e garante um QR limpo (re-pareamento).
+  async forceQr(sessionId, userId) {
+    this.log.warn(`[${sessionId}] forceQr — descartando credencial e gerando QR novo`);
+    await this._destroy(sessionId, /*deleteCreds*/ true);
+    await this.db.updateSessionStatus(sessionId, 'qr_required').catch(() => {});
+    return this.ensureSession(sessionId, userId);
+  }
+
+  // Reconecta a sessão SALVA (mantém credencial). Usado pelo botão
+  // "Reconectar sessão salva" e para destravar 'initializing' sem re-parear.
+  async reactivate(sessionId, userId) {
+    this.log.info(`[${sessionId}] reactivate — reconectando da credencial salva`);
+    await this._destroy(sessionId, /*deleteCreds*/ false);
+    return this.ensureSession(sessionId, userId);
+  }
+
   // Regenera o QR preservando o "relógio" de keep-alive (qrFirstAt).
   async _refreshQr(sessionId, userId) {
     const prev = this.sessions.get(sessionId);

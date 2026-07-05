@@ -191,6 +191,26 @@ app.delete('/api/sessions/:sessionId', authMiddleware, async (req, res) => {
   res.json({ success: true });
 });
 
+// Botão "Forçar QR Code": descarta credencial e gera QR novo AGORA (quebra
+// qualquer socket travado em 'initializing'). Idempotente e rápido.
+async function handleRequireQr(req, res) {
+  const sessionId = sessionIdForUser(req.userId);
+  await db.createSession(sessionId, req.userId).catch(() => {});
+  const st = await manager.forceQr(sessionId, req.userId).catch(() => manager.statusOf(sessionId));
+  res.json({ success: true, sessionId, status: st.status, qrCode: st.qrCode });
+}
+app.post('/api/sessions/:sessionId/require-qr', authMiddleware, handleRequireQr);
+app.post('/api/admin/require-qr/:sessionId', authMiddleware, handleRequireQr); // compat v6.
+
+// Botão "Reconectar sessão salva": reconecta da credencial (sem re-parear).
+// Também serve para destravar 'initializing'.
+app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res) => {
+  const sessionId = sessionIdForUser(req.userId);
+  await db.createSession(sessionId, req.userId).catch(() => {});
+  const st = await manager.reactivate(sessionId, req.userId).catch(() => manager.statusOf(sessionId));
+  res.json({ success: true, sessionId, status: st.status, qrCode: st.qrCode });
+});
+
 // ── Envio (síncrono, com delivery-guard) ────────────────────────────────────
 async function handleSend(req, res) {
   const sessionId = sessionIdForUser(req.userId);
