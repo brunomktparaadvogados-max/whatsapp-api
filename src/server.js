@@ -190,7 +190,12 @@ function isSavedAuthTrusted(hasRemoteAuth, status, forceQr = false, sessionId = 
 }
 
 function getRequestWaitMs(value, defaultMs = 30000) {
-  return Math.max(0, Math.min(parseInt(value || defaultMs, 10), 60000));
+  const rawValue = value === undefined || value === null || value === ''
+    ? defaultMs
+    : value;
+  const parsed = parseInt(rawValue, 10);
+  const waitMs = Number.isFinite(parsed) ? parsed : defaultMs;
+  return Math.max(0, Math.min(waitMs, 60000));
 }
 
 function wantsImmediateSessionActivation(req) {
@@ -240,6 +245,9 @@ function shouldReuseExistingSession(session) {
   const ageMs = Date.now() - (session.lastSeen || session.createdAt || 0);
   if (session.status === 'qr_code') return !!session.qrCode;
   if (session.status === 'authenticated' || session.status === 'initializing') {
+    if (sessionManager.wasRemoteAuthRecentlyRejected(session.id) && ageMs > 10000) {
+      return false;
+    }
     return ageMs <= SESSION_CREATE_STALE_MS;
   }
 
@@ -255,6 +263,9 @@ function isStuckLiveSession(session) {
     return !session.qrCode && ageMs > 15000;
   }
   if (session.status === 'authenticated' || session.status === 'initializing') {
+    if (sessionManager.wasRemoteAuthRecentlyRejected(session.id) && ageMs > 10000) {
+      return true;
+    }
     return ageMs > SESSION_CREATE_STALE_MS;
   }
 
@@ -1734,7 +1745,7 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
     let session = await normalizeLiveSessionForRequest(sessionId, dbSession, 'my_qr');
     
     if (!session) {
-      session = await ensureQrOrSessionProgress(sessionId, req.userId, dbSession, req.query.waitMs || 30000, req.query.forceQr === 'true');
+      session = await ensureQrOrSessionProgress(sessionId, req.userId, dbSession, req.query.waitMs ?? 30000, req.query.forceQr === 'true');
     }
 
     if (!session) {
@@ -1813,7 +1824,7 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       if (!forceQr && shouldReuseExistingSession(existingSession)) {
         const existingNeedsProgress = ['initializing', 'authenticated', 'reconnecting'].includes(existingSession.status);
         const fallbackResult = existingNeedsProgress && hasRemoteAuth
-          ? await waitWithSavedAuthQrFallback(targetSessionId, targetUserId, hasRemoteAuth, true, req.body?.waitMs || 30000, 'CREATE EXISTING')
+          ? await waitWithSavedAuthQrFallback(targetSessionId, targetUserId, hasRemoteAuth, true, req.body?.waitMs ?? 30000, 'CREATE EXISTING')
           : null;
         const shouldWaitForProgress = !fallbackResult && existingNeedsProgress;
         const progressedSession = fallbackResult?.progressedSession || (shouldWaitForProgress
@@ -1889,7 +1900,7 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       targetUserId,
       hasRemoteAuth,
       canTrustSavedAuth && !activationUsedQrFallback,
-      req.body?.waitMs || 30000,
+      req.body?.waitMs ?? 30000,
       'CREATE SESSION'
     );
     const { progressedSession, view, status } = progressResult;
@@ -1955,7 +1966,7 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
     if (existingSession && !forceQr && shouldReuseExistingSession(existingSession)) {
       const existingNeedsProgress = ['initializing', 'authenticated', 'reconnecting'].includes(existingSession.status);
       const fallbackResult = existingNeedsProgress && hasRemoteAuth
-        ? await waitWithSavedAuthQrFallback(sessionId, dbSession.user_id || parseInt(sessionId.replace('user_', ''), 10), hasRemoteAuth, true, req.body?.waitMs || 30000, 'REACTIVATE EXISTING')
+        ? await waitWithSavedAuthQrFallback(sessionId, dbSession.user_id || parseInt(sessionId.replace('user_', ''), 10), hasRemoteAuth, true, req.body?.waitMs ?? 30000, 'REACTIVATE EXISTING')
         : null;
       const shouldWaitForProgress = !fallbackResult && existingNeedsProgress;
       const progressedSession = fallbackResult?.progressedSession || (shouldWaitForProgress
@@ -2032,7 +2043,7 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
       targetUserId,
       hasRemoteAuth,
       canTrustSavedAuth && !activationUsedQrFallback,
-      req.body?.waitMs || 30000,
+      req.body?.waitMs ?? 30000,
       'REACTIVATE'
     );
     const { progressedSession, view, status } = progressResult;
@@ -2180,7 +2191,7 @@ app.get('/api/sessions/:sessionId/qr', authMiddleware, async (req, res) => {
     let session = await normalizeLiveSessionForRequest(sessionId, dbSession, 'session_qr');
 
     if (!session) {
-      session = await ensureQrOrSessionProgress(sessionId, dbSession.user_id, dbSession, req.query.waitMs || 30000, req.query.forceQr === 'true');
+      session = await ensureQrOrSessionProgress(sessionId, dbSession.user_id, dbSession, req.query.waitMs ?? 30000, req.query.forceQr === 'true');
     }
 
     if (!session) {

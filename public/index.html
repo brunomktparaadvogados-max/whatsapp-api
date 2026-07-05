@@ -875,7 +875,7 @@
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                     },
-                    body: JSON.stringify({ waitMs: 30000, forceQr })
+                    body: JSON.stringify({ waitMs: 5000, forceQr })
                 });
 
                 if (response.status === 404) {
@@ -885,7 +885,7 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                         },
-                        body: JSON.stringify({ waitMs: 30000, forceQr })
+                        body: JSON.stringify({ waitMs: 5000, forceQr })
                     });
                 }
 
@@ -1456,11 +1456,11 @@
             }
 
             sessionDiv.classList.add('active');
-            contentDiv.innerHTML = '<div class="loading">Carregando sessão...</div>';
+            renderUserSessionPanel(userId, `user_${userId}`, { id: `user_${userId}`, status: 'initializing' });
 
             try {
                 const sessionId = `user_${userId}`;
-                const response = await fetch(`${API_URL}/api/sessions/${sessionId}?activate=true&waitMs=30000`, {
+                const response = await fetch(`${API_URL}/api/sessions/${sessionId}?activate=true&waitMs=5000`, {
                     headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` }
                 });
 
@@ -1500,7 +1500,7 @@
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                     },
-                    body: JSON.stringify({ waitMs: 30000, forceQr })
+                    body: JSON.stringify({ waitMs: 5000, forceQr })
                 });
 
                 if (response.status === 404) {
@@ -1510,7 +1510,7 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                         },
-                        body: JSON.stringify({ sessionId, waitMs: 30000, forceQr })
+                        body: JSON.stringify({ sessionId, waitMs: 5000, forceQr })
                     });
                 }
 
@@ -1573,7 +1573,7 @@
             }
 
             const sessionId = `user_${userId}`;
-            const response = await fetch(`${API_URL}/api/sessions/${sessionId}?activate=true&waitMs=30000`, {
+            const response = await fetch(`${API_URL}/api/sessions/${sessionId}?activate=true&waitMs=5000`, {
                 headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` }
             });
 
