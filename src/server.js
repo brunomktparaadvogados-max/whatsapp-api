@@ -358,11 +358,11 @@ async function waitWithSavedAuthQrFallback(sessionId, targetUserId, hasRemoteAut
   let view = await getSessionView(sessionId);
   let status = progressedSession ? progressedSession.status : (view?.status || 'initializing');
 
-  if (!canTrustSavedAuth || !hasRemoteAuth || hasUserVisibleSessionProgress(status)) {
+  if (!canTrustSavedAuth || !hasRemoteAuth || status === 'connected' || status === 'qr_code') {
     return { progressedSession, view, status, usedQrFallback: false };
   }
 
-  console.warn(`[${context}] ${sessionId} nao recuperou RemoteAuth em ${firstWaitMs}ms; liberando QR automaticamente.`);
+  console.warn(`[${context}] ${sessionId} nao recuperou RemoteAuth em ${firstWaitMs}ms (status: ${status}); liberando QR automaticamente.`);
   const liveSession = sessionManager.getSession(sessionId);
   if (liveSession) {
     await sessionManager.cleanupSession(sessionId);
@@ -406,7 +406,15 @@ async function ensureQrOrSessionProgress(sessionId, userId, dbSession, waitMs = 
     forceQrFallback: hasRemoteAuth && !trustSavedAuth
   });
 
-  return await waitForSessionProgress(sessionId, waitMs);
+  const progress = await waitWithSavedAuthQrFallback(
+    sessionId,
+    userId,
+    hasRemoteAuth,
+    trustSavedAuth,
+    waitMs,
+    'ENSURE_QR_OR_PROGRESS'
+  );
+  return progress.progressedSession || sessionManager.getSession(sessionId) || progress.view;
 }
 
 async function requireQueryAdmin(req, res) {
@@ -3070,6 +3078,15 @@ setInterval(async () => {
           console.warn(`🧟 Sessão ${s.id} — "connected" mas Chromium morto (inativa ${Math.round((now - s.lastSeen) / 60000)}min)`);
           await sessionManager.cleanupSession(s.id);
           await db.updateSessionStatus(s.id, await sessionManager.hasSavedRemoteAuth(s.id) ? 'authenticated' : 'disconnected');
+
+          console.log(`[${s.id}] Chromium morto detectado; acionando reativacao com fallback automatico para QR...`);
+          kickSessionActivationWithQrFallback(s.id, s.userId, null, 'zombie_chromium_dead');
+          io.to(`user_${s.userId}`).emit('session_reconnecting', {
+            sessionId: s.id,
+            reason: 'CHROMIUM_DEAD',
+            action: 'reactivate_or_qr'
+          });
+          continue;
 
           // Tenta auto-reconexão antes de notificar desconexão
           console.log(`🔄 [${s.id}] Tentando auto-reconexão após detectar Chromium morto...`);
