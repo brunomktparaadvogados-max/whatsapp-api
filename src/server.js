@@ -49,7 +49,13 @@ setTimeout(() => {
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
-app.use(express.static('public'));
+app.use(express.static('public', {
+  etag: false,
+  maxAge: 0,
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  }
+}));
 
 // Timeout global de 180s para rotas da API — evita requests travados
 // (auto-reconexão pode levar até 90s + envio 60s + getState 15s = 165s)
@@ -268,7 +274,7 @@ async function normalizeLiveSessionForRequest(sessionId, dbSession = null, reaso
   if (dbSession) {
     const nextStatus = session.status === 'auth_failure'
       ? 'auth_failure'
-      : (shouldForceQrForDbStatus(dbSession.status) ? dbSession.status : (hasRemoteAuth ? 'saved_auth' : 'disconnected'));
+      : (shouldForceQrForDbStatus(dbSession.status) ? dbSession.status : (hasRemoteAuth ? 'auth_failure' : 'disconnected'));
     await db.updateSessionStatus(sessionId, nextStatus);
   }
 
@@ -295,7 +301,7 @@ async function getSessionView(sessionId, dbSession = null) {
   const recoverable = !liveSession && hasRemoteAuth && !forceQrRequired && needsLiveSessionReconnect(savedDbSession.status);
   const status = liveSession
     ? liveSession.status
-    : (recoverable ? 'saved_auth' : (forceQrRequired ? savedDbSession.status : normalizeStatusWithoutRemoteAuth(savedDbSession.status)));
+    : (recoverable ? 'initializing' : (forceQrRequired ? savedDbSession.status : normalizeStatusWithoutRemoteAuth(savedDbSession.status)));
 
   return {
     ...savedDbSession,
@@ -443,11 +449,14 @@ function kickSessionReconnect(sessionId, reason = 'send') {
     return false;
   }
 
-  sessionReconnectKickTimes.set(sessionId, now);
-  setImmediate(() => {
-    sessionManager.autoReconnectForSend(sessionId).catch(error => {
+  setImmediate(async () => {
+    try {
+      const dbSession = await db.getSession(sessionId);
+      if (!dbSession) return;
+      kickSessionActivationWithQrFallback(sessionId, dbSession.user_id, dbSession, reason);
+    } catch (error) {
       console.error(`Erro ao preparar/reconectar ${sessionId} (${reason}):`, error.message);
-    });
+    }
   });
   return true;
 }
@@ -582,7 +591,7 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
 
   if (dbSession && isQrRequiredDbStatus(dbSession.status)) {
     if (hasRemoteAuth && !shouldForceQrForDbStatus(dbSession.status)) {
-      kickSessionReconnect(sessionId, 'send_saved_auth_status');
+      kickSessionActivationWithQrFallback(sessionId, dbSession.user_id, dbSession, 'send_saved_auth_status');
       return respondSessionReconnecting(res, sessionId, to, 'Sessao salva encontrada; reconexao iniciada automaticamente');
     }
     if (dbSession) {
@@ -600,7 +609,7 @@ async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null)
   const readyForSend = await ensureSessionReadyForSend(sessionId);
   if (!readyForSend) {
     if (hasRemoteAuth) {
-      kickSessionReconnect(sessionId, 'send_saved_auth_not_ready');
+      kickSessionActivationWithQrFallback(sessionId, dbSession?.user_id, dbSession, 'send_saved_auth_not_ready');
       return respondSessionReconnecting(res, sessionId, to, 'Sessao hibernada; reconexao iniciada automaticamente');
     }
     if (dbSession) {
@@ -806,10 +815,10 @@ app.post('/api/auth/login', async (req, res) => {
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
       const forceQrRequired = dbSession && shouldForceQrForDbStatus(dbSession.status);
       sessionStatus = dbSession && hasRemoteAuth && !forceQrRequired && needsLiveSessionReconnect(dbSession.status)
-        ? 'saved_auth'
+        ? 'initializing'
         : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
-      if (sessionStatus === 'saved_auth') {
-        kickSessionReconnect(sessionId, 'login_saved_auth');
+      if (dbSession && hasRemoteAuth && !forceQrRequired && needsLiveSessionReconnect(dbSession.status)) {
+        kickSessionActivationWithQrFallback(sessionId, user.id, dbSession, 'login_saved_auth');
       } else if (dbSession && isQrRequiredDbStatus(dbSession.status)) {
         sessionStatus = 'initializing';
         setImmediate(() => {
@@ -831,7 +840,7 @@ app.post('/api/auth/login', async (req, res) => {
       },
       sessionId: sessionId,
       sessionStatus: sessionStatus,
-      reactivationStarted: sessionStatus === 'saved_auth'
+      reactivationStarted: sessionStatus === 'initializing' && !!dbSession
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -869,9 +878,9 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
         const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
         const forceQrRequired = shouldForceQrForDbStatus(dbSession.status);
         const recoverable = hasRemoteAuth && !forceQrRequired && needsLiveSessionReconnect(dbSession.status);
-        const status = recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(dbSession.status || 'disconnected');
+        const status = recoverable ? 'initializing' : normalizeStatusWithoutRemoteAuth(dbSession.status || 'disconnected');
         const reactivationStarted = recoverable
-          ? kickSessionReconnect(sessionId, 'auth_me_saved_auth')
+          ? kickSessionActivationWithQrFallback(sessionId, req.userId, dbSession, 'auth_me_saved_auth')
           : false;
         if (!recoverable && isQrRequiredDbStatus(dbSession.status)) {
           setImmediate(() => {
@@ -1096,6 +1105,51 @@ async function getSecurityAdvisorStatus() {
   };
 }
 
+function kickSessionActivationWithQrFallback(sessionId, userId, dbSession = null, reason = 'saved_auth') {
+  const liveSession = sessionManager.getSession(sessionId);
+  if (liveSession && ['connected', 'initializing', 'authenticated', 'qr_code'].includes(liveSession.status)) {
+    return false;
+  }
+
+  const now = Date.now();
+  const lastKick = sessionReconnectKickTimes.get(sessionId) || 0;
+  if (now - lastKick < SESSION_RECONNECT_KICK_COOLDOWN_MS) {
+    return false;
+  }
+
+  sessionReconnectKickTimes.set(sessionId, now);
+  setImmediate(async () => {
+    try {
+      const sessionRow = dbSession || await db.getSession(sessionId);
+      if (!sessionRow) return;
+      const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
+      const forceQr = shouldForceQrForDbStatus(sessionRow.status) || sessionManager.wasRemoteAuthRecentlyRejected(sessionId);
+      const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, sessionRow.status, forceQr, sessionId);
+
+      await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'authenticated' : 'initializing');
+      await beginSessionActivation(
+        sessionId,
+        userId || sessionRow.user_id || parseInt(sessionId.replace('user_', ''), 10),
+        hasRemoteAuth,
+        canTrustSavedAuth,
+        forceQr,
+        `KICK_${reason}`
+      );
+      await waitWithSavedAuthQrFallback(
+        sessionId,
+        userId || sessionRow.user_id || parseInt(sessionId.replace('user_', ''), 10),
+        hasRemoteAuth,
+        canTrustSavedAuth,
+        SAVED_AUTH_AUTO_QR_FALLBACK_MS + 10000,
+        `KICK_${reason}`
+      );
+    } catch (error) {
+      console.error(`Erro ao ativar ${sessionId} com fallback QR (${reason}):`, error.message);
+    }
+  });
+  return true;
+}
+
 app.get('/api/admin/security-advisor-status', authMiddleware, async (req, res) => {
   try {
     const currentUser = await db.getUserById(req.userId);
@@ -1194,15 +1248,24 @@ app.post('/api/admin/recover-auth-sessions', authMiddleware, async (req, res) =>
               summary.push({ sessionId: session.id, status: 'qr_required', skipped: true });
               continue;
             }
-            await db.updateSessionStatus(session.id, 'authenticated');
-            const recovered = await Promise.race([
-              sessionManager.autoReconnectForSend(session.id),
-              new Promise(resolve => setTimeout(() => resolve(null), perSessionTimeoutMs))
-            ]);
+            const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(session.id);
+            const forceQr = shouldForceQrForDbStatus(session.status) || sessionManager.wasRemoteAuthRecentlyRejected(session.id);
+            const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, session.status, forceQr, session.id);
+            await beginSessionActivation(session.id, session.user_id, hasRemoteAuth, canTrustSavedAuth, forceQr, 'ADMIN_RECOVER');
+            const recovery = await waitWithSavedAuthQrFallback(
+              session.id,
+              session.user_id,
+              hasRemoteAuth,
+              canTrustSavedAuth,
+              perSessionTimeoutMs,
+              'ADMIN_RECOVER'
+            );
+            const recovered = recovery.progressedSession || recovery.view;
             summary.push({
               sessionId: session.id,
-              status: recovered?.status || 'timeout',
-              connected: recovered?.status === 'connected'
+              status: recovery.status || recovered?.status || 'timeout',
+              connected: recovery.status === 'connected',
+              qrAvailable: recovery.status === 'qr_code'
             });
           } catch (error) {
             console.error(`[RECOVER] Falha ao restaurar ${session.id}: ${error.message}`);
@@ -1264,56 +1327,67 @@ app.get('/api/admin/reactivate-session/:sessionId', async (req, res) => {
 
     const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
     if (!hasRemoteAuth) {
-      return res.status(409).json({
-        success: false,
+      await beginSessionActivation(sessionId, dbSession.user_id, false, false, true, 'ADMIN_REACTIVATE_NO_AUTH_QR');
+      const progress = await waitWithSavedAuthQrFallback(
         sessionId,
-        action: 'qr_required',
-        status: liveSession?.status || dbSession.status,
+        dbSession.user_id,
+        false,
+        false,
+        waitMs,
+        'ADMIN_REACTIVATE_NO_AUTH_QR'
+      );
+      const view = progress.view || await getSessionView(sessionId);
+      return res.status(progress.status === 'qr_code' ? 200 : 202).json({
+        success: true,
+        sessionId,
+        action: 'create_qr',
+        status: progress.status || view?.status || 'initializing',
         dbStatus: dbSession.status,
         hasRemoteAuth: false,
-        message: 'Sessao sem RemoteAuth valido; precisa escanear QR Code.'
+        qrCode: view?.qrCode || null,
+        canSend: view?.canSend || false,
+        message: progress.status === 'qr_code'
+          ? 'QR Code disponivel para escanear.'
+          : 'Criacao de QR iniciada; acompanhe o status.',
+        session: view
       });
     }
 
     const retrySavedAuth = String(req.query.retrySavedAuth || '').toLowerCase() === 'true';
 
-    if (dbSession.status === 'auth_failure' && !retrySavedAuth) {
-      return res.status(409).json({
-        success: false,
-        sessionId,
-        action: 'qr_required',
-        status: 'auth_failure',
-        dbStatus: dbSession.status,
-        hasRemoteAuth: true,
-        message: 'O WhatsApp rejeitou a autenticacao salva. Use Criar Sessao para gerar um novo QR Code sem apagar o registro do usuario.'
-      });
-    }
-
     if (dbSession.status === 'auth_failure' && retrySavedAuth) {
-      console.log(`[ADMIN REACTIVATE] Reteste unico do RemoteAuth salvo para ${sessionId} apos auth_failure`);
+      console.log(`[ADMIN REACTIVATE] Reteste unico solicitado, mas auth_failure prioriza QR rapido para ${sessionId}`);
     }
 
-    console.log(`[ADMIN REACTIVATE] Reativando ${sessionId} via RemoteAuth (sem apagar auth)`);
-    await db.updateSessionStatus(sessionId, 'authenticated');
-    const reconnectPromise = sessionManager.autoReconnectForSend(sessionId);
-    const progressed = await Promise.race([
-      reconnectPromise,
-      new Promise(resolve => setTimeout(() => resolve(null), waitMs))
-    ]);
+    console.log(`[ADMIN REACTIVATE] Reativando ${sessionId} com fallback rapido para QR`);
+    const forceQr = shouldForceQrForDbStatus(dbSession.status) || sessionManager.wasRemoteAuthRecentlyRejected(sessionId);
+    const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession.status, forceQr, sessionId);
+    await beginSessionActivation(sessionId, dbSession.user_id, hasRemoteAuth, canTrustSavedAuth, forceQr, 'ADMIN_REACTIVATE');
+    const progress = await waitWithSavedAuthQrFallback(
+      sessionId,
+      dbSession.user_id,
+      hasRemoteAuth,
+      canTrustSavedAuth,
+      waitMs,
+      'ADMIN_REACTIVATE'
+    );
+    const progressed = progress.progressedSession || progress.view;
 
     const view = await getSessionView(sessionId);
-    const status = progressed?.status || view?.status || dbSession.status;
+    const status = progress.status || progressed?.status || view?.status || dbSession.status;
 
     res.status(status === 'connected' ? 200 : 202).json({
-      success: status === 'connected' || status === 'authenticated' || status === 'initializing' || status === 'saved_auth',
+      success: status === 'connected' || status === 'authenticated' || status === 'initializing' || status === 'qr_code',
       sessionId,
-      action: 'reactivate_saved_auth',
+      action: status === 'qr_code' ? 'auto_qr_fallback' : 'reactivate_or_qr',
       status,
       hasRemoteAuth: true,
       canSend: view?.canSend || false,
       message: status === 'connected'
         ? 'Sessao reativada e pronta para disparo.'
-        : 'Reativacao em andamento; acompanhe o status.',
+        : status === 'qr_code'
+          ? 'QR Code disponivel para escanear.'
+          : 'Reativacao em andamento; QR sera liberado automaticamente se a sessao salva nao ficar pronta.',
       session: view
     });
   } catch (error) {
@@ -1602,9 +1676,9 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
       const forceQrRequired = dbSession && shouldForceQrForDbStatus(dbSession.status);
       const recoverable = dbSession && hasRemoteAuth && !forceQrRequired && needsLiveSessionReconnect(dbSession.status);
-      const status = recoverable ? 'saved_auth' : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
+      const status = recoverable ? 'initializing' : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
       const reactivationStarted = recoverable
-        ? kickSessionReconnect(sessionId, 'my_session_saved_auth')
+        ? kickSessionActivationWithQrFallback(sessionId, req.userId, dbSession, 'my_session_saved_auth')
         : false;
       if (!recoverable && dbSession && isQrRequiredDbStatus(dbSession.status)) {
         setImmediate(() => {
@@ -1935,7 +2009,7 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
       } else {
       console.error(`[REACTIVATE] Falha ao reativar ${sessionId}:`, error.message);
       try {
-        await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'authenticated' : 'failed');
+        await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'auth_failure' : 'failed');
       } catch (_) { /* ignore */ }
       io.to(`user_${targetUserId}`).emit('session_error', {
         sessionId,
@@ -1959,7 +2033,7 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
     const needsQr = status === 'qr_code';
 
     res.status(isReady || needsQr ? 200 : 202).json({
-      success: isReady || needsQr || status === 'initializing' || status === 'authenticated' || status === 'saved_auth',
+      success: isReady || needsQr || status === 'initializing' || status === 'authenticated',
       action: usedQrFallback ? 'auto_qr_fallback' : action,
       sessionId,
       status,

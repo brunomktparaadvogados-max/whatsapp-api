@@ -782,8 +782,8 @@
                     document.getElementById('createSessionSection').style.display = 'block';
                     document.getElementById('qrCodeSection').style.display = 'none';
                     document.getElementById('connectedSection').style.display = 'none';
-                    document.getElementById('createSessionMessage').textContent = 'Sessão salva encontrada. Iniciando reativação agora; aguarde o status atualizar.';
-                    document.getElementById('createSessionButton').textContent = '🔄 Reativar Sessão Salva';
+                    document.getElementById('createSessionMessage').textContent = 'Reativando automaticamente. Se a sessao salva nao ficar pronta rapido, o QR Code sera liberado.';
+                    document.getElementById('createSessionButton').textContent = 'Reativando / gerando QR';
                     if (!window._autoReactivateMySession) {
                         window._autoReactivateMySession = true;
                         setTimeout(createMySession, 500);
@@ -850,7 +850,7 @@
                 'initializing': '🔄 Inicializando...',
                 'qr_code': '📱 Aguardando QR Code',
                 'qr_required': '📱 Aguardando QR Code',
-                'saved_auth': '🔄 Sessão salva; reativando automaticamente',
+                'saved_auth': '🔄 Reativando automaticamente / liberando QR',
                 'authenticated': '🔄 Autenticado, conectando...',
                 'connected': '✅ Conectado',
                 'disconnected': '🔴 Desconectado',

@@ -545,12 +545,13 @@ class SessionManager {
     this.io.to(`user_${session.userId}`).emit('session_disconnected', {
       sessionId: sessionId,
       info: session.info,
-      status: nextStatus,
+      status: hasRemoteAuth ? 'initializing' : nextStatus,
       hasRemoteAuth,
       recoverable: hasRemoteAuth,
       hibernated: hasRemoteAuth,
+      action: hasRemoteAuth ? 'auto_reactivate_or_qr' : 'scan_qr',
       message: hasRemoteAuth
-        ? 'Sessao hibernada por inatividade. A autenticacao foi preservada; reative para restaurar sem QR.'
+        ? 'Sessao hibernada por inatividade. Ao abrir a sessao, a API reativa automaticamente ou libera QR.'
         : 'Sessao desconectada por inatividade. Gere um novo QR Code para conectar.'
     });
 
@@ -609,7 +610,9 @@ class SessionManager {
 
     const sess = this.sessions.get(oldestId);
     const hasRemoteAuth = await this.hasSavedRemoteAuth(oldestId);
-    const nextStatus = sess?.qrFromRejectedAuth ? 'auth_failure' : (hasRemoteAuth ? 'saved_auth' : 'disconnected');
+    const nextStatus = (sess?.qrFromRejectedAuth || sess?.forceQrFallback)
+      ? 'auth_failure'
+      : (hasRemoteAuth ? 'saved_auth' : 'disconnected');
     console.log(`Sobrecarga: hibernando inicializacao mais antiga ${oldestId} (${Math.round((now - oldestTime) / 1000)}s) -> ${nextStatus}`);
     await this.cleanupSession(oldestId);
     await this.db.updateSessionStatus(oldestId, nextStatus);
@@ -706,9 +709,7 @@ class SessionManager {
 
     const sess = this.sessions.get(oldestId);
     const hasRemoteAuth = await this.hasSavedRemoteAuth(oldestId);
-    const nextStatus = sess?.qrFromRejectedAuth
-      ? 'auth_failure'
-      : (hasRemoteAuth ? 'saved_auth' : 'disconnected');
+    const nextStatus = 'auth_failure';
 
     console.log(`Evicting QR ocioso: ${oldestId} (idade ${Math.round((now - oldestQrTs) / 1000)}s) -> ${nextStatus}`);
     await this.cleanupSession(oldestId);
@@ -1174,7 +1175,7 @@ class SessionManager {
       } catch (_dbStatusError) {
         latestDbStatus = null;
       }
-      const failedStatus = (savedAuthWasRejected || forcedQrFallback) ? 'auth_failure' : (hasRemoteAuth ? 'saved_auth' : 'failed');
+      const failedStatus = (savedAuthWasRejected || forcedQrFallback || hasRemoteAuth) ? 'auth_failure' : 'failed';
       this.sessionInitFailures.set(sessionData.id, {
         message: errorMessage,
         timestamp: Date.now()
@@ -1192,7 +1193,7 @@ class SessionManager {
           : 'Falha ao inicializar sessão. Tente criar novamente.',
         status: failedStatus,
         recoverable: true,
-        action: (savedAuthWasRejected || forcedQrFallback) ? 'scan_qr' : (hasRemoteAuth ? 'reactivate_saved_auth' : 'retry'),
+        action: (savedAuthWasRejected || forcedQrFallback || hasRemoteAuth) ? 'scan_qr' : 'retry',
         recentFailure: true
       });
     }
@@ -1295,12 +1296,12 @@ class SessionManager {
     this.io.to(`user_${sessionData.userId}`).emit('session_disconnected', {
       sessionId,
       reason,
-      status: 'saved_auth',
-      action: 'reactivate_saved_auth',
+      status: 'initializing',
+      action: 'auto_reactivate_or_qr',
       hasRemoteAuth: true,
       recoverable: true,
       hibernated: true,
-      message: 'Conexao caiu, mas a sessao salva foi preservada. Reative para reconectar sem novo QR.'
+      message: 'Conexao caiu, mas a sessao salva foi preservada. A API vai reativar automaticamente ou liberar QR.'
     });
 
     return true;
@@ -1509,15 +1510,15 @@ class SessionManager {
         timestamp: Date.now()
       });
 
-      currentSession.status = 'saved_auth';
+      currentSession.status = 'auth_failure';
       await this.cleanupSession(sessionData.id);
-      await this.db.updateSessionStatus(sessionData.id, 'saved_auth');
+      await this.db.updateSessionStatus(sessionData.id, 'auth_failure');
       this.io.to(`user_${sessionData.userId}`).emit('session_error', {
         sessionId: sessionData.id,
-        error: 'WhatsApp autenticou, mas nao ficou pronto. A memoria foi preservada; tente reativar novamente.',
-        status: 'saved_auth',
-        recoverable: true,
-        action: 'reactivate_saved_auth',
+        error: 'WhatsApp autenticou, mas nao ficou pronto. O QR Code sera liberado automaticamente para reconectar sem depender de reativacao manual.',
+        status: 'auth_failure',
+        recoverable: false,
+        action: 'scan_qr',
         recentFailure: true
       });
     }, AUTHENTICATED_READY_TIMEOUT_MS);
@@ -1989,14 +1990,15 @@ class SessionManager {
     if (attempts >= this.maxReconnectAttempts) {
       console.log(`❌ [${sessionId}] Máximo de ${this.maxReconnectAttempts} reconexões atingido. Sessão precisa ser recriada manualmente.`);
       await this.cleanupSession(sessionId);
-      const preservedStatus = await this.hasSavedRemoteAuth(sessionId) ? 'saved_auth' : 'failed';
+      const preservedStatus = await this.hasSavedRemoteAuth(sessionId) ? 'auth_failure' : 'failed';
       await this.db.updateSessionStatus(sessionId, preservedStatus);
 
       // Notifica frontend que todas as tentativas falharam
       this.io.to(`user_${sessionData.userId}`).emit('session_error', {
         sessionId: sessionId,
         error: 'Reconexão falhou após várias tentativas. Delete e crie a sessão novamente.',
-        status: preservedStatus
+        status: preservedStatus,
+        action: preservedStatus === 'auth_failure' ? 'scan_qr' : 'create_qr'
       });
       return;
     }
@@ -2447,6 +2449,15 @@ class SessionManager {
 
       // Aguardar sessão ficar pronta (max 90s)
       const readySession = await this.waitForSessionReady(sessionId, AUTO_RECONNECT_TIMEOUT_MS);
+      if (!readySession) {
+        await this.db.updateSessionStatus(sessionId, 'auth_failure');
+        this.io.to(`user_${dbSession.user_id}`).emit('session_error', {
+          sessionId,
+          error: 'Sessao salva nao ficou pronta para envio. QR Code necessario para reconectar.',
+          status: 'auth_failure',
+          action: 'scan_qr'
+        });
+      }
 
       if (readySession) {
         console.log(`✅ [${sessionId}] Auto-reconexão bem-sucedida! Sessão pronta para enviar.`);
@@ -3396,15 +3407,13 @@ class SessionManager {
           const hasRemoteAuth = await this.hasSavedRemoteAuth(sid);
           let nextStatus = null;
           if (sess?.status === 'qr_code') {
-            nextStatus = sess?.qrFromRejectedAuth
-              ? 'auth_failure'
-              : (hasRemoteAuth ? 'saved_auth' : 'disconnected');
+            nextStatus = 'auth_failure';
           } else if (sess?.status === 'initializing' || sess?.status === 'authenticated') {
-            nextStatus = hasRemoteAuth ? 'saved_auth' : 'failed';
+            nextStatus = hasRemoteAuth ? 'auth_failure' : 'failed';
           } else if (sess?.status === 'auth_failure') {
             nextStatus = 'auth_failure';
           } else if (['failed', 'disconnected'].includes(sess?.status) && hasRemoteAuth) {
-            nextStatus = 'saved_auth';
+            nextStatus = 'auth_failure';
           }
           await this.cleanupSession(sid);
           if (nextStatus) {
