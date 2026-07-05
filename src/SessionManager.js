@@ -802,22 +802,31 @@ class SessionManager {
     // Se a sessão já existe na memória E tem cliente ativo, retorna ela
     if (this.sessions.has(sessionId)) {
       const existing = this.sessions.get(sessionId);
+      const forceNewAuthFlow = options.forceQrFallback === true || options.forceFreshAuth === true;
       const now = Date.now();
       const existingAgeMs = now - (existing.lastSeen || existing.createdAt || now);
       const existingQrAgeMs = now - (this.qrGeneratedAt.get(sessionId) || existing.qrGeneratedAt || existing.lastSeen || existing.createdAt || now);
       const freshQr = existing.status === 'qr_code' && existingQrAgeMs <= QR_CODE_TIMEOUT_MS;
       const freshBoot = (existing.status === 'authenticated' || existing.status === 'initializing') &&
         existingAgeMs <= AUTHENTICATED_READY_TIMEOUT_MS;
+      let cleanedExisting = false;
       if (existing.client && existing.status === 'qr_code' && existingQrAgeMs > QR_CODE_TIMEOUT_MS) {
         console.log(`QR expirado para ${sessionId}; limpando para gerar QR novo`);
         await this.cleanupSession(sessionId);
-      } else if (existing.client && (existing.status === 'connected' || freshQr || freshBoot)) {
+        cleanedExisting = true;
+      } else if (existing.client && (existing.status === 'connected' || freshQr || (!forceNewAuthFlow && freshBoot))) {
         console.log(`⚠️ Sessão ${sessionId} já existe na memória com status ${existing.status}`);
         return existing;
+      } else if (existing.client && forceNewAuthFlow && ['authenticated', 'initializing', 'reconnecting'].includes(existing.status)) {
+        console.log(`Sessao ${sessionId} estava presa em ${existing.status}; limpando para liberar QR solicitado.`);
+        await this.cleanupSession(sessionId);
+        cleanedExisting = true;
       }
       // Se está em estado morto, limpa primeiro
-      console.log(`🧹 Sessão ${sessionId} existe na memória mas está morta (${existing.status}), limpando...`);
-      await this.cleanupSession(sessionId);
+      if (!cleanedExisting) {
+        console.log(`🧹 Sessão ${sessionId} existe na memória mas está morta (${existing.status}), limpando...`);
+        await this.cleanupSession(sessionId);
+      }
     }
 
     // Se existe no banco, ATUALIZA o status (NÃO deleta — preserva contatos/mensagens/auto_replies)

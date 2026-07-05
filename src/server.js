@@ -386,7 +386,7 @@ async function waitWithSavedAuthQrFallback(sessionId, targetUserId, hasRemoteAut
   await db.updateSessionStatus(sessionId, 'initializing');
   await beginSessionActivation(sessionId, targetUserId, hasRemoteAuth, false, true, `${context}_auto_qr`);
 
-  const remainingWaitMs = Math.max(10000, totalWaitMs - firstWaitMs);
+  const remainingWaitMs = Math.max(0, Math.min(5000, totalWaitMs - firstWaitMs));
   progressedSession = await waitForSessionProgress(sessionId, remainingWaitMs);
   view = await getSessionView(sessionId);
   status = progressedSession ? progressedSession.status : (view?.status || 'initializing');
