@@ -461,7 +461,9 @@ class HealthGuard {
         await this.sessionManager.cleanupSession(sid);
         const dbSession = await this.db.getSession(sid).catch(() => null);
         const hasRemoteAuth = await this.sessionManager.hasSavedRemoteAuth(sid);
-        const verifiedSavedAuth = !!(dbSession?.remote_auth_verified_at || dbSession?.phone_number);
+        const verifiedSavedAuth = typeof this.sessionManager.isVerifiedSavedAuthRecord === 'function'
+          ? this.sessionManager.isVerifiedSavedAuthRecord(dbSession)
+          : !!(dbSession?.remote_auth_verified_at);
         const nextStatus = previousStatus === 'auth_failure'
           ? 'auth_failure'
           : (hasRemoteAuth && verifiedSavedAuth ? 'saved_auth' : 'disconnected');

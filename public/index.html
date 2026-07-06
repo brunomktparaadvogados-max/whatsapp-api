@@ -1446,9 +1446,13 @@
             const contentDiv = document.getElementById(`session-content-${userId}`);
             const status = session?.status || 'not_created';
             const qrCode = session?.qrCode || session?.qr_code || null;
+            const autoQrKey = `autoForceQr_${userId}`;
             updateUserSessionBadge(userId, status);
             if (status !== 'saved_auth') {
                 window[`autoReactivate_${userId}`] = false;
+            }
+            if (qrCode || status === 'connected') {
+                window[autoQrKey] = false;
             }
 
             if (status === 'qr_code' || status === 'initializing' || status === 'authenticated') {
@@ -1462,13 +1466,19 @@
                         ${qrCode ? `<img src="${qrCode}" alt="QR Code">` : '<div class="loading">Gerando QR Code...</div>'}
                     </div>
                     <button onclick="refreshUserSession(${userId})">Atualizar</button>
-                    <button onclick="createUserSession(${userId})" style="margin-left: 10px;">Reativar agora</button>
+                    <button onclick="createUserSession(${userId}, true)" style="margin-left: 10px;">Gerar QR agora</button>
                     <button onclick="disconnectUserSession('${sessionId}')" class="btn-danger" style="margin-left: 10px;">
                         Desconectar
                     </button>
                 `;
 
                 if (!qrCode) {
+                    if (!window[autoQrKey]) {
+                        window[autoQrKey] = Date.now();
+                    } else if ((Date.now() - window[autoQrKey]) > 8000) {
+                        window[autoQrKey] = Date.now();
+                        setTimeout(() => createUserSession(userId, true), 100);
+                    }
                     scheduleUserSessionRefresh(userId, 3000);
                 }
                 return;
@@ -1509,7 +1519,7 @@
             clearUserSessionRefresh(userId);
             contentDiv.innerHTML = `
                 <p><strong>Status:</strong> ${getStatusText(status)}</p>
-                <button onclick="createUserSession(${userId}, ${status === 'auth_failure' ? 'true' : 'false'})" style="margin-top: 10px;">
+                <button onclick="createUserSession(${userId}, true)" style="margin-top: 10px;">
                     Reativar / gerar QR Code
                 </button>
             `;
@@ -1544,7 +1554,7 @@
 
                 renderUserSessionPanel(userId, sessionId, session);
                 if (['saved_auth', 'disconnected', 'failed', 'auth_failure'].includes(session?.status)) {
-                    const needsQr = session.status === 'auth_failure' || session.hasRemoteAuth === false;
+                    const needsQr = session.status !== 'saved_auth' || session.verifiedSavedAuth === false || session.hasRemoteAuth === false;
                     setTimeout(() => createUserSession(userId, needsQr), 200);
                 }
             } catch (error) {
@@ -1605,13 +1615,13 @@
                 } else {
                     contentDiv.innerHTML = `
                         <p>Erro: ${data.message || data.error || 'Erro ao iniciar sessao'}</p>
-                        <button onclick="createUserSession(${userId})" style="margin-top: 10px;">Tentar novamente</button>
+                        <button onclick="createUserSession(${userId}, true)" style="margin-top: 10px;">Gerar QR agora</button>
                     `;
                 }
             } catch (error) {
                 contentDiv.innerHTML = `
                     <p>Erro: ${error.message}</p>
-                    <button onclick="createUserSession(${userId})" style="margin-top: 10px;">Tentar novamente</button>
+                    <button onclick="createUserSession(${userId}, true)" style="margin-top: 10px;">Gerar QR agora</button>
                 `;
             }
         }

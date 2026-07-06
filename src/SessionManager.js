@@ -156,6 +156,7 @@ class SessionManager {
   getLastDispatchActivity(sessionId, session = null) {
     const sess = session || this.sessions.get(sessionId);
     return this.lastMessageTime.get(sessionId) ||
+      sess?.lastDispatchAt ||
       sess?.lastSentAt ||
       sess?.connectedAt ||
       sess?.lastSeen ||
@@ -163,17 +164,46 @@ class SessionManager {
       Date.now();
   }
 
+  isVerifiedSavedAuthRecord(dbSession) {
+    if (!dbSession) return false;
+    if (dbSession.remote_auth_verified_at) return true;
+
+    // Compatibilidade apenas para sessoes antigas criadas antes da coluna de
+    // verificacao. Depois que houve ready/falha registrados, phone_number nao
+    // prova que o RemoteAuth foi salvo de verdade.
+    return !!(
+      dbSession.phone_number &&
+      !dbSession.last_ready_at &&
+      !dbSession.last_auth_failure_at
+    );
+  }
+
+  markDispatchActivity(sessionId, active = false) {
+    const now = Date.now();
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.lastSeen = now;
+      session.lastDispatchAt = now;
+      session.dispatchInProgress = active;
+    }
+    this.lastMessageTime.set(sessionId, now);
+    this.sessionLastActivity.set(sessionId, now);
+  }
+
   isSessionBusy(sessionId) {
+    const session = this.sessions.get(sessionId);
     return this.sessionSendLock.has(sessionId) ||
       this.reconnectPromises.has(sessionId) ||
       this.sessionStartPromises.has(sessionId) ||
-      this.reconnectingSet.has(sessionId);
+      this.reconnectingSet.has(sessionId) ||
+      session?.dispatchInProgress === true;
   }
 
   shouldPreserveLiveSession(sessionId) {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
-    return ['initializing', 'qr_code'].includes(session.status);
+    if (this.isSessionBusy(sessionId)) return true;
+    return ['initializing', 'qr_code', 'reconnecting'].includes(session.status);
   }
 
   async initializePostgresStore(attempts = REMOTE_AUTH_INIT_RETRIES) {
@@ -562,7 +592,7 @@ class SessionManager {
     this.sessionSendLock.delete(sessionId);
 
     const dbSession = await this.db.getSession(sessionId).catch(() => null);
-    const verifiedSavedAuth = !!(dbSession?.remote_auth_verified_at || dbSession?.phone_number);
+    const verifiedSavedAuth = this.isVerifiedSavedAuthRecord(dbSession);
     const canHibernateAsSaved = hasRemoteAuth && verifiedSavedAuth;
     const nextStatus = canHibernateAsSaved ? 'saved_auth' : 'disconnected';
 
@@ -780,7 +810,7 @@ class SessionManager {
         // ZIP valido sozinho nao prova scan recuperavel e gerava falso "sessao salva".
         if (session.status === 'connected' || session.status === 'authenticated' || session.status === 'saved_auth') {
           const hasRemoteAuth = await this.hasSavedRemoteAuth(sessionId);
-          const verifiedSavedAuth = !!(session.remote_auth_verified_at || session.phone_number);
+          const verifiedSavedAuth = this.isVerifiedSavedAuthRecord(session);
           const nextStatus = hasRemoteAuth && verifiedSavedAuth ? 'saved_auth' : 'disconnected';
           await this.db.updateSessionStatus(sessionId, nextStatus);
           console.log(`📴 Sessão ${sessionId}: ${session.status} → ${nextStatus}`);
@@ -1336,7 +1366,7 @@ class SessionManager {
     sessionData.qrReleaseInProgress = true;
 
     const dbSession = await this.db.getSession(sessionId).catch(() => null);
-    const hasVerifiedRemoteAuth = !!(dbSession?.remote_auth_verified_at || dbSession?.phone_number);
+    const hasVerifiedRemoteAuth = this.isVerifiedSavedAuthRecord(dbSession);
     const withinScanProtection = Date.now() < (sessionData.scanProtectionUntil || 0);
     if (!hasVerifiedRemoteAuth) {
       const note = withinScanProtection ? 'logo apos scan' : 'sem marcador duravel';
@@ -2673,13 +2703,17 @@ class SessionManager {
     const previousSend = this.sessionSendLock.get(sessionId) || Promise.resolve();
     const currentSend = previousSend
       .catch(() => {})
-      .then(() => this._sendMessageUnlocked(sessionId, phoneNumber, message, mediaUrl));
+      .then(() => {
+        this.markDispatchActivity(sessionId, true);
+        return this._sendMessageUnlocked(sessionId, phoneNumber, message, mediaUrl);
+      });
 
     this.sessionSendLock.set(sessionId, currentSend);
 
     try {
       return await currentSend;
     } finally {
+      this.markDispatchActivity(sessionId, false);
       if (this.sessionSendLock.get(sessionId) === currentSend) {
         this.sessionSendLock.delete(sessionId);
       }

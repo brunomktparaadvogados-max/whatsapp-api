@@ -495,6 +495,22 @@ class DatabaseManager {
     );
   }
 
+  async resetSessionAuthForQr(sessionId, status = 'auth_failure') {
+    return await this.run(
+      `UPDATE sessions
+       SET status = $2,
+           phone_number = NULL,
+           phone_name = NULL,
+           remote_auth_verified_at = NULL,
+           last_ready_at = NULL,
+           last_auth_failure_at = CURRENT_TIMESTAMP,
+           auth_generation = COALESCE(auth_generation, 0) + 1,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [sessionId, status]
+    );
+  }
+
   async getSessionsByUserId(userId) {
     return await this.all('SELECT * FROM sessions WHERE user_id = $1', [userId]);
   }
