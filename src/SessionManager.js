@@ -165,17 +165,12 @@ class SessionManager {
   }
 
   isVerifiedSavedAuthRecord(dbSession) {
+    // INVARIANTE: sessao so e "salva" se o RemoteAuth foi validado apos um
+    // evento real de `ready` (remote_auth_verified_at preenchido).
+    // phone_number NUNCA prova sessao salva — o fallback antigo era a origem
+    // de "sessao salva" falsa para sessoes que nunca completaram o scan.
     if (!dbSession) return false;
-    if (dbSession.remote_auth_verified_at) return true;
-
-    // Compatibilidade apenas para sessoes antigas criadas antes da coluna de
-    // verificacao. Depois que houve ready/falha registrados, phone_number nao
-    // prova que o RemoteAuth foi salvo de verdade.
-    return !!(
-      dbSession.phone_number &&
-      !dbSession.last_ready_at &&
-      !dbSession.last_auth_failure_at
-    );
+    return !!dbSession.remote_auth_verified_at;
   }
 
   markDispatchActivity(sessionId, active = false) {
@@ -398,8 +393,10 @@ class SessionManager {
 
       // Sessões que excedem o limite ficam hibernadas (auto-reconexão sob demanda)
       for (const s of remaining) {
-        await this.db.updateSessionStatus(s.id, 'saved_auth');
-        console.log(`⏸️ ${s.id}: RemoteAuth salvo mas slot cheio — reconexão sob demanda`);
+        // No boot, blob presente sem remote_auth_verified_at NAO vira saved_auth.
+        const nextStatus = this.isVerifiedSavedAuthRecord(s) ? 'saved_auth' : 'disconnected';
+        await this.db.updateSessionStatus(s.id, nextStatus);
+        console.log(`⏸️ ${s.id}: RemoteAuth salvo — ${nextStatus} (reconexão sob demanda)`);
       }
 
       console.log(`🚀 Restaurando ${toRestore.length} sessões sequencialmente...`);
@@ -670,9 +667,13 @@ class SessionManager {
 
     const sess = this.sessions.get(oldestId);
     const hasRemoteAuth = await this.hasSavedRemoteAuth(oldestId);
+    // saved_auth exige RemoteAuth validado (remote_auth_verified_at); blob
+    // presente sem verificacao nao pode virar "sessao salva".
+    const dbSessionForEvict = await this.db.getSession(oldestId).catch(() => null);
+    const verifiedSavedAuth = this.isVerifiedSavedAuthRecord(dbSessionForEvict);
     const nextStatus = (sess?.qrFromRejectedAuth || sess?.forceQrFallback)
       ? 'auth_failure'
-      : (hasRemoteAuth ? 'saved_auth' : 'disconnected');
+      : (hasRemoteAuth && verifiedSavedAuth ? 'saved_auth' : 'disconnected');
     console.log(`Sobrecarga: hibernando inicializacao mais antiga ${oldestId} (${Math.round((now - oldestTime) / 1000)}s) -> ${nextStatus}`);
     await this.cleanupSession(oldestId);
     await this.db.updateSessionStatus(oldestId, nextStatus);

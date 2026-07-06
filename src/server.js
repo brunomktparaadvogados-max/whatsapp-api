@@ -185,13 +185,9 @@ function shouldForceQrForDbStatus(status) {
 }
 
 function isVerifiedSavedAuthSession(dbSession) {
-  if (!dbSession) return false;
-  if (dbSession.remote_auth_verified_at) return true;
-  return !!(
-    dbSession.phone_number &&
-    !dbSession.last_ready_at &&
-    !dbSession.last_auth_failure_at
-  );
+  // Fonte unica da invariante: SessionManager.isVerifiedSavedAuthRecord.
+  // phone_number nunca prova sessao salva.
+  return sessionManager.isVerifiedSavedAuthRecord(dbSession);
 }
 
 function isSavedAuthTrusted(hasRemoteAuth, status, forceQr = false, sessionId = null, dbSession = null) {
@@ -3238,6 +3234,76 @@ app.get('/api/debug/sessions', authMiddleware, async (req, res) => {
   }
 });
 
+// Diagnostico completo por sessao (admin) — visao unificada banco x memoria x RemoteAuth
+app.get('/api/admin/session-diagnostics', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = await db.getUserById(req.userId);
+    if (currentUser.email !== 'admin@flow.com') {
+      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
+    }
+
+    const dbSessions = await db.all(
+      `SELECT s.*, u.email AS user_email
+       FROM sessions s
+       LEFT JOIN users u ON u.id = s.user_id
+       ORDER BY s.updated_at DESC`
+    );
+
+    let authRows = [];
+    try {
+      authRows = sessionManager.pgStore ? await sessionManager.pgStore.listSessions() : [];
+    } catch (e) {
+      console.warn(`session-diagnostics: falha ao listar RemoteAuth: ${e.message}`);
+    }
+    const authBySession = new Map(authRows.map(r => [String(r.session_id).replace('RemoteAuth-', ''), r]));
+
+    const sessions = dbSessions.map(s => {
+      const live = sessionManager.getSession(s.id);
+      const auth = authBySession.get(s.id) || null;
+      const verifiedSavedAuth = sessionManager.isVerifiedSavedAuthRecord(s);
+      const lastActivityTs = sessionManager.sessionLastActivity.get(s.id);
+      return {
+        sessionId: s.id,
+        userId: s.user_id,
+        email: s.user_email || null,
+        dbStatus: s.status,
+        liveStatus: live?.status || null,
+        hasClient: !!live?.client,
+        hasQr: !!live?.qrCode,
+        hasRemoteAuth: !!auth,
+        verifiedSavedAuth,
+        canSend: live?.status === 'connected',
+        lastReadyAt: s.last_ready_at || null,
+        lastAuthFailureAt: s.last_auth_failure_at || null,
+        remoteAuthVerifiedAt: s.remote_auth_verified_at || null,
+        lastActivity: lastActivityTs ? new Date(lastActivityTs).toISOString() : null,
+        remoteAuthSize: auth?.data_size ?? null,
+        remoteAuthUpdatedAt: auth?.updated_at || null,
+        remoteAuthBackups: auth?.backup_count ?? 0,
+        falseSavedAuth: s.status === 'saved_auth' && !verifiedSavedAuth
+      };
+    });
+
+    res.json({
+      success: true,
+      generatedAt: new Date().toISOString(),
+      totals: {
+        sessions: sessions.length,
+        byStatus: sessions.reduce((acc, item) => {
+          acc[item.dbStatus] = (acc[item.dbStatus] || 0) + 1;
+          return acc;
+        }, {}),
+        falseSavedAuth: sessions.filter(item => item.falseSavedAuth).length,
+        live: sessions.filter(item => !!item.liveStatus).length,
+        withRemoteAuth: sessions.filter(item => item.hasRemoteAuth).length
+      },
+      sessions
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Endpoint de limpeza manual de mensagens antigas
 app.post('/api/cleanup-messages', authMiddleware, async (req, res) => {
   try {
@@ -3489,20 +3555,7 @@ app.get('/api/sessions/:sessionId/alive', authMiddleware, async (req, res) => {
   }
 });
 
-if (process.env.RENDER_EXTERNAL_URL) {
-  const keepAliveUrl = `${process.env.RENDER_EXTERNAL_URL}/health`;
-  console.log(`🔄 Configurando keep-alive para: ${keepAliveUrl}`);
-
-  cron.schedule('*/10 * * * *', async () => {
-    try {
-      const axios = require('axios');
-      await axios.get(keepAliveUrl, { timeout: 5000 });
-      console.log('💓 Keep-alive ping enviado');
-    } catch (error) {
-      console.error('❌ Erro no keep-alive:', error.message);
-    }
-  });
-}
+// Keep-alive do Render removido — legado da hospedagem antiga (nao usamos Render).
 
 // Monitor de memória básico removido — substituído pelo monitor avançado com 3 thresholds (linha ~1295)
 
