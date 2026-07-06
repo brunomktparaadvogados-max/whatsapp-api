@@ -1,7 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const MIN_AUTH_BLOB_BYTES = parseInt(process.env.MIN_REMOTE_AUTH_BLOB_BYTES) || 128 * 1024;
+const MIN_AUTH_BLOB_BYTES = parseInt(
+  process.env.MIN_VALID_SESSION_BYTES || process.env.MIN_REMOTE_AUTH_BLOB_BYTES,
+  10
+) || 400 * 1024;
 
 /**
  * PostgresStore — substituto do MongoStore para wwebjs RemoteAuth

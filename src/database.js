@@ -483,6 +483,16 @@ class DatabaseManager {
     );
   }
 
+  async markRemoteAuthVerified(sessionId) {
+    return await this.run(
+      `UPDATE sessions
+       SET remote_auth_verified_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [sessionId]
+    );
+  }
+
   async markSessionRequiresQr(sessionId, status = 'auth_failure') {
     return await this.run(
       `UPDATE sessions

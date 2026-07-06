@@ -58,6 +58,10 @@ const REMOTE_AUTH_PROTECT_RETRIES = Math.max(
   1,
   parseInt(process.env.REMOTE_AUTH_PROTECT_RETRIES ?? '4', 10) || 4
 );
+const REMOTE_AUTH_REJECTED_WINDOW_MS = Math.max(
+  60 * 1000,
+  parseInt(process.env.REMOTE_AUTH_REJECTED_WINDOW_MS ?? String(10 * 60 * 1000), 10) || 0
+);
 const STARTUP_RESTORE_LIMIT = parseInt(process.env.STARTUP_RESTORE_LIMIT || '0', 10);
 const SESSION_INIT_MAX_ATTEMPTS = parseInt(process.env.SESSION_INIT_MAX_ATTEMPTS) || 4;
 const QR_INIT_MAX_ATTEMPTS = Math.max(1, parseInt(process.env.QR_INIT_MAX_ATTEMPTS || '2', 10) || 2);
@@ -109,6 +113,7 @@ class SessionManager {
     this._contactCache = new Map();          // Cache de contatos: "session_phone" → timestamp (evita upsert repetido)
     this._contactCacheTTL = 10 * 60 * 1000; // 10 min TTL — mesmo contato não faz upsert de novo por 10 min
     this.remoteAuthRejectedAt = new Map();  // WhatsApp Web rejeitou o RemoteAuth salvo (pediu QR) — evita loop de reativacao
+    this.remoteAuthRejectedCounts = new Map(); // Rejeicoes consecutivas dentro da janela acima
     this.qrGeneratedAt = new Map();       // timestamp do ultimo QR gerado por sessao (usado por cleanup e timeout de QR)
 
     this.init();
@@ -134,23 +139,50 @@ class SessionManager {
   }
 
   markRemoteAuthRejected(sessionId) {
-    this.remoteAuthRejectedAt.set(sessionId, Date.now());
+    const now = Date.now();
+    const lastRejectedAt = this.remoteAuthRejectedAt.get(sessionId) || 0;
+    const previousCount = (now - lastRejectedAt) <= REMOTE_AUTH_REJECTED_WINDOW_MS
+      ? (this.remoteAuthRejectedCounts.get(sessionId) || 0)
+      : 0;
+    const nextCount = previousCount + 1;
+    this.remoteAuthRejectedAt.set(sessionId, now);
+    this.remoteAuthRejectedCounts.set(sessionId, nextCount);
+    return nextCount;
   }
 
   clearRemoteAuthRejected(sessionId) {
     this.remoteAuthRejectedAt.delete(sessionId);
+    this.remoteAuthRejectedCounts.delete(sessionId);
   }
 
   // O WhatsApp Web rejeitou o blob salvo ha pouco tempo: reativar de novo so
   // repetiria o ciclo destruir/recriar Chromium e atrasaria o QR do usuario.
-  wasRemoteAuthRecentlyRejected(sessionId, maxAgeMs = 10 * 60 * 1000) {
+  wasRemoteAuthRecentlyRejected(sessionId, maxAgeMs = REMOTE_AUTH_REJECTED_WINDOW_MS) {
     const rejectedAt = this.remoteAuthRejectedAt.get(sessionId);
     if (!rejectedAt) return false;
     if (Date.now() - rejectedAt > maxAgeMs) {
-      this.remoteAuthRejectedAt.delete(sessionId);
+      this.clearRemoteAuthRejected(sessionId);
       return false;
     }
     return true;
+  }
+
+  async discardRejectedRemoteAuth(sessionId, reason = 'rejected') {
+    if (!this.pgStore) return false;
+    try {
+      await this.pgStore.delete({ session: `RemoteAuth-${sessionId}` });
+      this.clearRemoteAuthRejected(sessionId);
+      if (typeof this.db.resetSessionAuthForQr === 'function') {
+        await this.db.resetSessionAuthForQr(sessionId, 'qr_code');
+      } else if (typeof this.db.markSessionRequiresQr === 'function') {
+        await this.db.markSessionRequiresQr(sessionId, 'qr_code');
+      }
+      console.warn(`[${sessionId}] RemoteAuth descartado (${reason}); QR limpo sera usado.`);
+      return true;
+    } catch (error) {
+      console.warn(`[${sessionId}] Falha ao descartar RemoteAuth rejeitado (${reason}): ${error.message}`);
+      return false;
+    }
   }
 
   getLastDispatchActivity(sessionId, session = null) {
@@ -511,8 +543,19 @@ class SessionManager {
     this.remoteAuthSaveInFlight.add(sessionId);
     try {
       this.remoteAuthLastForcedSave.set(sessionId, Date.now());
+      const activeAuthClientId = session.authClientId || sessionId;
+      if (activeAuthClientId !== sessionId) {
+        this.pgStore.aliasSession({
+          fromSession: activeAuthClientId,
+          toSession: sessionId,
+          suppressSource: false
+        });
+      }
       this.pgStore.forceNextSave(`RemoteAuth-${sessionId}`);
-      console.log(`[${sessionId}] Forcando backup RemoteAuth (${reason})`);
+      if (activeAuthClientId !== sessionId) {
+        this.pgStore.forceNextSave(`RemoteAuth-${activeAuthClientId}`);
+      }
+      console.log(`[${sessionId}] Forcando backup RemoteAuth (${reason}) usando authClientId=${activeAuthClientId}`);
       await session.client.authStrategy.storeRemoteSession({ emit: true });
       return await this.hasSavedRemoteAuth(sessionId);
     } finally {
@@ -930,7 +973,7 @@ class SessionManager {
       this.pgStore.aliasSession({
         fromSession: authClientId,
         toSession: sessionId,
-        suppressSource: true
+        suppressSource: false
       });
       this.pgStore.forceNextSave(`RemoteAuth-${sessionId}`);
     }
@@ -1226,7 +1269,7 @@ class SessionManager {
             this.pgStore.aliasSession({
               fromSession: sessionData.authClientId,
               toSession: sessionData.id,
-              suppressSource: true
+              suppressSource: false
             });
             this.pgStore.forceNextSave(`RemoteAuth-${sessionData.id}`);
           }
@@ -1664,21 +1707,31 @@ class SessionManager {
 
       console.log(`📱 QR Code gerado para sessão: ${sessionData.id}`);
       let hadSavedAuth = false;
+      let deletedRejectedAuth = false;
       try {
         hadSavedAuth = await this.hasSavedRemoteAuth(sessionData.id);
         if (hadSavedAuth) {
           // Registra a rejeicao: as proximas ativacoes vao direto para o QR em
           // vez de tentar reidratar o mesmo blob rejeitado em loop.
-          this.markRemoteAuthRejected(sessionData.id);
+          const rejectionCount = this.markRemoteAuthRejected(sessionData.id);
+          if (rejectionCount >= REMOTE_AUTH_PROTECT_RETRIES) {
+            deletedRejectedAuth = await this.discardRejectedRemoteAuth(
+              sessionData.id,
+              `rejected_${rejectionCount}x`
+            );
+            hadSavedAuth = !deletedRejectedAuth;
+          }
         }
         if (hadSavedAuth && !sessionData.allowQrFallback) {
           this.logRecentError(
             sessionData.id,
-            new Error('RemoteAuth salvo existe, mas o WhatsApp Web pediu QR durante reidratacao. QR liberado preservando memoria.')
+            new Error('RemoteAuth salvo existe, mas o WhatsApp Web pediu QR durante reidratacao. QR liberado e RemoteAuth sera descartado se rejeitar de novo.')
           );
-          console.warn(`[${sessionData.id}] RemoteAuth salvo foi rejeitado pelo WhatsApp Web. Preservando blob e liberando QR imediatamente.`);
+          console.warn(`[${sessionData.id}] RemoteAuth salvo foi rejeitado pelo WhatsApp Web. QR liberado; pacote sera descartado apos rejeicoes consecutivas.`);
           sessionData.qrFromRejectedAuth = true;
           this.sessionInitFailures.delete(sessionData.id);
+        } else if (deletedRejectedAuth) {
+          console.warn(`[${sessionData.id}] RemoteAuth morto removido; QR atual e limpo e nao depende de sessao salva antiga.`);
         } else if (hadSavedAuth) {
           console.log(`[${sessionData.id}] RemoteAuth preservado, mas QR foi solicitado como fallback esperado.`);
         }
@@ -1688,6 +1741,9 @@ class SessionManager {
       const qrGeneratedAt = Date.now();
       sessionData.qrCode = await QRCode.toDataURL(qr);
       sessionData.status = 'qr_code';
+      if (deletedRejectedAuth) {
+        sessionData.qrFromRejectedAuth = false;
+      }
       sessionData.qrFromRejectedAuth = sessionData.qrFromRejectedAuth || hadSavedAuth;
       sessionData.qrGeneratedAt = qrGeneratedAt;
       sessionData.lastSeen = qrGeneratedAt;
@@ -1720,6 +1776,7 @@ class SessionManager {
     client.on('authenticated', async () => {
       console.log(`✅ Autenticado: ${sessionData.id}`);
       sessionData.status = 'authenticated';
+      sessionData.qrCode = null;
       sessionData.lastSeen = Date.now();
       sessionData.authenticatedAt = Date.now();
       sessionData.scanProtectionUntil = Date.now() + POST_SCAN_PROTECTION_MS;
@@ -1741,8 +1798,18 @@ class SessionManager {
 
     // RemoteAuth: sessão salva no PostgreSQL com sucesso
     // (evento só dispara na PRIMEIRA vez; backups periódicos são silenciosos)
-    client.on('remote_session_saved', () => {
+    client.on('remote_session_saved', async () => {
       console.log(`💾 [${sessionData.id}] Sessão salva no PostgreSQL — sobrevive a deploys!`);
+      try {
+        const authSaved = await this.hasSavedRemoteAuth(sessionData.id);
+        if (authSaved && typeof this.db.markRemoteAuthVerified === 'function') {
+          await this.db.markRemoteAuthVerified(sessionData.id);
+        } else if (!authSaved) {
+          console.warn(`[${sessionData.id}] Evento remote_session_saved recebido, mas nenhum RemoteAuth valido foi confirmado no banco.`);
+        }
+      } catch (error) {
+        console.warn(`[${sessionData.id}] RemoteAuth salvo, mas falhou ao marcar verificacao no banco: ${error.message}`);
+      }
     });
 
     client.on('ready', async () => {

@@ -3624,12 +3624,30 @@ process.on('SIGTERM', async () => {
   });
 });
 
+function isBenignWhatsAppTempFsError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return message.includes('enoent') &&
+    (
+      message.includes('wwebjs_temp_session') ||
+      message.includes('browsermetrics') ||
+      message.includes('.wwebjs_auth')
+    );
+}
+
 process.on('uncaughtException', (error) => {
+  if (isBenignWhatsAppTempFsError(error)) {
+    console.warn('⚠️ Ignorando erro benigno de arquivo temporario do Chromium/WhatsApp:', error.message || error);
+    return;
+  }
   console.error('❌ Uncaught Exception:', error);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   const errMsg = (reason && reason.message) ? reason.message.toLowerCase() : String(reason).toLowerCase();
+  if (isBenignWhatsAppTempFsError(reason)) {
+    console.warn('⚠️ Ignorando unhandledRejection benigno de arquivo temporario do Chromium/WhatsApp:', errMsg);
+    return;
+  }
   console.error('❌ Unhandled Rejection:', errMsg);
 
   // "Execution context was destroyed" vindo de whatsapp-web.js interno
