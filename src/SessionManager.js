@@ -1649,11 +1649,7 @@ class SessionManager {
           sessionData.qrFromRejectedAuth = true;
           this.sessionInitFailures.delete(sessionData.id);
         } else if (hadSavedAuth) {
-          this.logRecentError(
-            sessionData.id,
-            new Error('RemoteAuth salvo existe, mas o WhatsApp Web pediu QR. A sessao salva nao foi aceita para reativacao.')
-          );
-          console.warn(`[${sessionData.id}] RemoteAuth salvo existe, mas WhatsApp Web pediu QR; manter dados salvos e exigir novo scan.`);
+          console.log(`[${sessionData.id}] RemoteAuth preservado, mas QR foi solicitado como fallback esperado.`);
         }
       } catch (authCheckError) {
         console.warn(`[${sessionData.id}] Nao foi possivel verificar RemoteAuth durante QR: ${authCheckError.message}`);
