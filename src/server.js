@@ -840,6 +840,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     const token = generateToken(user.id);
     const sessionId = `user_${user.id}`;
+    const skipAutoWhatsAppSession = user.email === 'admin@flow.com';
 
     const dbSession = await db.getSession(sessionId);
     const existingSession = await normalizeLiveSessionForRequest(sessionId, dbSession, 'login');
@@ -855,9 +856,9 @@ app.post('/api/auth/login', async (req, res) => {
       sessionStatus = dbSession && canTrustSavedAuth && needsLiveSessionReconnect(dbSession.status)
         ? 'initializing'
         : (shouldPrepareQr ? 'initializing' : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created'));
-      if (dbSession && canTrustSavedAuth && needsLiveSessionReconnect(dbSession.status)) {
+      if (!skipAutoWhatsAppSession && dbSession && canTrustSavedAuth && needsLiveSessionReconnect(dbSession.status)) {
         kickSessionActivationWithQrFallback(sessionId, user.id, dbSession, 'login_saved_auth');
-      } else if (shouldPrepareQr || (dbSession && isQrRequiredDbStatus(dbSession.status))) {
+      } else if (!skipAutoWhatsAppSession && (shouldPrepareQr || (dbSession && isQrRequiredDbStatus(dbSession.status)))) {
         setImmediate(() => {
           ensureQrOrSessionProgress(sessionId, user.id, dbSession, 0, true).catch(error => {
             console.error(`Erro ao preparar QR no login para ${sessionId}:`, error.message);
@@ -894,6 +895,7 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
     const sessionId = `user_${req.userId}`;
     const dbSession = await db.getSession(sessionId);
     const session = await normalizeLiveSessionForRequest(sessionId, dbSession, 'auth_me');
+    const skipAutoWhatsAppSession = user.email === 'admin@flow.com';
 
     let sessionInfo = {
       sessionId: sessionId,
@@ -920,7 +922,7 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
         const reactivationStarted = recoverable
           ? kickSessionActivationWithQrFallback(sessionId, req.userId, dbSession, 'auth_me_saved_auth')
           : false;
-        if (shouldPrepareQr || (!recoverable && isQrRequiredDbStatus(dbSession.status))) {
+        if (!skipAutoWhatsAppSession && (shouldPrepareQr || (!recoverable && isQrRequiredDbStatus(dbSession.status)))) {
           setImmediate(() => {
             ensureQrOrSessionProgress(sessionId, req.userId, dbSession, 0, true).catch(error => {
               console.error(`Erro ao preparar QR no auth/me para ${sessionId}:`, error.message);
@@ -929,12 +931,12 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
         }
         sessionInfo = {
           sessionId: dbSession.id,
-          status: shouldPrepareQr ? 'initializing' : status,
+          status: (!skipAutoWhatsAppSession && shouldPrepareQr) ? 'initializing' : status,
           qrCode: null,
           info: null,
           hasRemoteAuth,
           recoverable,
-          reactivationStarted: reactivationStarted || shouldPrepareQr
+          reactivationStarted: reactivationStarted || (!skipAutoWhatsAppSession && shouldPrepareQr)
         };
       }
     }
@@ -1719,6 +1721,8 @@ app.get('/api/ping', (req, res) => {
 
 app.get('/api/my-session', authMiddleware, async (req, res) => {
   try {
+    const currentUser = await db.getUserById(req.userId);
+    const skipAutoWhatsAppSession = currentUser?.email === 'admin@flow.com';
     const sessionId = `user_${req.userId}`;
     const dbSession = await db.getSession(sessionId);
     const session = await normalizeLiveSessionForRequest(sessionId, dbSession, 'my_session');
@@ -1732,7 +1736,7 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
       const reactivationStarted = recoverable
         ? kickSessionActivationWithQrFallback(sessionId, req.userId, dbSession, 'my_session_saved_auth')
         : false;
-      if (shouldPrepareQr || (!recoverable && dbSession && isQrRequiredDbStatus(dbSession.status))) {
+      if (!skipAutoWhatsAppSession && (shouldPrepareQr || (!recoverable && dbSession && isQrRequiredDbStatus(dbSession.status)))) {
         setImmediate(() => {
           ensureQrOrSessionProgress(sessionId, req.userId, dbSession, 0, true).catch(error => {
             console.error(`Erro ao preparar QR no my-session para ${sessionId}:`, error.message);
@@ -1742,11 +1746,11 @@ app.get('/api/my-session', authMiddleware, async (req, res) => {
       return res.json({
         success: true,
         sessionId,
-        status: shouldPrepareQr ? 'initializing' : status,
+        status: (!skipAutoWhatsAppSession && shouldPrepareQr) ? 'initializing' : status,
         canSend: false,
         hasRemoteAuth,
         recoverable: !!recoverable,
-        reactivationStarted: reactivationStarted || shouldPrepareQr,
+        reactivationStarted: reactivationStarted || (!skipAutoWhatsAppSession && shouldPrepareQr),
         dbStatus: dbSession?.status || null,
         message: recoverable
           ? 'Sessao salva no RemoteAuth. Reativacao automatica iniciada; acompanhe o status.'
