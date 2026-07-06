@@ -626,6 +626,53 @@
         const API_URL = window.location.origin;
         const userSessionRefreshTimers = {};
 
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        async function readApiJson(response, context = 'requisição') {
+            const text = await response.text();
+            const trimmed = text.trim();
+            const looksJson = trimmed.startsWith('{') || trimmed.startsWith('[');
+
+            if (!looksJson) {
+                const cleanText = trimmed
+                    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+                    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+                    .replace(/<[^>]+>/g, ' ')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .slice(0, 160);
+                const error = new Error(response.status >= 500
+                    ? 'API temporariamente indisponível. Atualizando novamente...'
+                    : `Resposta inesperada da API em ${context} (HTTP ${response.status || 'sem status'})`);
+                error.status = response.status;
+                error.bodyPreview = cleanText;
+                throw error;
+            }
+
+            let data;
+            try {
+                data = JSON.parse(trimmed);
+            } catch (parseError) {
+                const error = new Error(`Resposta inválida da API em ${context}. Atualizando novamente...`);
+                error.status = response.status;
+                throw error;
+            }
+
+            if (!response.ok && data.success !== true) {
+                data.success = false;
+                data.error = data.error || data.message || `Erro HTTP ${response.status}`;
+            }
+
+            return data;
+        }
+
         function clearUserSessionRefresh(userId) {
             if (userSessionRefreshTimers[userId]) {
                 clearTimeout(userSessionRefreshTimers[userId]);
@@ -705,7 +752,7 @@
                     body: JSON.stringify({ name, email, password, company: company || null })
                 });
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'cadastro');
 
                 if (data.success) {
                     localStorage.setItem('token', data.token);
@@ -738,7 +785,7 @@
                     body: JSON.stringify({ email, password })
                 });
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'login');
 
                 if (data.success) {
                     localStorage.setItem('token', data.token);
@@ -762,7 +809,7 @@
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                     }
                 });
-                const data = await response.json();
+                const data = await readApiJson(response, 'abrir sessão do usuário');
 
                 if (!data.success) {
                     document.getElementById('sessionStatus').innerHTML = '<p>❌ Erro ao carregar status</p>';
@@ -889,7 +936,7 @@
                     });
                 }
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'criar/reativar sessão');
 
                 if (data.success) {
                     // Não usa alert (bloqueia o polling). Atualiza UI diretamente.
@@ -926,7 +973,7 @@
                     }
                 });
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'abrir sessão do usuário');
 
                 if (data.success) {
                     alert('✅ Sessão desconectada com sucesso!');
@@ -964,7 +1011,7 @@
                     })
                 });
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'criar/reativar sessão');
 
                 if (data.success) {
                     alert('✅ Mensagem enviada com sucesso!' + (data.sessionId ? `\nSessão usada: ${data.sessionId}` : ''));
@@ -1374,10 +1421,21 @@
             }
         }
 
+        function updateUserSessionBadge(userId, status) {
+            const sessionDiv = document.getElementById(`session-${userId}`);
+            const userItem = sessionDiv?.closest('.user-item');
+            const badge = userItem?.querySelector('.session-status-badge');
+            if (!badge) return;
+
+            badge.className = `session-status-badge ${getStatusClass(status)}`;
+            badge.textContent = getStatusText(status);
+        }
+
         function renderUserSessionPanel(userId, sessionId, session) {
             const contentDiv = document.getElementById(`session-content-${userId}`);
             const status = session?.status || 'not_created';
             const qrCode = session?.qrCode || session?.qr_code || null;
+            updateUserSessionBadge(userId, status);
             if (status !== 'saved_auth') {
                 window[`autoReactivate_${userId}`] = false;
             }
@@ -1470,7 +1528,7 @@
                     return;
                 }
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'abrir sessão do usuário');
                 const session = data.session;
 
                 renderUserSessionPanel(userId, sessionId, session);
@@ -1514,7 +1572,7 @@
                     });
                 }
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'criar/reativar sessão');
 
                 if (data.success) {
                     const session = data.session || {
@@ -1583,7 +1641,7 @@
                 return;
             }
 
-            const data = await response.json();
+            const data = await readApiJson(response, 'atualizar sessão');
             if (!data.success) {
                 contentDiv.innerHTML = `<p>Erro: ${data.error || 'Falha ao atualizar sessão'}</p>`;
                 scheduleUserSessionRefresh(userId, 5000);

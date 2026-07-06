@@ -3469,6 +3469,24 @@ if (process.env.RENDER_EXTERNAL_URL) {
 
 // Monitor de memória básico removido — substituído pelo monitor avançado com 3 thresholds (linha ~1295)
 
+app.use('/api', (req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Endpoint API nao encontrado',
+    path: req.originalUrl
+  });
+});
+
+app.use('/api', (err, req, res, next) => {
+  console.error(`Erro nao tratado em ${req.method} ${req.originalUrl}:`, err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({
+    success: false,
+    error: 'Erro interno da API',
+    detail: process.env.NODE_ENV === 'production' ? undefined : err.message
+  });
+});
+
 server.listen(PORT, HOST, async () => {
   console.log(`\n🚀 ========================================`);
   console.log(`   WhatsApp API Server v2.0`);
