@@ -184,9 +184,14 @@ function shouldForceQrForDbStatus(status) {
   return FORCE_QR_DB_STATUSES.has(status);
 }
 
-function isSavedAuthTrusted(hasRemoteAuth, status, forceQr = false, sessionId = null) {
+function isVerifiedSavedAuthSession(dbSession) {
+  return !!(dbSession?.remote_auth_verified_at || dbSession?.phone_number);
+}
+
+function isSavedAuthTrusted(hasRemoteAuth, status, forceQr = false, sessionId = null, dbSession = null) {
   if (!hasRemoteAuth || forceQr) return false;
   if (shouldForceQrForDbStatus(status)) return false;
+  if (dbSession && !isVerifiedSavedAuthSession(dbSession)) return false;
   // Blob rejeitado pelo WhatsApp Web ha pouco: reativar de novo so repete o
   // loop destruir/recriar Chromium. Vai direto para o QR (sem apagar memoria).
   if (sessionId && sessionManager.wasRemoteAuthRecentlyRejected(sessionId)) return false;
@@ -313,7 +318,8 @@ async function getSessionView(sessionId, dbSession = null) {
 
   const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
   const forceQrRequired = shouldForceQrForDbStatus(savedDbSession.status);
-  const recoverable = !liveSession && hasRemoteAuth && !forceQrRequired && needsLiveSessionReconnect(savedDbSession.status);
+  const verifiedSavedAuth = isVerifiedSavedAuthSession(savedDbSession);
+  const recoverable = !liveSession && hasRemoteAuth && verifiedSavedAuth && !forceQrRequired && needsLiveSessionReconnect(savedDbSession.status);
   const status = liveSession
     ? liveSession.status
     : (recoverable ? 'initializing' : (forceQrRequired ? savedDbSession.status : normalizeStatusWithoutRemoteAuth(savedDbSession.status)));
@@ -323,6 +329,7 @@ async function getSessionView(sessionId, dbSession = null) {
     status,
     dbStatus: savedDbSession.status,
     hasRemoteAuth,
+    verifiedSavedAuth,
     recoverable,
     canSend: liveSession ? liveSession.status === 'connected' : false,
     qrCode: liveSession ? liveSession.qrCode : null,
@@ -408,7 +415,7 @@ async function ensureQrOrSessionProgress(sessionId, userId, dbSession, waitMs = 
 
   const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
   const mustForceQr = forceQr || shouldForceQrForDbStatus(dbSession?.status);
-  const trustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession?.status, mustForceQr, sessionId);
+  const trustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession?.status, mustForceQr, sessionId, dbSession);
   const targetStatus = trustSavedAuth ? 'authenticated' : 'initializing';
 
   if (dbSession) {
@@ -1043,7 +1050,7 @@ app.post('/api/admin/reset-whatsapp-sessions', authMiddleware, async (req, res) 
         await sessionManager.cleanupSession(session.id);
       }
 
-      await db.updateSessionStatus(session.id, 'auth_failure');
+      await db.markSessionRequiresQr(session.id, 'auth_failure');
       summary.push({
         sessionId: session.id,
         previousStatus: session.status,
@@ -1147,7 +1154,7 @@ function kickSessionActivationWithQrFallback(sessionId, userId, dbSession = null
       if (!sessionRow) return;
       const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
       const forceQr = shouldForceQrForDbStatus(sessionRow.status) || sessionManager.wasRemoteAuthRecentlyRejected(sessionId);
-      const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, sessionRow.status, forceQr, sessionId);
+      const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, sessionRow.status, forceQr, sessionId, sessionRow);
 
       await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'authenticated' : 'initializing');
       await beginSessionActivation(
@@ -1273,7 +1280,7 @@ app.post('/api/admin/recover-auth-sessions', authMiddleware, async (req, res) =>
             }
             const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(session.id);
             const forceQr = shouldForceQrForDbStatus(session.status) || sessionManager.wasRemoteAuthRecentlyRejected(session.id);
-            const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, session.status, forceQr, session.id);
+            const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, session.status, forceQr, session.id, session);
             await beginSessionActivation(session.id, session.user_id, hasRemoteAuth, canTrustSavedAuth, forceQr, 'ADMIN_RECOVER');
             const recovery = await waitWithSavedAuthQrFallback(
               session.id,
@@ -1384,7 +1391,7 @@ app.get('/api/admin/reactivate-session/:sessionId', async (req, res) => {
 
     console.log(`[ADMIN REACTIVATE] Reativando ${sessionId} com fallback rapido para QR`);
     const forceQr = shouldForceQrForDbStatus(dbSession.status) || sessionManager.wasRemoteAuthRecentlyRejected(sessionId);
-    const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession.status, forceQr, sessionId);
+    const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession.status, forceQr, sessionId, dbSession);
     await beginSessionActivation(sessionId, dbSession.user_id, hasRemoteAuth, canTrustSavedAuth, forceQr, 'ADMIN_REACTIVATE');
     const progress = await waitWithSavedAuthQrFallback(
       sessionId,
@@ -1454,7 +1461,7 @@ app.post('/api/admin/require-qr/:sessionId', async (req, res) => {
       await sessionManager.cleanupSession(sessionId);
     }
 
-    await db.updateSessionStatus(sessionId, 'auth_failure');
+    await db.markSessionRequiresQr(sessionId, 'auth_failure');
     const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
 
     console.log(`[ADMIN REQUIRE QR] ${sessionId} marcado como auth_failure; RemoteAuth preservado: ${hasRemoteAuth}`);
@@ -1865,7 +1872,7 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       });
     }
 
-    const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession?.status, forceQr, targetSessionId);
+    const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession?.status, forceQr, targetSessionId, dbSession);
 
     if (!dbSession) {
       await db.createSession(targetSessionId, targetUserId);
@@ -2015,7 +2022,7 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
     }
 
     const targetUserId = dbSession.user_id || parseInt(sessionId.replace('user_', ''), 10);
-    const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession.status, forceQr, sessionId);
+    const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession.status, forceQr, sessionId, dbSession);
     const action = canTrustSavedAuth ? 'reactivate_saved_auth' : 'create_qr';
 
     await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'authenticated' : 'initializing');
@@ -2032,7 +2039,11 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
       } else {
       console.error(`[REACTIVATE] Falha ao reativar ${sessionId}:`, error.message);
       try {
-        await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'auth_failure' : 'failed');
+        if (canTrustSavedAuth) {
+          await db.markSessionRequiresQr(sessionId, 'auth_failure');
+        } else {
+          await db.updateSessionStatus(sessionId, 'failed');
+        }
       } catch (_) { /* ignore */ }
       io.to(`user_${targetUserId}`).emit('session_error', {
         sessionId,
@@ -3572,7 +3583,7 @@ process.on('unhandledRejection', (reason, promise) => {
               if (!alive) {
                 console.error(`🧟 [${sid}] Chromium morto detectado via unhandledRejection. Limpando e liberando QR.`);
                 await sessionManager.cleanupSession(sid);
-                await db.updateSessionStatus(sid, 'auth_failure');
+                await db.markSessionRequiresQr(sid, 'auth_failure');
                 io.to(`user_${session.userId}`).emit('session_disconnected', {
                   sessionId: sid,
                   reason: 'CHROMIUM_DEAD_UNHANDLED',

@@ -42,7 +42,8 @@ class PostgresStore {
     // reativacao ("RemoteAuth salvo existe, mas pediu QR"). Com o backup a cada
     // 10 min, isso persiste no maximo 1 save por ciclo, sempre fresco.
     this._minSaveInterval = 8 * 60 * 1000;
-    this._maxSaveBytes = 15 * 1024 * 1024;  // Máximo 15MB por sessão — blobs maiores são cache acumulado
+    const maxRemoteAuthBlobMB = parseInt(process.env.MAX_REMOTE_AUTH_BLOB_MB || '32', 10) || 32;
+    this._maxSaveBytes = maxRemoteAuthBlobMB * 1024 * 1024;
     // O ZIP principal ja e a copia ativa. Backups completos duplicam dezenas
     // de MB no Supabase e podem impedir novos scans de serem persistidos.
     this._backupRetention = Math.max(0, parseInt(process.env.REMOTE_AUTH_BACKUP_RETENTION ?? '0', 10) || 0);
@@ -484,7 +485,9 @@ class PostgresStore {
       if (data.length > this._maxSaveBytes) {
         const maxMB = (this._maxSaveBytes / 1024 / 1024).toFixed(0);
         console.warn(`⚠️ PostgresStore.save: "${sessionId}" tem ${sizeMB}MB (máx ${maxMB}MB) — pulando save para proteger o banco`);
-        this._lastSaveTime.set(sessionId, now); // Evita retry imediato
+        if (!forcedSave && !isFirstSave) {
+          this._lastSaveTime.set(sessionId, now); // Evita retry imediato
+        }
         return;
       }
 

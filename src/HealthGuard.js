@@ -459,10 +459,17 @@ class HealthGuard {
       try {
         const previousStatus = this.sessionManager.sessions.get(sid)?.status;
         await this.sessionManager.cleanupSession(sid);
+        const dbSession = await this.db.getSession(sid).catch(() => null);
+        const hasRemoteAuth = await this.sessionManager.hasSavedRemoteAuth(sid);
+        const verifiedSavedAuth = !!(dbSession?.remote_auth_verified_at || dbSession?.phone_number);
         const nextStatus = previousStatus === 'auth_failure'
           ? 'auth_failure'
-          : (await this.sessionManager.hasSavedRemoteAuth(sid) ? 'auth_failure' : 'disconnected');
-        await this.db.updateSessionStatus(sid, nextStatus);
+          : (hasRemoteAuth && verifiedSavedAuth ? 'saved_auth' : 'disconnected');
+        if (nextStatus === 'auth_failure' && typeof this.db.markSessionRequiresQr === 'function') {
+          await this.db.markSessionRequiresQr(sid, 'auth_failure');
+        } else {
+          await this.db.updateSessionStatus(sid, nextStatus);
+        }
       } catch (e) {
         console.error(`❌ [HealthGuard] Erro ao limpar zombie ${sid}:`, e.message);
       }

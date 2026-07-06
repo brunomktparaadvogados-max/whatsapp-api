@@ -939,13 +939,22 @@
                 const data = await readApiJson(response, 'criar/reativar sessão');
 
                 if (data.success) {
-                    // Não usa alert (bloqueia o polling). Atualiza UI diretamente.
-                    document.getElementById('createSessionSection').style.display = 'none';
-                    document.getElementById('qrCodeSection').style.display = 'block';
-                    document.getElementById('qrCodeContainer').innerHTML = '<p>⏳ Preparando sessão... Aguarde o QR Code.</p>';
-                    window._waitingForSession = true;
-                    // Inicia polling imediato
-                    setTimeout(checkSessionStatus, 2000);
+                    // Nao usa alert (bloqueia o polling). Atualiza UI conforme o estado real retornado.
+                    const returnedStatus = data.status || data.session?.status;
+                    if (returnedStatus === 'connected') {
+                        document.getElementById('createSessionSection').style.display = 'none';
+                        document.getElementById('qrCodeSection').style.display = 'none';
+                        document.getElementById('connectedSection').style.display = 'block';
+                        window._waitingForSession = false;
+                        window._autoReactivateMySession = false;
+                    } else {
+                        document.getElementById('createSessionSection').style.display = 'none';
+                        document.getElementById('connectedSection').style.display = 'none';
+                        document.getElementById('qrCodeSection').style.display = 'block';
+                        document.getElementById('qrCodeContainer').innerHTML = '<p>Preparando QR Code...</p>';
+                        window._waitingForSession = true;
+                    }
+                    setTimeout(checkSessionStatus, 1000);
                 } else {
                     alert('❌ Erro: ' + data.error);
                     if (btn) { btn.disabled = false; btn.textContent = '📱 Criar Sessão WhatsApp'; }
@@ -1011,11 +1020,13 @@
                     })
                 });
 
-                const data = await readApiJson(response, 'criar/reativar sessão');
+                const data = await readApiJson(response, 'enviar mensagem');
 
-                if (data.success) {
-                    alert('✅ Mensagem enviada com sucesso!' + (data.sessionId ? `\nSessão usada: ${data.sessionId}` : ''));
+                if (data.success && data.confirmed === true && data.shouldMarkLead === 'sent') {
+                    alert('Mensagem confirmada pelo WhatsApp!' + (data.sessionId ? `\nSessao usada: ${data.sessionId}` : ''));
                     document.getElementById('sendMessage').value = '';
+                } else if (data.success && (data.status === 'pending' || data.unconfirmed || data.shouldMarkLead === 'pending')) {
+                    alert('Mensagem enviada para a fila, mas ainda sem confirmacao do WhatsApp. Nao vou marcar como entregue.');
                 } else {
                     alert('❌ Erro: ' + data.error);
                 }
@@ -1052,7 +1063,7 @@
                     return;
                 }
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'enviar mensagem pela Meta API');
 
                 // Verificar se a resposta foi bem-sucedida
                 if (!data.success) {
@@ -1100,7 +1111,7 @@
                         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
                     }
                 });
-                const data = await response.json();
+                const data = await readApiJson(response, 'requisicao');
 
                 if (data.qrCode) {
                     const modal = document.createElement('div');
@@ -1135,7 +1146,7 @@
                     }
                 });
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'requisicao');
 
                 if (data.success) {
                     alert('Sessão deletada com sucesso!');
@@ -1173,7 +1184,7 @@
                     })
                 });
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'requisicao');
 
                 if (data.success) {
                     alert('✅ Configuração Meta salva com sucesso!');
@@ -1194,7 +1205,7 @@
                     }
                 });
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'requisicao');
 
                 if (data.success && data.configured) {
                     document.getElementById('metaPhoneNumberId').value = data.config.phoneNumberId || '';
@@ -1230,10 +1241,10 @@
                     body: JSON.stringify({ to, message })
                 });
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'requisicao');
 
                 if (data.success) {
-                    alert('✅ Mensagem enviada com sucesso via Meta API!');
+                    alert('Meta API aceitou o envio. A entrega depende da confirmacao do WhatsApp/Meta.');
                     document.getElementById('metaSendMessage').value = '';
                 } else {
                     alert('❌ Erro: ' + (data.error?.message || data.error || 'Erro desconhecido'));
@@ -1272,7 +1283,7 @@
                     body: JSON.stringify({ contacts, message, delayMs })
                 });
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'requisicao');
 
                 if (data.success) {
                     const results = data.results;
@@ -1327,7 +1338,7 @@
                     return;
                 }
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'requisicao');
 
                 // Verificar se a resposta foi bem-sucedida
                 if (!data.success) {
@@ -1662,7 +1673,7 @@
                     headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` }
                 });
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'requisicao');
 
                 if (data.success) {
                     alert('✅ Sessão desconectada com sucesso!');
@@ -1701,7 +1712,7 @@
                     body: JSON.stringify({ name, email, password, company: company || null })
                 });
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'requisicao');
 
                 if (data.success) {
                     alert('✅ Usuário criado com sucesso!');
@@ -1731,7 +1742,7 @@
                     }
                 });
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'requisicao');
 
                 if (data.success) {
                     alert('✅ Usuário e sessão deletados com sucesso!');
@@ -1762,7 +1773,7 @@
                     }
                 });
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'requisicao');
 
                 if (data.success) {
                     resultDiv.innerHTML = `
@@ -1808,7 +1819,7 @@
                     body: JSON.stringify({ limit: 30, timeoutMs: 240000 })
                 });
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'requisicao');
                 if (data.success) {
                     const items = (data.recovering || []).map(s => `<li>${s.id} - ${s.status || 'salva'}</li>`).join('');
                     resultDiv.innerHTML = `
@@ -1851,7 +1862,7 @@
                     }
                 });
 
-                const data = await response.json();
+                const data = await readApiJson(response, 'requisicao');
 
                 let html = `
                     <div style="background: #f0f4ff; border-left: 4px solid #667eea; padding: 15px; border-radius: 5px; margin-top: 15px;">

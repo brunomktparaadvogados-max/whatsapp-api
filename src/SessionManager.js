@@ -50,6 +50,14 @@ const MIN_MESSAGE_INTERVAL_MS = 1500;             // 1.5 segundos entre mensagen
 const MAX_SEND_RETRIES = 0;                       // SEM retries — evita mensagens duplicadas
 const AUTO_RECONNECT_TIMEOUT_MS = 420000;         // 7 min máx para auto-reconexão no envio
 const AUTHENTICATED_READY_TIMEOUT_MS = parseInt(process.env.AUTHENTICATED_READY_TIMEOUT_MS) || 360000;
+const POST_SCAN_PROTECTION_MS = Math.max(
+  5 * 60 * 1000,
+  parseInt(process.env.POST_SCAN_PROTECTION_MS ?? String(15 * 60 * 1000), 10) || 0
+);
+const REMOTE_AUTH_PROTECT_RETRIES = Math.max(
+  1,
+  parseInt(process.env.REMOTE_AUTH_PROTECT_RETRIES ?? '4', 10) || 4
+);
 const STARTUP_RESTORE_LIMIT = parseInt(process.env.STARTUP_RESTORE_LIMIT || '0', 10);
 const SESSION_INIT_MAX_ATTEMPTS = parseInt(process.env.SESSION_INIT_MAX_ATTEMPTS) || 4;
 const QR_INIT_MAX_ATTEMPTS = Math.max(1, parseInt(process.env.QR_INIT_MAX_ATTEMPTS || '2', 10) || 2);
@@ -485,6 +493,25 @@ class SessionManager {
     }
   }
 
+  async protectRemoteAuthAfterScan(sessionData, reason = 'ready') {
+    let authProtected = await this.hasSavedRemoteAuth(sessionData.id);
+    if (authProtected) return true;
+
+    for (let attempt = 1; attempt <= REMOTE_AUTH_PROTECT_RETRIES; attempt++) {
+      console.warn(`[${sessionData.id}] Ready sem RemoteAuth validado. Forcando backup ${attempt}/${REMOTE_AUTH_PROTECT_RETRIES} (${reason}).`);
+      try {
+        this.remoteAuthLastForcedSave.delete(sessionData.id);
+        authProtected = await this.forceRemoteAuthBackup(sessionData.id, `${reason}_protect_${attempt}`);
+        if (authProtected) return true;
+      } catch (error) {
+        console.warn(`[${sessionData.id}] Backup de protecao ${attempt}/${REMOTE_AUTH_PROTECT_RETRIES} falhou: ${error.message}`);
+      }
+      await new Promise(resolve => setTimeout(resolve, 2500 * attempt));
+    }
+
+    return false;
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   // DESCONEXÃO POR INATIVIDADE: Destrói sessão completamente
   // Usuário precisa criar nova sessão e escanear QR novamente
@@ -534,7 +561,10 @@ class SessionManager {
     this.lastMessageTime.delete(sessionId);
     this.sessionSendLock.delete(sessionId);
 
-    const nextStatus = hasRemoteAuth ? 'saved_auth' : 'disconnected';
+    const dbSession = await this.db.getSession(sessionId).catch(() => null);
+    const verifiedSavedAuth = !!(dbSession?.remote_auth_verified_at || dbSession?.phone_number);
+    const canHibernateAsSaved = hasRemoteAuth && verifiedSavedAuth;
+    const nextStatus = canHibernateAsSaved ? 'saved_auth' : 'disconnected';
 
     await this.db.updateSessionStatus(sessionId, nextStatus);
 
@@ -545,12 +575,12 @@ class SessionManager {
     this.io.to(`user_${session.userId}`).emit('session_disconnected', {
       sessionId: sessionId,
       info: session.info,
-      status: hasRemoteAuth ? 'initializing' : nextStatus,
-      hasRemoteAuth,
-      recoverable: hasRemoteAuth,
-      hibernated: hasRemoteAuth,
-      action: hasRemoteAuth ? 'auto_reactivate_or_qr' : 'scan_qr',
-      message: hasRemoteAuth
+      status: canHibernateAsSaved ? 'initializing' : nextStatus,
+      hasRemoteAuth: canHibernateAsSaved,
+      recoverable: canHibernateAsSaved,
+      hibernated: canHibernateAsSaved,
+      action: canHibernateAsSaved ? 'auto_reactivate_or_qr' : 'scan_qr',
+      message: canHibernateAsSaved
         ? 'Sessao hibernada por inatividade. Ao abrir a sessao, a API reativa automaticamente ou libera QR.'
         : 'Sessao desconectada por inatividade. Gere um novo QR Code para conectar.'
     });
@@ -746,10 +776,14 @@ class SessionManager {
           continue;
         }
 
-        // Marca como disconnected em vez de tentar restaurar
+        // No startup, so deixa como saved_auth quando houve ready real antes.
+        // ZIP valido sozinho nao prova scan recuperavel e gerava falso "sessao salva".
         if (session.status === 'connected' || session.status === 'authenticated' || session.status === 'saved_auth') {
-          await this.db.updateSessionStatus(sessionId, await this.hasSavedRemoteAuth(sessionId) ? 'saved_auth' : 'disconnected');
-          console.log(`📴 Sessão ${sessionId}: ${session.status} → saved_auth/disconnected`);
+          const hasRemoteAuth = await this.hasSavedRemoteAuth(sessionId);
+          const verifiedSavedAuth = !!(session.remote_auth_verified_at || session.phone_number);
+          const nextStatus = hasRemoteAuth && verifiedSavedAuth ? 'saved_auth' : 'disconnected';
+          await this.db.updateSessionStatus(sessionId, nextStatus);
+          console.log(`📴 Sessão ${sessionId}: ${session.status} → ${nextStatus}`);
         }
       }
 
@@ -928,7 +962,12 @@ class SessionManager {
           if (['failed', 'disconnected', 'auth_failure'].includes(sess.status)) {
             console.log(`🔄 Forçando cleanup de sessão morta ${sid} (status: ${sess.status}) para liberar slot`);
             await this.cleanupSession(sid);
-            await this.db.updateSessionStatus(sid, sess.status === 'auth_failure' ? 'auth_failure' : 'disconnected');
+            if (sess.status === 'auth_failure' && typeof this.db.markSessionRequiresQr === 'function') {
+              await this.db.markSessionRequiresQr(sid, 'auth_failure');
+            } else {
+              const cleanedStatus = sess.status === 'auth_failure' ? 'auth_failure' : 'disconnected';
+              await this.db.updateSessionStatus(sid, cleanedStatus);
+            }
             break;
           }
         }
@@ -1190,7 +1229,11 @@ class SessionManager {
         timestamp: Date.now()
       });
       await this.cleanupSession(sessionData.id);
-      await this.db.updateSessionStatus(sessionData.id, failedStatus);
+      if (failedStatus === 'auth_failure' && typeof this.db.markSessionRequiresQr === 'function') {
+        await this.db.markSessionRequiresQr(sessionData.id, failedStatus);
+      } else {
+        await this.db.updateSessionStatus(sessionData.id, failedStatus);
+      }
 
       console.log(`💾 Sessão ${sessionData.id} preservada no banco como '${failedStatus}'`);
 
@@ -1262,7 +1305,11 @@ class SessionManager {
     sessionData.lastSeen = Date.now();
 
     await this.cleanupSession(sessionId);
-    await this.db.updateSessionStatus(sessionId, 'auth_failure');
+    if (typeof this.db.markSessionRequiresQr === 'function') {
+      await this.db.markSessionRequiresQr(sessionId, 'auth_failure');
+    } else {
+      await this.db.updateSessionStatus(sessionId, 'auth_failure');
+    }
 
     this.io.to(`user_${sessionData.userId}`).emit('session_disconnected', {
       sessionId,
@@ -1287,6 +1334,17 @@ class SessionManager {
 
     if (sessionData.qrReleaseInProgress) return true;
     sessionData.qrReleaseInProgress = true;
+
+    const dbSession = await this.db.getSession(sessionId).catch(() => null);
+    const hasVerifiedRemoteAuth = !!(dbSession?.remote_auth_verified_at || dbSession?.phone_number);
+    const withinScanProtection = Date.now() < (sessionData.scanProtectionUntil || 0);
+    if (!hasVerifiedRemoteAuth) {
+      const note = withinScanProtection ? 'logo apos scan' : 'sem marcador duravel';
+      console.warn(`[${sessionId}] Conexao caiu sem RemoteAuth verificado (${note}, ${reason}); liberando QR em vez de mostrar sessao salva.`);
+      sessionData.qrReleaseInProgress = false;
+      await this.markSessionQrRequired(sessionData, reason);
+      return false;
+    }
 
     console.warn(`[${sessionId}] Sessao perdeu conexao (${reason}). RemoteAuth preservado; hibernando para reativacao sob demanda.`);
 
@@ -1521,7 +1579,11 @@ class SessionManager {
 
       currentSession.status = 'auth_failure';
       await this.cleanupSession(sessionData.id);
-      await this.db.updateSessionStatus(sessionData.id, 'auth_failure');
+      if (typeof this.db.markSessionRequiresQr === 'function') {
+        await this.db.markSessionRequiresQr(sessionData.id, 'auth_failure');
+      } else {
+        await this.db.updateSessionStatus(sessionData.id, 'auth_failure');
+      }
       this.io.to(`user_${sessionData.userId}`).emit('session_error', {
         sessionId: sessionData.id,
         error: 'WhatsApp autenticou, mas nao ficou pronto. O QR Code sera liberado automaticamente para reconectar sem depender de reativacao manual.',
@@ -1632,6 +1694,8 @@ class SessionManager {
       console.log(`✅ Autenticado: ${sessionData.id}`);
       sessionData.status = 'authenticated';
       sessionData.lastSeen = Date.now();
+      sessionData.authenticatedAt = Date.now();
+      sessionData.scanProtectionUntil = Date.now() + POST_SCAN_PROTECTION_MS;
       this.sessionLastActivity.set(sessionData.id, Date.now());
 
       await this.db.updateSessionStatus(sessionData.id, 'authenticated');
@@ -1663,8 +1727,10 @@ class SessionManager {
         platform: client.info.platform
       };
       sessionData.qrCode = null;
-      sessionData.lastSeen = Date.now();
-      sessionData.connectedAt = Date.now();
+      const readyAt = Date.now();
+      sessionData.lastSeen = readyAt;
+      sessionData.connectedAt = readyAt;
+      sessionData.scanProtectionUntil = readyAt + POST_SCAN_PROTECTION_MS;
       this.sessionLastActivity.set(sessionData.id, Date.now());
       this.reconnectAttempts.delete(sessionData.id);
       this.clearRemoteAuthRejected(sessionData.id);
@@ -1674,28 +1740,33 @@ class SessionManager {
       }
       sessionData.authenticatedReadyMisses = 0;
 
-      await this.db.updateSessionStatus(
-        sessionData.id,
-        'connected',
-        client.info.wid._serialized,
-        client.info.pushname
-      );
-
-      let authProtected = await this.hasSavedRemoteAuth(sessionData.id);
-      if (!authProtected) {
-        console.warn(`[${sessionData.id}] Ready sem RemoteAuth validado. Forcando backup antes de liberar como recuperavel.`);
-        authProtected = await this.forceRemoteAuthBackup(sessionData.id, 'ready_protect_scan');
-      }
+      const authProtected = await this.protectRemoteAuthAfterScan(sessionData, 'ready');
 
       if (!authProtected) {
         this.logRecentError(
           sessionData.id,
-          new Error('Sessao conectou, mas RemoteAuth ainda nao foi confirmado no PostgreSQL. Backups agendados continuam tentando.')
+          new Error('Sessao conectou, mas RemoteAuth nao foi confirmado no PostgreSQL apos retries de protecao.')
         );
         this.io.to(`user_${sessionData.userId}`).emit('session_warning', {
           sessionId: sessionData.id,
-          warning: 'WhatsApp conectado, mas a persistencia da sessao ainda esta sendo confirmada. Evite reiniciar a API nos proximos minutos.'
+          warning: 'WhatsApp conectou, mas a memoria da sessao ainda nao foi confirmada. A API vai liberar QR automaticamente se a conexao cair.'
         });
+      }
+
+      if (typeof this.db.markSessionReady === 'function') {
+        await this.db.markSessionReady(
+          sessionData.id,
+          client.info.wid._serialized,
+          client.info.pushname,
+          authProtected
+        );
+      } else {
+        await this.db.updateSessionStatus(
+          sessionData.id,
+          'connected',
+          client.info.wid._serialized,
+          client.info.pushname
+        );
       }
 
       this.scheduleInitialRemoteAuthBackups(sessionData, 'ready');
@@ -2459,7 +2530,11 @@ class SessionManager {
       // Aguardar sessão ficar pronta (max 90s)
       const readySession = await this.waitForSessionReady(sessionId, AUTO_RECONNECT_TIMEOUT_MS);
       if (!readySession) {
-        await this.db.updateSessionStatus(sessionId, 'auth_failure');
+        if (typeof this.db.markSessionRequiresQr === 'function') {
+          await this.db.markSessionRequiresQr(sessionId, 'auth_failure');
+        } else {
+          await this.db.updateSessionStatus(sessionId, 'auth_failure');
+        }
         this.io.to(`user_${dbSession.user_id}`).emit('session_error', {
           sessionId,
           error: 'Sessao salva nao ficou pronta para envio. QR Code necessario para reconectar.',

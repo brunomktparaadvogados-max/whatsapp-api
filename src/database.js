@@ -193,11 +193,20 @@ class DatabaseManager {
         phone_number TEXT,
         phone_name TEXT,
         webhook_url TEXT,
+        remote_auth_verified_at TIMESTAMP,
+        last_ready_at TIMESTAMP,
+        last_auth_failure_at TIMESTAMP,
+        auth_generation INTEGER DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
+
+    await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS remote_auth_verified_at TIMESTAMP`);
+    await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_ready_at TIMESTAMP`);
+    await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_auth_failure_at TIMESTAMP`);
+    await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS auth_generation INTEGER DEFAULT 0`);
 
     await this.run(`
       CREATE TABLE IF NOT EXISTS contacts (
@@ -457,6 +466,32 @@ class DatabaseManager {
     return await this.run(
       'UPDATE sessions SET status = $1, phone_number = COALESCE($2, phone_number), phone_name = COALESCE($3, phone_name), updated_at = CURRENT_TIMESTAMP WHERE id = $4',
       [status, phoneNumber, phoneName, sessionId]
+    );
+  }
+
+  async markSessionReady(sessionId, phoneNumber = null, phoneName = null, remoteAuthVerified = false) {
+    return await this.run(
+      `UPDATE sessions
+       SET status = 'connected',
+           phone_number = COALESCE($2, phone_number),
+           phone_name = COALESCE($3, phone_name),
+           last_ready_at = CURRENT_TIMESTAMP,
+           remote_auth_verified_at = CASE WHEN $4 THEN CURRENT_TIMESTAMP ELSE remote_auth_verified_at END,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [sessionId, phoneNumber, phoneName, remoteAuthVerified]
+    );
+  }
+
+  async markSessionRequiresQr(sessionId, status = 'auth_failure') {
+    return await this.run(
+      `UPDATE sessions
+       SET status = $2,
+           remote_auth_verified_at = NULL,
+           last_auth_failure_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [sessionId, status]
     );
   }
 
