@@ -95,6 +95,7 @@ sync_adapter_repo() {
     rm -rf "${adapter_dir}"
     git clone --depth 1 --branch "${REPO_BRANCH}" "${REPO_URL}" "${adapter_dir}"
   fi
+  git -C "${adapter_dir}" config core.autocrlf false
 }
 
 write_compose() {
