@@ -2,54 +2,45 @@ const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const socketIo = require('socket.io');
-const cron = require('node-cron');
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
+const path = require('path');
 require('dotenv').config();
+
+const DatabaseManager = require('./database');
+const EvolutionWhatsAppProvider = require('./EvolutionWhatsAppProvider');
+const MetaWhatsAppAPI = require('./MetaAPI');
+const { generateToken, authMiddleware } = require('./auth');
 
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 
-const DatabaseManager = require('./database');
-const SessionManager = require('./SessionManager');
-const HealthGuard = require('./HealthGuard');
-const MetaWhatsAppAPI = require('./MetaAPI');
-const { generateToken, verifyToken, authMiddleware } = require('./auth');
-
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
-  }
+  cors: { origin: '*', methods: ['GET', 'POST'] }
 });
 
-const dataDir = path.join(__dirname, '..', 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-}
-
 const db = new DatabaseManager();
-const sessionManager = new SessionManager(db, io);
+const publicBaseUrl = (process.env.PUBLIC_BASE_URL || process.env.APP_URL || process.env.KOYEB_PUBLIC_DOMAIN || '')
+  .replace(/^https?:\/\/(.+)$/, 'https://$1')
+  .replace(/\/+$/, '');
 
-// HealthGuard — Agente autorregulador de saúde do sistema
-// Inicializado após SessionManager para ter acesso a pgStore
-setTimeout(() => {
-  const healthGuard = new HealthGuard({
-    sessionManager,
-    database: db,
-    pgStore: sessionManager.pgStore
-  });
-  healthGuard.start();
-  sessionManager.healthGuard = healthGuard;  // Permite SessionManager/PostgresStore consultar
-  global.__healthGuard = healthGuard;        // Acesso global para endpoints de diagnóstico
-}, 5000); // Espera 5s para SessionManager inicializar pgStore
+const whatsapp = new EvolutionWhatsAppProvider({
+  baseUrl: process.env.EVOLUTION_API_URL,
+  apiKey: process.env.EVOLUTION_API_KEY || process.env.AUTHENTICATION_API_KEY,
+  webhookUrl: process.env.EVOLUTION_WEBHOOK_URL || (publicBaseUrl ? `${publicBaseUrl}/api/webhooks/evolution` : null),
+  webhookSecret: process.env.EVOLUTION_WEBHOOK_SECRET,
+  instancePrefix: process.env.EVOLUTION_INSTANCE_PREFIX || 'pf'
+});
+
+const recentErrors = [];
+const recentSends = new Map();
+const SEND_DEDUPE_MS = parseInt(process.env.WHATSAPP_SEND_DEDUPE_MS || String(15 * 60 * 1000), 10);
+const SEND_DELAY_MS = parseInt(process.env.EVOLUTION_SEND_DELAY_MS || '1200', 10);
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
-app.use(express.static('public', {
+app.use(express.static(path.join(__dirname, '..', 'public'), {
   etag: false,
   maxAge: 0,
   setHeaders: (res) => {
@@ -57,3668 +48,838 @@ app.use(express.static('public', {
   }
 }));
 
-// Timeout global de 180s para rotas da API — evita requests travados
-// (auto-reconexão pode levar até 90s + envio 60s + getState 15s = 165s)
 app.use('/api', (req, res, next) => {
-  req.setTimeout(480000);
-  res.setTimeout(480000, () => {
-    if (!res.headersSent) {
-      console.error(`⏰ Timeout na rota ${req.method} ${req.path}`);
-      res.status(504).json({ error: 'Request timeout — tente novamente' });
-    }
-  });
+  req.setTimeout(90000);
+  res.setTimeout(90000);
   next();
 });
 
-const recentWhatsAppSends = new Map();
-const SEND_DEDUPE_MS = parseInt(process.env.WHATSAPP_SEND_DEDUPE_MS) || 15 * 60 * 1000;
-const GLOBAL_SEND_CONCURRENCY = parseInt(process.env.WHATSAPP_GLOBAL_SEND_CONCURRENCY) || 2;
-const GLOBAL_SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_GLOBAL_SEND_TIMEOUT_MS) || 120000;
-const SEND_RECONNECT_WAIT_MS = parseInt(process.env.WHATSAPP_SEND_RECONNECT_WAIT_MS) || 240000;
-const SESSION_CREATE_STALE_MS = parseInt(process.env.WHATSAPP_SESSION_CREATE_STALE_MS) || 180000;
-const SAVED_AUTH_AUTO_QR_FALLBACK_MS = Math.max(
-  3000,
-  Math.min(parseInt(process.env.SAVED_AUTH_AUTO_QR_FALLBACK_MS || '5000', 10) || 5000, 10000)
-);
-const REMOTE_AUTH_REJECTED_STALE_MS = Math.max(
-  3000,
-  Math.min(parseInt(process.env.REMOTE_AUTH_REJECTED_STALE_MS || '5000', 10) || 5000, 10000)
-);
-let activeGlobalSends = 0;
-const globalSendQueue = [];
-
-function normalizeWhatsAppPhoneForDedupe(to) {
-  let cleanTo = String(to || '').replace(/\D/g, '');
-  if (!cleanTo) return cleanTo;
-
-  if (cleanTo.length >= 10 && cleanTo.length <= 11 && !cleanTo.startsWith('55')) {
-    cleanTo = `55${cleanTo}`;
-  }
-
-  if (cleanTo.length === 13 && cleanTo.startsWith('55') && cleanTo[4] === '9') {
-    return `${cleanTo.slice(0, 4)}${cleanTo.slice(5)}`;
-  }
-
-  return cleanTo;
-}
-
-function getWhatsAppSendKey(sessionId, to, message, mediaUrl = null) {
-  const cleanTo = normalizeWhatsAppPhoneForDedupe(to);
-  const cleanMessage = `${String(message || '').trim().replace(/\s+/g, ' ')}|media:${String(mediaUrl || '').trim()}`;
-  const messageHash = crypto.createHash('sha256').update(cleanMessage).digest('hex');
-  return {
-    cleanTo,
-    messageHash,
-    key: `${sessionId}:${cleanTo}:${messageHash}`
+function rememberError(scope, error, details = {}) {
+  const entry = {
+    at: new Date().toISOString(),
+    scope,
+    code: error?.code || null,
+    message: error?.message || String(error),
+    details
   };
+  recentErrors.unshift(entry);
+  recentErrors.splice(50);
+  console.error(`[${scope}]`, entry.message, details);
+  return entry;
 }
 
-function claimWhatsAppSend(sessionId, to, message, mediaUrl = null) {
-  const { key } = getWhatsAppSendKey(sessionId, to, message, mediaUrl);
-  const now = Date.now();
-  const existing = recentWhatsAppSends.get(key);
-  if (existing && (now - existing) < SEND_DEDUPE_MS) {
-    return { duplicate: true, key };
-  }
-
-  recentWhatsAppSends.set(key, now);
-  setTimeout(() => recentWhatsAppSends.delete(key), SEND_DEDUPE_MS).unref?.();
-  return { duplicate: false, key };
-}
-
-function releaseWhatsAppSendClaim(sessionId, to, message, mediaUrl = null) {
-  const { key } = getWhatsAppSendKey(sessionId, to, message, mediaUrl);
-  recentWhatsAppSends.delete(key);
-  db.releaseWhatsAppSendLock(key).catch(error => {
-    console.warn(`Falha ao liberar trava global de envio (${sessionId}): ${error.message}`);
+function sendError(res, error, fallbackStatus = 500) {
+  const status = error?.status || fallbackStatus;
+  return res.status(status).json({
+    success: false,
+    error: error?.message || 'Erro interno',
+    code: error?.code || 'INTERNAL_ERROR',
+    details: error?.details || undefined
   });
 }
 
-async function claimWhatsAppSendGlobal(sessionId, to, message, mediaUrl = null) {
-  const localClaim = claimWhatsAppSend(sessionId, to, message, mediaUrl);
-  if (localClaim.duplicate) return localClaim;
+async function getCurrentUser(req) {
+  return await db.getUserById(req.userId);
+}
 
-  const { cleanTo, messageHash, key } = getWhatsAppSendKey(sessionId, to, message, mediaUrl);
-  try {
-    const acquired = await db.acquireWhatsAppSendLock(key, sessionId, cleanTo, messageHash, SEND_DEDUPE_MS);
-    if (!acquired) {
-      return { duplicate: true, key };
-    }
-  } catch (error) {
-    console.warn(`Falha ao gravar trava global de envio (${sessionId}/${cleanTo}); usando trava local: ${error.message}`);
+async function isAdmin(req) {
+  const user = await getCurrentUser(req);
+  return user?.email === 'admin@flow.com';
+}
+
+async function assertSessionAccess(req, sessionId) {
+  const session = await db.getSession(sessionId);
+  if (!session) {
+    const err = new Error('Sessao nao encontrada');
+    err.status = 404;
+    throw err;
   }
-
-  return { duplicate: false, key };
+  if (!(await isAdmin(req)) && session.user_id !== req.userId) {
+    const err = new Error('Voce nao tem permissao para usar esta sessao');
+    err.status = 403;
+    throw err;
+  }
+  return session;
 }
 
-function runNextGlobalSend() {
-  while (activeGlobalSends < GLOBAL_SEND_CONCURRENCY && globalSendQueue.length > 0) {
-    const item = globalSendQueue.shift();
-    activeGlobalSends++;
-    const timeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(`Global WhatsApp send timeout after ${GLOBAL_SEND_TIMEOUT_MS}ms`)), GLOBAL_SEND_TIMEOUT_MS)
-    );
-    Promise.race([item.fn(), timeout])
-      .then(item.resolve)
-      .catch(item.reject)
-      .finally(() => {
-        activeGlobalSends--;
-        runNextGlobalSend();
-      });
+async function ensureDbSession(sessionId, userId) {
+  await db.createSession(sessionId, userId);
+  return await db.getSession(sessionId);
+}
+
+async function updateDbFromView(sessionId, view) {
+  const status = view?.status || 'unknown';
+  if (status === 'connected') {
+    await db.markSessionReady(sessionId, view?.info?.ownerJid || view?.raw?.instance?.ownerJid || null, view?.info?.profileName || null, true);
+  } else if (status === 'qr_code') {
+    await db.updateSessionStatus(sessionId, 'qr_code');
+  } else if (status === 'not_created') {
+    await db.updateSessionStatus(sessionId, 'disconnected');
+  } else if (['disconnected', 'failed', 'auth_failure'].includes(status)) {
+    await db.updateSessionStatus(sessionId, status);
+  } else {
+    await db.updateSessionStatus(sessionId, 'initializing');
   }
 }
 
-function isSessionReadyForImmediateSend(sessionId) {
-  const session = sessionManager.getSession(sessionId);
-  return !!(session && session.client && session.status === 'connected');
-}
-
-const QR_REQUIRED_DB_STATUSES = new Set(['auth_failure', 'qr_code', 'disconnected', 'failed']);
-const FORCE_QR_DB_STATUSES = new Set(['auth_failure', 'qr_code']);
-
-function isQrRequiredDbStatus(status) {
-  return QR_REQUIRED_DB_STATUSES.has(status);
-}
-
-function shouldForceQrForDbStatus(status) {
-  return FORCE_QR_DB_STATUSES.has(status);
-}
-
-function isVerifiedSavedAuthSession(dbSession) {
-  // Fonte unica da invariante: SessionManager.isVerifiedSavedAuthRecord.
-  // phone_number nunca prova sessao salva.
-  return sessionManager.isVerifiedSavedAuthRecord(dbSession);
-}
-
-function isSavedAuthTrusted(hasRemoteAuth, status, forceQr = false, sessionId = null, dbSession = null) {
-  if (!hasRemoteAuth || forceQr) return false;
-  if (shouldForceQrForDbStatus(status)) return false;
-  if (dbSession && !isVerifiedSavedAuthSession(dbSession)) return false;
-  // Blob rejeitado pelo WhatsApp Web ha pouco: reativar de novo so repete o
-  // loop destruir/recriar Chromium. Vai direto para o QR (sem apagar memoria).
-  if (sessionId && sessionManager.wasRemoteAuthRecentlyRejected(sessionId)) return false;
-  return true;
-}
-
-function getRequestWaitMs(value, defaultMs = 30000) {
-  const rawValue = value === undefined || value === null || value === ''
-    ? defaultMs
-    : value;
-  const parsed = parseInt(rawValue, 10);
-  const waitMs = Number.isFinite(parsed) ? parsed : defaultMs;
-  return Math.max(0, Math.min(waitMs, 60000));
-}
-
-function wantsImmediateSessionActivation(req) {
-  return req.query?.activate === 'true' || req.query?.autoActivate === 'true';
-}
-
-function hasUserVisibleSessionProgress(status) {
-  return ['connected', 'qr_code', 'failed', 'auth_failure'].includes(status);
-}
-
-function isActivationFallbackError(error) {
-  const message = String(error?.message || error || '').toLowerCase();
-  return message.includes("cannot read properties of undefined (reading 'get')") ||
-    message.includes('reading \'get\'') ||
-    message.includes('execution context was destroyed') ||
-    message.includes('runtime.callfunctionon') ||
-    message.includes('target closed') ||
-    message.includes('protocol error') ||
-    message.includes('context was destroyed') ||
-    message.includes('session closed') ||
-    message.includes('page has been closed') ||
-    message.includes('timeout');
-}
-
-function needsLiveSessionReconnect(dbStatus) {
-  return ['connected', 'authenticated', 'reconnecting', 'initializing', 'saved_auth', 'auth_failure', 'disconnected', 'failed'].includes(dbStatus);
-}
-
-function isRecentDbProgressStatus(dbSession, maxAgeMs = 5 * 60 * 1000) {
-  if (!dbSession || !['initializing', 'authenticated', 'reconnecting'].includes(dbSession.status)) return false;
-  const updatedAt = dbSession.updated_at ? new Date(dbSession.updated_at).getTime() : 0;
-  return updatedAt > 0 && (Date.now() - updatedAt) <= maxAgeMs;
-}
-
-function normalizeStatusWithoutRemoteAuth(dbStatus) {
-  if (!dbStatus || dbStatus === 'not_created') return dbStatus || 'not_created';
-  if (['connected', 'authenticated', 'reconnecting', 'initializing', 'saved_auth', 'qr_code', 'failed'].includes(dbStatus)) {
-    return 'disconnected';
-  }
-  return dbStatus;
-}
-
-function shouldReuseExistingSession(session) {
-  if (!session) return false;
-  if (session.status === 'connected') return true;
-
-  const ageMs = Date.now() - (session.lastSeen || session.createdAt || 0);
-  if (session.status === 'qr_code') return !!session.qrCode;
-  if (session.status === 'authenticated' || session.status === 'initializing') {
-    if (sessionManager.wasRemoteAuthRecentlyRejected(session.id) && ageMs > REMOTE_AUTH_REJECTED_STALE_MS) {
-      return false;
-    }
-    return ageMs <= SESSION_CREATE_STALE_MS;
-  }
-
-  return false;
-}
-
-function isStuckLiveSession(session) {
-  if (!session) return false;
-  if (session.status === 'connected') return false;
-
-  const ageMs = Date.now() - (session.lastSeen || session.createdAt || 0);
-  if (session.status === 'qr_code') {
-    return !session.qrCode && ageMs > 15000;
-  }
-  if (session.status === 'authenticated' || session.status === 'initializing') {
-    if (sessionManager.wasRemoteAuthRecentlyRejected(session.id) && ageMs > REMOTE_AUTH_REJECTED_STALE_MS) {
-      return true;
-    }
-    return ageMs > SESSION_CREATE_STALE_MS;
-  }
-
-  return ['failed', 'disconnected', 'auth_failure'].includes(session.status);
-}
-
-async function normalizeLiveSessionForRequest(sessionId, dbSession = null, reason = 'request') {
-  const session = sessionManager.getSession(sessionId);
-  if (!session) return null;
-  if (shouldReuseExistingSession(session)) return session;
-  if (!isStuckLiveSession(session)) return session;
-
-  const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-  console.warn(`[${sessionId}] Sessao em memoria travada (${session.status}) durante ${reason}; limpando Chromium para permitir reativacao/QR.`);
-  await sessionManager.cleanupSession(sessionId);
-
-  if (dbSession) {
-    const nextStatus = session.status === 'auth_failure'
-      ? 'auth_failure'
-      : (shouldForceQrForDbStatus(dbSession.status) ? dbSession.status : (hasRemoteAuth ? 'auth_failure' : 'disconnected'));
-    await db.updateSessionStatus(sessionId, nextStatus);
-  }
-
-  return null;
-}
-
-async function getSessionView(sessionId, dbSession = null) {
-  const savedDbSession = dbSession || await db.getSession(sessionId);
-  if (!savedDbSession) return null;
-
-  const liveSession = sessionManager.getSession(sessionId);
-  const liveDbStatuses = new Set(['qr_code', 'connected', 'authenticated', 'failed', 'auth_failure', 'disconnected']);
-  if (liveSession && liveDbStatuses.has(liveSession.status) && savedDbSession.status !== liveSession.status) {
-    try {
-      await db.updateSessionStatus(sessionId, liveSession.status);
-      savedDbSession.status = liveSession.status;
-    } catch (error) {
-      console.warn(`[${sessionId}] Falha ao sincronizar status vivo '${liveSession.status}' no banco: ${error.message}`);
-    }
-  }
-
-  const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-  const forceQrRequired = shouldForceQrForDbStatus(savedDbSession.status);
-  const verifiedSavedAuth = isVerifiedSavedAuthSession(savedDbSession);
-  const recoverable = !liveSession && hasRemoteAuth && verifiedSavedAuth && !forceQrRequired && needsLiveSessionReconnect(savedDbSession.status);
-  const status = liveSession
-    ? liveSession.status
-    : (recoverable ? 'initializing' : (forceQrRequired ? savedDbSession.status : normalizeStatusWithoutRemoteAuth(savedDbSession.status)));
-  const qrCode = liveSession?.status === 'qr_code' ? liveSession.qrCode : null;
-
+function publicSessionView(row, providerView = null) {
+  const status = providerView?.status || row?.status || 'not_created';
+  const connected = status === 'connected';
   return {
-    ...savedDbSession,
+    id: row?.id || providerView?.id,
+    user_id: row?.user_id,
     status,
-    dbStatus: savedDbSession.status,
-    hasRemoteAuth,
-    verifiedSavedAuth,
-    recoverable,
-    canSend: liveSession ? liveSession.status === 'connected' : false,
-    qrCode,
-    info: liveSession ? liveSession.info : null,
-    live: !!liveSession
+    canSend: connected,
+    qrCode: connected ? null : (providerView?.qrCode || null),
+    qr_code: connected ? null : (providerView?.qrCode || null),
+    engine: 'evolution',
+    instanceName: providerView?.instanceName || whatsapp.instanceNameForSession(row?.id || providerView?.id),
+    info: providerView?.info || {
+      wid: row?.phone_number ? { user: row.phone_number } : undefined,
+      pushname: row?.phone_name || undefined
+    },
+    created_at: row?.created_at,
+    updated_at: row?.updated_at
   };
 }
 
-async function waitForSessionProgress(sessionId, waitMs) {
-  const maxWaitMs = getRequestWaitMs(waitMs, 20000);
-  const startedAt = Date.now();
+async function getSessionView(sessionId, row = null, { activate = false, waitMs = 0, forceQr = false, user = null } = {}) {
+  const dbSession = row || await db.getSession(sessionId);
+  if (!dbSession) return null;
 
-  while (Date.now() - startedAt < maxWaitMs) {
-    const session = sessionManager.getSession(sessionId);
-    if (session) {
-      if (hasUserVisibleSessionProgress(session.status)) {
-        return session;
-      }
-    }
-    await new Promise(resolve => setTimeout(resolve, 1000));
+  let view;
+  if (activate || forceQr) {
+    view = await whatsapp.getQr(sessionId, { waitMs, forceQr, user });
+  } else {
+    view = await whatsapp.getState(sessionId);
   }
 
-  return sessionManager.getSession(sessionId) || null;
+  await updateDbFromView(sessionId, view);
+  const refreshed = await db.getSession(sessionId);
+  return publicSessionView(refreshed || dbSession, view);
 }
 
-async function beginSessionActivation(sessionId, targetUserId, hasRemoteAuth, canTrustSavedAuth, forceQr, context) {
-  console.log(`[${context}] ${canTrustSavedAuth ? 'reactivate_saved_auth' : 'create_qr'} para ${sessionId}`);
-  const forceQrFallback = forceQr || (hasRemoteAuth && !canTrustSavedAuth);
-  await sessionManager.createSession(sessionId, targetUserId, {
-    priority: true,
-    forceFreshAuth: false,
-    forceQrFallback
-  });
+function normalizeMessageKey(sessionId, to, message, mediaUrl = null) {
+  const number = whatsapp.normalizePhone(to);
+  const body = `${String(message || '').trim().replace(/\s+/g, ' ')}|media:${String(mediaUrl || '')}`;
+  const hash = crypto.createHash('sha256').update(body).digest('hex');
+  return {
+    number,
+    hash,
+    key: `${sessionId}:${number}:${hash}`
+  };
 }
 
-async function waitWithSavedAuthQrFallback(sessionId, targetUserId, hasRemoteAuth, canTrustSavedAuth, waitMs, context) {
-  // Rejeicao recente do RemoteAuth: nao ha o que esperar da reidratacao — o
-  // caminho ja e o QR. Evita o ciclo espera 15s -> destruir -> recriar.
-  if (canTrustSavedAuth && sessionManager.wasRemoteAuthRecentlyRejected(sessionId)) {
-    canTrustSavedAuth = false;
-  }
-  const totalWaitMs = getRequestWaitMs(waitMs, 30000);
-  const firstWaitMs = canTrustSavedAuth && hasRemoteAuth
-    ? Math.min(totalWaitMs, SAVED_AUTH_AUTO_QR_FALLBACK_MS)
-    : totalWaitMs;
-
-  let progressedSession = await waitForSessionProgress(sessionId, firstWaitMs);
-  let view = await getSessionView(sessionId);
-  let status = progressedSession ? progressedSession.status : (view?.status || 'initializing');
-
-  if (!canTrustSavedAuth || !hasRemoteAuth || status === 'connected' || status === 'qr_code') {
-    return { progressedSession, view, status, usedQrFallback: false };
-  }
-
-  console.warn(`[${context}] ${sessionId} nao recuperou RemoteAuth em ${firstWaitMs}ms (status: ${status}); liberando QR automaticamente.`);
-  const liveSession = sessionManager.getSession(sessionId);
-  if (liveSession) {
-    await sessionManager.cleanupSession(sessionId);
-  }
-
-  await db.updateSessionStatus(sessionId, 'initializing');
-  await beginSessionActivation(sessionId, targetUserId, hasRemoteAuth, false, true, `${context}_auto_qr`);
-
-  const remainingWaitMs = Math.max(0, Math.min(5000, totalWaitMs - firstWaitMs));
-  progressedSession = await waitForSessionProgress(sessionId, remainingWaitMs);
-  view = await getSessionView(sessionId);
-  status = progressedSession ? progressedSession.status : (view?.status || 'initializing');
-
-  return { progressedSession, view, status, usedQrFallback: true };
-}
-
-async function ensureQrOrSessionProgress(sessionId, userId, dbSession, waitMs = 30000, forceQr = false) {
-  const existingSession = await normalizeLiveSessionForRequest(sessionId, dbSession, 'ensure_qr_or_progress');
-  if (existingSession && shouldReuseExistingSession(existingSession)) {
-    return existingSession;
-  }
-
-  const staleSession = sessionManager.getSession(sessionId);
-  if (staleSession) {
-    console.log(`[QR] Limpando sessao viva em estado ${staleSession.status}: ${sessionId}`);
-    await sessionManager.cleanupSession(sessionId);
-  }
-
-  const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-  const mustForceQr = forceQr || shouldForceQrForDbStatus(dbSession?.status);
-  const trustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession?.status, mustForceQr, sessionId, dbSession);
-  const targetStatus = trustSavedAuth ? 'authenticated' : 'initializing';
-
-  if (dbSession) {
-    await db.updateSessionStatus(sessionId, targetStatus);
-  }
-
-  await sessionManager.createSession(sessionId, userId, {
-    priority: true,
-    forceFreshAuth: false,
-    forceQrFallback: hasRemoteAuth && !trustSavedAuth
-  });
-
-  const progress = await waitWithSavedAuthQrFallback(
-    sessionId,
-    userId,
-    hasRemoteAuth,
-    trustSavedAuth,
-    waitMs,
-    'ENSURE_QR_OR_PROGRESS'
-  );
-  return progress.progressedSession || sessionManager.getSession(sessionId) || progress.view;
-}
-
-async function requireQueryAdmin(req, res) {
-  const token = req.query.token || req.query.authToken;
-  if (!token) {
-    res.status(401).json({ success: false, error: 'Token nao fornecido' });
-    return null;
-  }
-
-  const decoded = verifyToken(String(token));
-  if (!decoded) {
-    res.status(401).json({ success: false, error: 'Token invalido ou expirado' });
-    return null;
-  }
-
-  const user = await db.getUserById(decoded.userId);
-  if (!user || user.email !== 'admin@flow.com') {
-    res.status(403).json({ success: false, error: 'Acesso negado. Apenas administradores.' });
-    return null;
-  }
-
-  return user;
-}
-
-const sessionReconnectKickTimes = new Map();
-const SESSION_RECONNECT_KICK_COOLDOWN_MS = Math.max(
-  3000,
-  parseInt(process.env.SESSION_RECONNECT_KICK_COOLDOWN_MS || '5000', 10)
-);
-
-function kickSessionReconnect(sessionId, reason = 'send') {
-  const liveSession = sessionManager.getSession(sessionId);
-  if (liveSession && ['connected', 'initializing', 'authenticated', 'qr_code'].includes(liveSession.status)) {
-    return false;
-  }
-
+async function claimSend(sessionId, to, message, mediaUrl = null) {
+  const { key, number, hash } = normalizeMessageKey(sessionId, to, message, mediaUrl);
   const now = Date.now();
-  const lastKick = sessionReconnectKickTimes.get(sessionId) || 0;
-  if (now - lastKick < SESSION_RECONNECT_KICK_COOLDOWN_MS) {
-    return false;
+  const existing = recentSends.get(key);
+  if (existing && now - existing < SEND_DEDUPE_MS) {
+    return { duplicate: true, key, number };
   }
+  recentSends.set(key, now);
+  setTimeout(() => recentSends.delete(key), SEND_DEDUPE_MS).unref?.();
 
-  setImmediate(async () => {
-    try {
-      const dbSession = await db.getSession(sessionId);
-      if (!dbSession) return;
-      kickSessionActivationWithQrFallback(sessionId, dbSession.user_id, dbSession, reason);
-    } catch (error) {
-      console.error(`Erro ao preparar/reconectar ${sessionId} (${reason}):`, error.message);
-    }
-  });
-  return true;
-}
-
-async function ensureSessionReadyForSend(sessionId) {
-  if (isSessionReadyForImmediateSend(sessionId)) return true;
-  return false;
-}
-
-function respondSessionReconnecting(res, sessionId, to, reason = 'Sessao nao carregada para envio imediato') {
-  return res.status(202).json({
-    success: false,
-    status: 'pending',
-    finalStatus: 'pending',
-    shouldMarkLead: 'pending',
-    confirmed: false,
-    invalidNumber: false,
-    unconfirmed: true,
-    queued: false,
-    sessionId,
-    to,
-    errorType: 'session_reconnecting',
-    action: 'reconnect_session',
-    message: `${reason}. Reconexao iniciada; tente novamente quando a sessao aparecer conectada.`,
-    data: {
-      status: 'pending',
-      finalStatus: 'pending',
-      shouldMarkLead: 'pending',
-      confirmed: false,
-      invalidNumber: false,
-      unconfirmed: true,
-      action: 'reconnect_session'
-    }
-  });
-}
-
-function respondSessionQrRequired(res, sessionId, to, reason = 'Sessao WhatsApp precisa de novo QR Code') {
-  return res.status(409).json({
-    success: false,
-    status: 'pending',
-    finalStatus: 'pending',
-    shouldMarkLead: 'pending',
-    confirmed: false,
-    invalidNumber: false,
-    unconfirmed: true,
-    queued: false,
-    sessionId,
-    to,
-    errorType: 'qr_required',
-    action: 'scan_qr',
-    message: `${reason}. Mantenha o lead pendente e reative a sessao antes de disparar.`,
-    data: {
-      status: 'pending',
-      finalStatus: 'pending',
-      shouldMarkLead: 'pending',
-      confirmed: false,
-      invalidNumber: false,
-      unconfirmed: true,
-      action: 'scan_qr'
-    }
-  });
-}
-
-function respondSessionActivationRequired(res, sessionId, to, reason = 'Sessao WhatsApp hibernada ou nao carregada') {
-  return res.status(409).json({
-    success: false,
-    status: 'pending',
-    finalStatus: 'pending',
-    shouldMarkLead: 'pending',
-    confirmed: false,
-    invalidNumber: false,
-    unconfirmed: true,
-    queued: false,
-    sessionId,
-    to,
-    errorType: 'session_activation_required',
-    action: 'reactivate_session',
-    message: `${reason}. O usuario precisa entrar no painel ou um admin precisa reativar a sessao antes do disparo.`,
-    data: {
-      status: 'pending',
-      finalStatus: 'pending',
-      shouldMarkLead: 'pending',
-      confirmed: false,
-      invalidNumber: false,
-      unconfirmed: true,
-      action: 'reactivate_session'
-    }
-  });
-}
-
-function withGlobalWhatsAppSendLimit(fn, meta = {}) {
-  return new Promise((resolve, reject) => {
-    globalSendQueue.push({ fn, resolve, reject, meta, queuedAt: Date.now() });
-    console.log(`📥 [GLOBAL SEND] Fila: ${globalSendQueue.length} | Ativos: ${activeGlobalSends}/${GLOBAL_SEND_CONCURRENCY} | ${meta.sessionId || ''} ${meta.to || ''}`);
-    runNextGlobalSend();
-  });
-}
-
-function enqueueWhatsAppSend(sessionId, to, message, mediaUrl = null) {
-  setImmediate(async () => {
-    try {
-      console.log(`📥 [${sessionId}] Enfileirado para envio em background: ${to}`);
-      const result = await withGlobalWhatsAppSendLimit(
-        () => sessionManager.sendMessage(sessionId, to, message, mediaUrl),
-        { sessionId, to }
-      );
-      if (result?.skipped) {
-        console.warn(`⚠️ [${sessionId}] Contato pulado em background: ${to} — ${result.error}`);
-      } else {
-        console.log(`✅ [${sessionId}] Envio em background concluído: ${to}`);
-      }
-    } catch (error) {
-      console.error(`❌ [${sessionId}] Envio em background falhou para ${to}:`, error.message);
-    }
-  });
-}
-
-function respondQueued(res, sessionId) {
-  return res.status(202).json({
-    success: true,
-    queued: true,
-    sessionId,
-    message: 'Mensagem enfileirada. A API vai reconectar e enviar em background.',
-    data: { status: 'queued' }
-  });
-}
-
-async function sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl = null) {
-  const dbSession = await db.getSession(sessionId);
-  const liveSession = sessionManager.getSession(sessionId);
-  const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-
-  if (dbSession && isQrRequiredDbStatus(dbSession.status)) {
-    if (hasRemoteAuth && !shouldForceQrForDbStatus(dbSession.status)) {
-      kickSessionActivationWithQrFallback(sessionId, dbSession.user_id, dbSession, 'send_saved_auth_status');
-      return respondSessionReconnecting(res, sessionId, to, 'Sessao salva encontrada; reconexao iniciada automaticamente');
-    }
-    if (dbSession) {
-      ensureQrOrSessionProgress(sessionId, dbSession.user_id, dbSession, 0, shouldForceQrForDbStatus(dbSession.status)).catch(error => {
-        console.error(`Erro ao preparar QR para envio ${sessionId}:`, error.message);
-      });
-    }
-    return respondSessionQrRequired(res, sessionId, to, 'QR Code liberado no painel para reconectar o WhatsApp');
-  }
-
-  if (liveSession?.status === 'qr_code' || dbSession?.status === 'qr_code') {
-    return respondSessionQrRequired(res, sessionId, to, 'A sessao WhatsApp esta aguardando leitura do QR Code');
-  }
-
-  const readyForSend = await ensureSessionReadyForSend(sessionId);
-  if (!readyForSend) {
-    if (hasRemoteAuth) {
-      kickSessionActivationWithQrFallback(sessionId, dbSession?.user_id, dbSession, 'send_saved_auth_not_ready');
-      return respondSessionReconnecting(res, sessionId, to, 'Sessao hibernada; reconexao iniciada automaticamente');
-    }
-    if (dbSession) {
-      ensureQrOrSessionProgress(sessionId, dbSession.user_id, dbSession, 0, true).catch(error => {
-        console.error(`Erro ao preparar QR para envio ${sessionId}:`, error.message);
-      });
-    }
-    return respondSessionActivationRequired(res, sessionId, to);
-  }
-
-  const sendClaim = await claimWhatsAppSendGlobal(sessionId, to, message, mediaUrl);
-  if (sendClaim.duplicate) {
-    const duplicateAttemptId = `duplicate_${sessionId}_${Date.now()}`;
-    return res.status(409).json({
-      success: false,
-      status: 'pending',
-      finalStatus: 'pending',
-      shouldMarkLead: 'pending',
-      confirmed: false,
-      invalidNumber: false,
-      unconfirmed: true,
-      attemptId: duplicateAttemptId,
-      duplicate: true,
-      sessionId,
-      message: 'Envio duplicado ignorado: esta mesma mensagem ja esta em processamento ou aguardando confirmacao para este contato.',
-      data: {
-        attemptId: duplicateAttemptId,
-        status: 'pending',
-        confirmed: false,
-        invalidNumber: false,
-        unconfirmed: true,
-        finalStatus: 'pending',
-        shouldMarkLead: 'pending',
-        duplicate: true,
-        duplicateSuppressed: true,
-        note: 'Envio duplicado suprimido; manter lead pendente ate confirmacao real.'
-      }
-    });
-  }
-
-  let result;
   try {
-    result = await withGlobalWhatsAppSendLimit(
-      () => sessionManager.sendMessage(sessionId, to, message, mediaUrl),
-      { sessionId, to }
-    );
-  } catch (sendError) {
-    // Erro de sessao ANTES de criar a mensagem no WhatsApp Web: libera a trava
-    // de dedupe para a retentativa nao ser suprimida como "duplicada" por 15min.
-    // Timeouts sao ambiguos (mensagem pode ter sido criada) — trava mantida.
-    const msg = String(sendError?.message || '').toLowerCase();
-    if (!msg.includes('timeout')) {
-      releaseWhatsAppSendClaim(sessionId, to, message, mediaUrl);
-    }
-    throw sendError;
+    const acquired = await db.acquireWhatsAppSendLock(key, sessionId, number, hash, SEND_DEDUPE_MS);
+    if (!acquired) return { duplicate: true, key, number };
+  } catch (error) {
+    rememberError('send-lock', error, { sessionId, number });
   }
-  const isConfirmed = result?.confirmed === true && !result?.unconfirmed && !result?.skipped;
-  const isPending = !isConfirmed;
-  // Envio nao confirmado E mensagem NAO criada no WhatsApp Web (sem messageId):
-  // libera a trava para permitir retry real. Com messageId a mensagem existe —
-  // manter a trava evita duplicar no destinatario.
-  if ((result?.skipped || isPending) && !result?.messageId && !result?.id) {
-    releaseWhatsAppSendClaim(sessionId, to, message, mediaUrl);
-  }
-  const finalStatus = result?.skipped ? 'invalid_number' : (isPending ? 'pending' : (result?.status || 'delivered'));
-  return res.status(result?.skipped ? 422 : (isPending ? 409 : 200)).json({
-    success: isConfirmed,
-    status: result?.status || finalStatus,
-    finalStatus,
-    shouldMarkLead: result?.skipped ? 'invalid' : (isPending ? 'pending' : 'sent'),
-    confirmed: isConfirmed,
-    invalidNumber: Boolean(result?.skipped || result?.status === 'invalid_number'),
-    messageId: isPending ? null : (result?.messageId || result?.id || null),
-    attemptId: result?.attemptId || null,
-    skipped: !!result?.skipped,
-    unconfirmed: !!result?.unconfirmed,
-    sessionId,
-    message: result?.skipped ? 'Contato invalido ou nao resolvido pelo WhatsApp' : (isPending ? 'Envio nao entregue pelo WhatsApp; manter pendente' : 'Mensagem entregue pelo WhatsApp'),
-    data: result
-  });
+
+  return { duplicate: false, key, number };
 }
 
-function respondWhatsAppSendError(res, error, context = {}) {
-  if (res.headersSent) return;
+async function releaseSend(key) {
+  recentSends.delete(key);
+  try {
+    await db.releaseWhatsAppSendLock(key);
+  } catch (error) {
+    rememberError('send-lock-release', error, { key });
+  }
+}
 
-  const errorMsg = (error.message || '').toLowerCase();
-  const isSessionDead = errorMsg.includes('perdeu conex') ||
-                        errorMsg.includes('caiu') ||
-                        errorMsg.includes('reconectando') ||
-                        errorMsg.includes('nao esta conectada') ||
-                        errorMsg.includes('não está conectada') ||
-                        errorMsg.includes('nao encontrada') ||
-                        errorMsg.includes('não encontrada') ||
-                        errorMsg.includes('nao disponivel') ||
-                        errorMsg.includes('não disponível');
-  const isRateLimit = errorMsg.includes('timeout') || errorMsg.includes('rate') || errorMsg.includes('limite');
-  const isInvalidNumber = errorMsg.includes('invalid_number') ||
-                          errorMsg.includes('numero nao esta registrado') ||
-                          errorMsg.includes('número não está registrado') ||
-                          errorMsg.includes('not registered') ||
-                          errorMsg.includes('invalid wid');
+async function sendWhatsAppText({ sessionId, to, message, mediaUrl = null }) {
+  if (!to || !message) {
+    const err = new Error('Campos "to" e "message" sao obrigatorios');
+    err.status = 400;
+    throw err;
+  }
 
-  const statusCode = isInvalidNumber ? 422 : (isSessionDead ? 503 : (isRateLimit ? 429 : 400));
-  const finalStatus = isInvalidNumber ? 'invalid_number' : 'pending';
+  const claim = await claimSend(sessionId, to, message, mediaUrl);
+  if (claim.duplicate) {
+    return {
+      success: true,
+      duplicate: true,
+      confirmed: false,
+      status: 'duplicate_ignored',
+      shouldMarkLead: 'pending',
+      message: 'Mensagem duplicada ignorada para evitar reenvio. Aguarde a confirmacao real de entrega.'
+    };
+  }
 
-  return res.status(statusCode).json({
-    success: false,
-    status: finalStatus,
-    finalStatus,
-    shouldMarkLead: isInvalidNumber ? 'invalid' : 'pending',
-    confirmed: false,
-    invalidNumber: isInvalidNumber,
-    skipped: isInvalidNumber,
-    queued: false,
-    sessionId: context.sessionId || null,
-    to: context.to || null,
-    error: error.message,
-    errorType: isInvalidNumber ? 'invalid_number' : (isSessionDead ? 'session_error' : (isRateLimit ? 'rate_limit' : 'temporary_send_error')),
-    action: isInvalidNumber ? 'mark_invalid' : (isSessionDead ? 'reconnect_session' : 'retry_later'),
-    details: isInvalidNumber
-      ? 'Numero confirmado como inexistente pelo WhatsApp.'
-      : 'Envio nao confirmado. Mantenha o lead pendente e nao marque como numero invalido.'
-  });
+  try {
+    const result = mediaUrl
+      ? await whatsapp.sendMedia(sessionId, to, mediaUrl, message)
+      : await whatsapp.sendText(sessionId, to, message, { delay: SEND_DELAY_MS });
+
+    const messageId = result.messageId || crypto.randomUUID();
+    await db.saveMessage({
+      id: messageId,
+      sessionId,
+      contactPhone: result.to,
+      messageType: mediaUrl ? 'media' : 'chat',
+      body: message,
+      mediaUrl,
+      mediaMimetype: null,
+      fromMe: true,
+      timestamp: Date.now(),
+      status: 'pending_confirmation'
+    });
+    await db.upsertContact(sessionId, result.to);
+
+    return {
+      success: true,
+      provider: 'evolution',
+      sessionId,
+      to: result.to,
+      messageId,
+      confirmed: false,
+      status: 'pending_confirmation',
+      finalStatus: 'pending_confirmation',
+      shouldMarkLead: 'pending',
+      message: 'Mensagem aceita pela Evolution. A entrega sera confirmada por webhook/status, nao por tentativa local.',
+      raw: result.raw
+    };
+  } catch (error) {
+    await releaseSend(claim.key);
+    throw error;
+  }
+}
+
+async function handleSessionMessage(req, res, explicitSessionId = null) {
+  try {
+    const sessionId = resolveTargetSessionId(req, explicitSessionId);
+    await assertSessionAccess(req, sessionId);
+    const result = await sendWhatsAppText({ sessionId, to: req.body.to, message: req.body.message, mediaUrl: req.body.mediaUrl });
+    res.status(result.confirmed ? 200 : 202).json(result);
+  } catch (error) {
+    rememberError('send-message', error, { sessionId: explicitSessionId || req.body?.sessionId, to: req.body?.to });
+    return sendError(res, error, error.status || 500);
+  }
+}
+
+function resolveTargetSessionId(req, explicitSessionId = null) {
+  if (explicitSessionId && explicitSessionId !== 'auto') return explicitSessionId;
+  if (req.body?.sessionId && req.body.sessionId !== 'auto') return req.body.sessionId;
+  return `user_${req.userId}`;
 }
 
 io.on('connection', (socket) => {
-  console.log('Cliente WebSocket conectado:', socket.id);
-
-  socket.on('authenticate', (token) => {
-    const jwt = require('jsonwebtoken');
-    try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'seu-secret-super-seguro-mude-isso');
-      socket.join(`user_${decoded.userId}`);
-      socket.emit('authenticated', { success: true });
-    } catch (error) {
-      socket.emit('auth_error', { error: 'Token inválido' });
-    }
-  });
-
-  socket.on('disconnect', () => {
-    console.log('Cliente WebSocket desconectado:', socket.id);
-  });
+  socket.emit('connected', { message: 'Conectado ao servidor ProspectFlow WhatsApp Evolution' });
 });
 
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { email, password, name, company } = req.body;
-
     if (!email || !password || !name) {
-      return res.status(400).json({ error: 'Email, senha e nome são obrigatórios' });
-    }
-
-    const existingUser = await db.getUserByEmail(email);
-    if (existingUser) {
-      return res.status(400).json({ error: 'Email já cadastrado' });
+      return res.status(400).json({ error: 'Email, senha e nome sao obrigatorios' });
     }
 
     const userId = await db.createUser(email, password, name, company);
-    const token = generateToken(userId);
-
     const sessionId = `user_${userId}`;
+    await ensureDbSession(sessionId, userId);
+    const token = generateToken(userId);
 
     res.json({
       success: true,
       token,
       user: { id: userId, email, name, company },
-      sessionId: sessionId,
-      message: 'Usuário criado! Clique em criar sessão para gerar o QR Code quando estiver pronto para escanear.'
+      sessionId,
+      sessionStatus: 'qr_code',
+      message: 'Usuario criado. O QR Code sera gerado pela Evolution quando a sessao for aberta.'
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    if (error.code === 'USER_EMAIL_EXISTS') return sendError(res, error, 409);
+    rememberError('register', error);
+    return sendError(res, error, 500);
   }
 });
 
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-
     if (!email || !password) {
-      return res.status(400).json({ error: 'Email e senha são obrigatórios' });
+      return res.status(400).json({ error: 'Email e senha sao obrigatorios' });
     }
 
     const user = await db.getUserByEmail(email);
-    if (!user) {
-      return res.status(401).json({ error: 'Credenciais inválidas' });
-    }
-
-    const isValidPassword = db.verifyPassword(password, user.password);
-    if (!isValidPassword) {
-      return res.status(401).json({ error: 'Credenciais inválidas' });
+    if (!user || !db.verifyPassword(password, user.password)) {
+      return res.status(401).json({ error: 'Credenciais invalidas' });
     }
 
     const token = generateToken(user.id);
     const sessionId = `user_${user.id}`;
-    const skipAutoWhatsAppSession = user.email === 'admin@flow.com';
+    const skipWhatsApp = user.email === 'admin@flow.com';
+    await ensureDbSession(sessionId, user.id);
 
-    const dbSession = await db.getSession(sessionId);
-    const existingSession = await normalizeLiveSessionForRequest(sessionId, dbSession, 'login');
-    let sessionStatus = 'not_found';
-
-    if (existingSession) {
-      sessionStatus = existingSession.status;
-    } else {
-      const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-      const forceQrRequired = dbSession && shouldForceQrForDbStatus(dbSession.status);
-      const canTrustSavedAuth = dbSession && isSavedAuthTrusted(hasRemoteAuth, dbSession.status, forceQrRequired, sessionId, dbSession);
-      const shouldPrepareQr = dbSession && !canTrustSavedAuth && needsLiveSessionReconnect(dbSession.status);
-      sessionStatus = dbSession && canTrustSavedAuth && needsLiveSessionReconnect(dbSession.status)
-        ? 'initializing'
-        : (shouldPrepareQr ? 'initializing' : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created'));
-      if (!skipAutoWhatsAppSession && dbSession && canTrustSavedAuth && needsLiveSessionReconnect(dbSession.status)) {
-        kickSessionActivationWithQrFallback(sessionId, user.id, dbSession, 'login_saved_auth');
-      } else if (!skipAutoWhatsAppSession && (shouldPrepareQr || (dbSession && isQrRequiredDbStatus(dbSession.status)))) {
-        setImmediate(() => {
-          ensureQrOrSessionProgress(sessionId, user.id, dbSession, 0, true).catch(error => {
-            console.error(`Erro ao preparar QR no login para ${sessionId}:`, error.message);
-          });
-        });
-      }
+    if (!skipWhatsApp) {
+      whatsapp.getQr(sessionId, { waitMs: 1, user }).catch(error => rememberError('login-qr-warmup', error, { sessionId }));
     }
 
+    const row = await db.getSession(sessionId);
     res.json({
       success: true,
       token,
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        company: user.company
-      },
-      sessionId: sessionId,
-      sessionStatus: sessionStatus,
-      reactivationStarted: sessionStatus === 'initializing' && !!dbSession
+      user: { id: user.id, email: user.email, name: user.name, company: user.company },
+      sessionId,
+      sessionStatus: skipWhatsApp ? row?.status || 'not_created' : 'initializing',
+      reactivationStarted: !skipWhatsApp
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    rememberError('login', error);
+    return sendError(res, error, 500);
   }
 });
 
 app.get('/api/auth/me', authMiddleware, async (req, res) => {
   try {
     const user = await db.getUserById(req.userId);
-    if (!user) {
-      return res.status(404).json({ error: 'Usuário não encontrado' });
-    }
+    if (!user) return res.status(404).json({ error: 'Usuario nao encontrado' });
 
     const sessionId = `user_${req.userId}`;
-    const dbSession = await db.getSession(sessionId);
-    const session = await normalizeLiveSessionForRequest(sessionId, dbSession, 'auth_me');
-    const skipAutoWhatsAppSession = user.email === 'admin@flow.com';
+    const row = await ensureDbSession(sessionId, req.userId);
+    const sessionInfo = user.email === 'admin@flow.com'
+      ? publicSessionView(row)
+      : await getSessionView(sessionId, row, { activate: false });
 
-    let sessionInfo = {
-      sessionId: sessionId,
-      status: 'not_created',
-      qrCode: null
-    };
-
-    if (session) {
-      sessionInfo = {
-        sessionId: session.id,
-        status: session.status,
-        qrCode: session.qrCode,
-        info: session.info
-      };
-    } else {
-      // Sessão não está em memória — verifica no banco de dados
-      // Isso cobre o caso onde a sessão foi desconectada e removida da memória
-      if (dbSession) {
-        const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-        const forceQrRequired = shouldForceQrForDbStatus(dbSession.status);
-        const recoverable = isSavedAuthTrusted(hasRemoteAuth, dbSession.status, forceQrRequired, sessionId, dbSession) && needsLiveSessionReconnect(dbSession.status);
-        const shouldPrepareQr = !recoverable && needsLiveSessionReconnect(dbSession.status);
-        const status = recoverable ? 'initializing' : normalizeStatusWithoutRemoteAuth(dbSession.status || 'disconnected');
-        const reactivationStarted = recoverable
-          ? kickSessionActivationWithQrFallback(sessionId, req.userId, dbSession, 'auth_me_saved_auth')
-          : false;
-        if (!skipAutoWhatsAppSession && (shouldPrepareQr || (!recoverable && isQrRequiredDbStatus(dbSession.status)))) {
-          setImmediate(() => {
-            ensureQrOrSessionProgress(sessionId, req.userId, dbSession, 0, true).catch(error => {
-              console.error(`Erro ao preparar QR no auth/me para ${sessionId}:`, error.message);
-            });
-          });
-        }
-        sessionInfo = {
-          sessionId: dbSession.id,
-          status: (!skipAutoWhatsAppSession && shouldPrepareQr) ? 'initializing' : status,
-          qrCode: null,
-          info: null,
-          hasRemoteAuth,
-          recoverable,
-          reactivationStarted: reactivationStarted || (!skipAutoWhatsAppSession && shouldPrepareQr)
-        };
-      }
-    }
-
-    res.json({
-      success: true,
-      user,
-      session: sessionInfo
-    });
+    res.json({ success: true, user, session: sessionInfo });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    rememberError('auth-me', error);
+    return sendError(res, error, 500);
   }
 });
 
 app.get('/api/users', authMiddleware, async (req, res) => {
   try {
-    const currentUser = await db.getUserById(req.userId);
-    if (currentUser.email !== 'admin@flow.com') {
-      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
-    }
-
+    if (!(await isAdmin(req))) return res.status(403).json({ error: 'Acesso negado' });
     const users = await db.getAllUsers();
     res.json({ success: true, users });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return sendError(res, error, 500);
   }
 });
 
 app.delete('/api/users/:userId', authMiddleware, async (req, res) => {
   try {
-    const currentUser = await db.getUserById(req.userId);
-    if (currentUser.email !== 'admin@flow.com') {
-      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
-    }
-
-    const userIdToDelete = parseInt(req.params.userId);
-    if (userIdToDelete === req.userId) {
-      return res.status(400).json({ error: 'Você não pode deletar sua própria conta.' });
-    }
-
-    const sessionId = `user_${userIdToDelete}`;
-    const session = sessionManager.getSession(sessionId);
-    if (session) {
-      await sessionManager.deleteSession(sessionId);
-    }
-
-    await db.deleteUser(userIdToDelete);
-    res.json({ success: true, message: 'Usuário deletado com sucesso' });
+    if (!(await isAdmin(req))) return res.status(403).json({ error: 'Acesso negado' });
+    const userId = parseInt(req.params.userId, 10);
+    await whatsapp.deleteInstance(`user_${userId}`).catch(error => rememberError('delete-user-instance', error, { userId }));
+    await db.deleteUser(userId);
+    res.json({ success: true, message: 'Usuario e instancia WhatsApp removidos' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/api/admin/cleanup-sessions', authMiddleware, async (req, res) => {
-  try {
-    const currentUser = await db.getUserById(req.userId);
-    if (currentUser.email !== 'admin@flow.com') {
-      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
-    }
-
-    const allSessions = await db.getAllSessionsFromDB();
-    let cleaned = 0;
-
-    for (const session of allSessions) {
-      const sessionId = session.id;
-
-      if (!sessionId || sessionId === 'T' || sessionId === 'test' || sessionId === 'default') {
-        await db.deleteSession(sessionId);
-        cleaned++;
-        continue;
-      }
-
-      if (!sessionId.startsWith('user_')) {
-        await db.deleteSession(sessionId);
-        cleaned++;
-        continue;
-      }
-
-      const userId = parseInt(sessionId.replace('user_', ''));
-      const user = await db.getUserById(userId);
-      if (!user) {
-        await db.deleteSession(sessionId);
-        cleaned++;
-      }
-    }
-
-    res.json({
-      success: true,
-      message: `${cleaned} sessões inválidas removidas`,
-      cleaned
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/api/admin/reset-whatsapp-sessions', authMiddleware, async (req, res) => {
-  try {
-    const currentUser = await db.getUserById(req.userId);
-    if (currentUser.email !== 'admin@flow.com') {
-      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
-    }
-
-    const forceConnected = req.body?.forceConnected === true;
-    const clearRemoteAuth = req.body?.clearRemoteAuth === true;
-    const allSessions = await db.getAllSessionsFromDB();
-    const summary = [];
-
-    for (const session of allSessions) {
-      if (!session.id || !session.id.startsWith('user_')) {
-        summary.push({ sessionId: session.id, action: 'skipped_invalid_id' });
-        continue;
-      }
-
-      const liveSession = sessionManager.getSession(session.id);
-      if (liveSession?.status === 'connected' && !forceConnected) {
-        summary.push({ sessionId: session.id, status: 'connected', action: 'preserved_connected' });
-        continue;
-      }
-
-      if (liveSession) {
-        await sessionManager.cleanupSession(session.id);
-      }
-
-      if (clearRemoteAuth && sessionManager.pgStore) {
-        await sessionManager.pgStore.delete({ session: `RemoteAuth-${session.id}` });
-      }
-
-      if (clearRemoteAuth && typeof db.resetSessionAuthForQr === 'function') {
-        await db.resetSessionAuthForQr(session.id, 'auth_failure');
-      } else {
-        await db.markSessionRequiresQr(session.id, 'auth_failure');
-      }
-
-      summary.push({
-        sessionId: session.id,
-        previousStatus: session.status,
-        liveStatus: liveSession?.status || null,
-        action: clearRemoteAuth ? 'reset_clean_to_qr_required' : 'reset_to_qr_required'
-      });
-    }
-
-    res.json({
-      success: true,
-      action: 'reset_whatsapp_sessions',
-      forceConnected,
-      clearRemoteAuth,
-      total: allSessions.length,
-      reset: summary.filter(item => item.action === 'reset_to_qr_required' || item.action === 'reset_clean_to_qr_required').length,
-      preservedConnected: summary.filter(item => item.action === 'preserved_connected').length,
-      summary,
-      message: clearRemoteAuth
-        ? 'Sessoes resetadas com RemoteAuth antigo removido. Usuarios e contatos foram preservados; QR sera liberado no proximo acesso.'
-        : 'Sessoes resetadas para gerar QR no proximo acesso. Usuarios, contatos e RemoteAuth foram preservados.'
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      action: 'reset_whatsapp_sessions_error',
-      error: error.message
-    });
-  }
-});
-
-async function getSecurityAdvisorStatus() {
-  const sensitiveTables = [
-    'users',
-    'sessions',
-    'contacts',
-    'messages',
-    'meta_configs',
-    'whatsapp_send_locks',
-    'whatsapp_auth_sessions',
-    'whatsapp_auth_session_backups',
-    'whatsapp_accounts',
-    'message_templates',
-    'campaigns',
-    'client_webhooks'
-  ];
-
-  const tables = await db.all(`
-    SELECT c.relname AS table_name, c.relrowsecurity AS rls_enabled
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'public'
-      AND c.relkind IN ('r', 'p')
-    ORDER BY c.relname
-  `);
-  const disabledRls = tables.filter(table => !table.rls_enabled).map(table => table.table_name);
-
-  const exposedGrants = await db.all(`
-    SELECT table_name, grantee, privilege_type
-    FROM information_schema.table_privileges
-    WHERE table_schema = 'public'
-      AND table_name = ANY($1)
-      AND grantee IN ('PUBLIC', 'anon', 'authenticated')
-    ORDER BY table_name, grantee, privilege_type
-  `, [sensitiveTables]);
-
-  const functions = await db.all(`
-    SELECT p.oid::regprocedure::TEXT AS function_identity, p.proconfig
-    FROM pg_proc p
-    JOIN pg_namespace n ON n.oid = p.pronamespace
-    WHERE n.nspname = 'public'
-      AND p.proname IN ('prospecting_hash', 'prospecting_normalize', 'delete_old_messages')
-    ORDER BY p.proname
-  `);
-  const mutableSearchPath = functions
-    .filter(fn => !Array.isArray(fn.proconfig) || !fn.proconfig.some(config => String(config).startsWith('search_path=')))
-    .map(fn => fn.function_identity);
-
-  return {
-    disabledRls,
-    exposedGrants,
-    mutableSearchPath,
-    checkedTables: tables.length,
-    checkedFunctions: functions.length,
-    secure: disabledRls.length === 0 && exposedGrants.length === 0 && mutableSearchPath.length === 0
-  };
-}
-
-function kickSessionActivationWithQrFallback(sessionId, userId, dbSession = null, reason = 'saved_auth') {
-  const liveSession = sessionManager.getSession(sessionId);
-  if (liveSession && ['connected', 'initializing', 'authenticated', 'qr_code'].includes(liveSession.status)) {
-    return false;
-  }
-
-  const now = Date.now();
-  const lastKick = sessionReconnectKickTimes.get(sessionId) || 0;
-  if (now - lastKick < SESSION_RECONNECT_KICK_COOLDOWN_MS) {
-    return false;
-  }
-
-  sessionReconnectKickTimes.set(sessionId, now);
-  setImmediate(async () => {
-    try {
-      const sessionRow = dbSession || await db.getSession(sessionId);
-      if (!sessionRow) return;
-      const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-      const forceQr = shouldForceQrForDbStatus(sessionRow.status) || sessionManager.wasRemoteAuthRecentlyRejected(sessionId);
-      const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, sessionRow.status, forceQr, sessionId, sessionRow);
-
-      await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'authenticated' : 'initializing');
-      await beginSessionActivation(
-        sessionId,
-        userId || sessionRow.user_id || parseInt(sessionId.replace('user_', ''), 10),
-        hasRemoteAuth,
-        canTrustSavedAuth,
-        forceQr,
-        `KICK_${reason}`
-      );
-      await waitWithSavedAuthQrFallback(
-        sessionId,
-        userId || sessionRow.user_id || parseInt(sessionId.replace('user_', ''), 10),
-        hasRemoteAuth,
-        canTrustSavedAuth,
-        SAVED_AUTH_AUTO_QR_FALLBACK_MS + 10000,
-        `KICK_${reason}`
-      );
-    } catch (error) {
-      console.error(`Erro ao ativar ${sessionId} com fallback QR (${reason}):`, error.message);
-    }
-  });
-  return true;
-}
-
-app.get('/api/admin/security-advisor-status', authMiddleware, async (req, res) => {
-  try {
-    const currentUser = await db.getUserById(req.userId);
-    if (currentUser.email !== 'admin@flow.com') {
-      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
-    }
-
-    const status = await getSecurityAdvisorStatus();
-    res.json({ success: true, ...status });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.post('/api/admin/apply-security-advisor-fixes', authMiddleware, async (req, res) => {
-  try {
-    const currentUser = await db.getUserById(req.userId);
-    if (currentUser.email !== 'admin@flow.com') {
-      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
-    }
-
-    await db.applySecurityAdvisorFixes();
-    const status = await getSecurityAdvisorStatus();
-    res.json({ success: true, action: 'security_advisor_fixes_applied', ...status });
-  } catch (error) {
-    res.status(500).json({ success: false, action: 'security_advisor_fixes_error', error: error.message });
-  }
-});
-
-app.post('/api/admin/recover-auth-sessions', authMiddleware, async (req, res) => {
-  try {
-    const currentUser = await db.getUserById(req.userId);
-    if (currentUser.email !== 'admin@flow.com') {
-      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
-    }
-
-    if (req.body?.force === true) {
-      global.__recoveringRemoteAuthSessions = false;
-    }
-
-    if (global.__recoveringRemoteAuthSessions) {
-      return res.status(409).json({
-        success: false,
-        error: 'Recuperacao de sessoes ja esta em andamento',
-        message: 'Aguarde a fila atual terminar antes de iniciar outra.'
-      });
-    }
-
-    const requestedIds = Array.isArray(req.body?.sessionIds)
-      ? new Set(req.body.sessionIds.map(String))
-      : null;
-    if (!requestedIds || requestedIds.size === 0) {
-      return res.status(400).json({
-        success: false,
-        action: 'explicit_session_ids_required',
-        message: 'Por seguranca, informe sessionIds para reativar manualmente. Recuperacao em lote sem selecao foi desativada.'
-      });
-    }
-    const limit = Math.max(1, Math.min(parseInt(req.body?.limit || String(requestedIds.size), 10), 3));
-    const perSessionTimeoutMs = Math.max(60000, Math.min(parseInt(req.body?.timeoutMs || '180000', 10), 300000));
-    const allSessions = await db.getAllSessionsFromDB();
-    const candidates = [];
-
-    for (const session of allSessions) {
-      if (!session.id || !session.id.startsWith('user_')) continue;
-      if (requestedIds && !requestedIds.has(session.id)) continue;
-
-      const live = sessionManager.getSession(session.id);
-      if (live && live.status === 'connected') continue;
-      if (session.status === 'auth_failure') continue;
-
-      const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(session.id);
-      if (!hasRemoteAuth) continue;
-
-      candidates.push(session);
-    }
-
-    const toRecover = candidates
-      .sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0))
-      .slice(0, limit);
-
-    global.__recoveringRemoteAuthSessions = true;
-    setImmediate(async () => {
-      const summary = [];
-      try {
-        for (const session of toRecover) {
-          const live = sessionManager.getSession(session.id);
-          if (live && live.status === 'connected') {
-            summary.push({ sessionId: session.id, status: 'already_connected' });
-            continue;
-          }
-
-          try {
-            console.log(`[RECOVER] Restaurando ${session.id} via RemoteAuth...`);
-            if (session.status === 'auth_failure') {
-              summary.push({ sessionId: session.id, status: 'qr_required', skipped: true });
-              continue;
-            }
-            const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(session.id);
-            const forceQr = shouldForceQrForDbStatus(session.status) || sessionManager.wasRemoteAuthRecentlyRejected(session.id);
-            const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, session.status, forceQr, session.id, session);
-            await beginSessionActivation(session.id, session.user_id, hasRemoteAuth, canTrustSavedAuth, forceQr, 'ADMIN_RECOVER');
-            const recovery = await waitWithSavedAuthQrFallback(
-              session.id,
-              session.user_id,
-              hasRemoteAuth,
-              canTrustSavedAuth,
-              perSessionTimeoutMs,
-              'ADMIN_RECOVER'
-            );
-            const recovered = recovery.progressedSession || recovery.view;
-            summary.push({
-              sessionId: session.id,
-              status: recovery.status || recovered?.status || 'timeout',
-              connected: recovery.status === 'connected',
-              qrAvailable: recovery.status === 'qr_code'
-            });
-          } catch (error) {
-            console.error(`[RECOVER] Falha ao restaurar ${session.id}: ${error.message}`);
-            summary.push({ sessionId: session.id, status: 'error', error: error.message });
-          }
-        }
-      } finally {
-        global.__recoveringRemoteAuthSessions = false;
-        console.log('[RECOVER] Fila concluida:', summary);
-      }
-    });
-
-    res.json({
-      success: true,
-      started: true,
-      candidates: candidates.length,
-      recovering: toRecover.map(s => ({
-        id: s.id,
-        user_id: s.user_id,
-        status: s.status,
-        updated_at: s.updated_at
-      })),
-      message: 'Recuperacao iniciada em fila controlada. Sessoes sem RemoteAuth exigem novo QR.'
-    });
-  } catch (error) {
-    global.__recoveringRemoteAuthSessions = false;
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/admin/reactivate-session/:sessionId', async (req, res) => {
-  try {
-    const admin = await requireQueryAdmin(req, res);
-    if (!admin) return;
-
-    const { sessionId } = req.params;
-    const waitMs = Math.max(0, Math.min(parseInt(req.query.waitMs || '20000', 10), 60000));
-    const dbSession = await db.getSession(sessionId);
-
-    if (!dbSession) {
-      return res.status(404).json({
-        success: false,
-        sessionId,
-        error: 'Sessao nao encontrada'
-      });
-    }
-
-    const liveSession = sessionManager.getSession(sessionId);
-    if (liveSession && liveSession.status === 'connected') {
-      return res.json({
-        success: true,
-        sessionId,
-        action: 'already_connected',
-        status: 'connected',
-        message: 'Sessao ja estava conectada; nada foi alterado.',
-        session: await getSessionView(sessionId, dbSession)
-      });
-    }
-
-    const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-    if (!hasRemoteAuth) {
-      await beginSessionActivation(sessionId, dbSession.user_id, false, false, true, 'ADMIN_REACTIVATE_NO_AUTH_QR');
-      const progress = await waitWithSavedAuthQrFallback(
-        sessionId,
-        dbSession.user_id,
-        false,
-        false,
-        waitMs,
-        'ADMIN_REACTIVATE_NO_AUTH_QR'
-      );
-      const view = progress.view || await getSessionView(sessionId);
-      return res.status(progress.status === 'qr_code' ? 200 : 202).json({
-        success: true,
-        sessionId,
-        action: 'create_qr',
-        status: progress.status || view?.status || 'initializing',
-        dbStatus: dbSession.status,
-        hasRemoteAuth: false,
-        qrCode: view?.qrCode || null,
-        canSend: view?.canSend || false,
-        message: progress.status === 'qr_code'
-          ? 'QR Code disponivel para escanear.'
-          : 'Criacao de QR iniciada; acompanhe o status.',
-        session: view
-      });
-    }
-
-    const retrySavedAuth = String(req.query.retrySavedAuth || '').toLowerCase() === 'true';
-
-    if (dbSession.status === 'auth_failure' && retrySavedAuth) {
-      console.log(`[ADMIN REACTIVATE] Reteste unico solicitado, mas auth_failure prioriza QR rapido para ${sessionId}`);
-    }
-
-    console.log(`[ADMIN REACTIVATE] Reativando ${sessionId} com fallback rapido para QR`);
-    const forceQr = shouldForceQrForDbStatus(dbSession.status) || sessionManager.wasRemoteAuthRecentlyRejected(sessionId);
-    const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession.status, forceQr, sessionId, dbSession);
-    await beginSessionActivation(sessionId, dbSession.user_id, hasRemoteAuth, canTrustSavedAuth, forceQr, 'ADMIN_REACTIVATE');
-    const progress = await waitWithSavedAuthQrFallback(
-      sessionId,
-      dbSession.user_id,
-      hasRemoteAuth,
-      canTrustSavedAuth,
-      waitMs,
-      'ADMIN_REACTIVATE'
-    );
-    const progressed = progress.progressedSession || progress.view;
-
-    const view = await getSessionView(sessionId);
-    const status = progress.status || progressed?.status || view?.status || dbSession.status;
-
-    res.status(status === 'connected' ? 200 : 202).json({
-      success: status === 'connected' || status === 'authenticated' || status === 'initializing' || status === 'qr_code',
-      sessionId,
-      action: status === 'qr_code' ? 'auto_qr_fallback' : 'reactivate_or_qr',
-      status,
-      hasRemoteAuth: true,
-      canSend: view?.canSend || false,
-      message: status === 'connected'
-        ? 'Sessao reativada e pronta para disparo.'
-        : status === 'qr_code'
-          ? 'QR Code disponivel para escanear.'
-          : 'Reativacao em andamento; QR sera liberado automaticamente se a sessao salva nao ficar pronta.',
-      session: view
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      action: 'admin_reactivate_error',
-      error: error.message
-    });
-  }
-});
-
-app.post('/api/admin/require-qr/:sessionId', async (req, res) => {
-  try {
-    const admin = await requireQueryAdmin(req, res);
-    if (!admin) return;
-
-    const { sessionId } = req.params;
-    const force = String(req.query.force || '').toLowerCase() === 'true';
-    const dbSession = await db.getSession(sessionId);
-
-    if (!dbSession) {
-      return res.status(404).json({
-        success: false,
-        sessionId,
-        error: 'Sessao nao encontrada'
-      });
-    }
-
-    const liveSession = sessionManager.getSession(sessionId);
-    if (liveSession?.status === 'connected' && !force) {
-      return res.status(409).json({
-        success: false,
-        sessionId,
-        action: 'connected_session_preserved',
-        status: 'connected',
-        message: 'Sessao conectada preservada. Use force=true somente se o QR for realmente necessario.'
-      });
-    }
-
-    if (liveSession) {
-      await sessionManager.cleanupSession(sessionId);
-    }
-
-    await db.markSessionRequiresQr(sessionId, 'auth_failure');
-    const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-
-    console.log(`[ADMIN REQUIRE QR] ${sessionId} marcado como auth_failure; RemoteAuth preservado: ${hasRemoteAuth}`);
-
-    res.json({
-      success: true,
-      sessionId,
-      action: 'qr_required',
-      status: 'auth_failure',
-      hasRemoteAuth,
-      message: 'Sessao marcada para gerar novo QR Code no proximo acesso. O RemoteAuth anterior foi preservado.'
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      action: 'admin_require_qr_error',
-      error: error.message
-    });
+    return sendError(res, error, 500);
   }
 });
 
 app.get('/health', (req, res) => {
-  // SEMPRE retorna 200 IMEDIATAMENTE para o Koyeb health check
-  // Nunca faz queries ao banco — evita travar o health check
-  const hg = global.__healthGuard;
-  res.json({
+  res.status(200).json({
     status: 'ok',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    memory: {
-      rss: `${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB`,
-      heap: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
-    },
-    activeSessions: sessionManager.sessions.size,
-    activeChromiums: sessionManager.getActiveChromiumCount(),
-    remoteAuth: sessionManager.useRemoteAuth,
-    healthGuard: hg ? hg.getStats() : null
+    engine: 'evolution',
+    evolutionConfigured: whatsapp.configured(),
+    timestamp: new Date().toISOString()
   });
-});
-
-// Diagnóstico do RemoteAuth — lista sessões salvas no PostgreSQL
-let prospectingTableReady;
-async function ensureProspectingTable() {
-  if (!prospectingTableReady) {
-    prospectingTableReady = db.run(`
-      CREATE TABLE IF NOT EXISTS prospecting_lead_status (
-        list_id TEXT NOT NULL,
-        lead_key TEXT NOT NULL,
-        lead_name TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
-        owner_name TEXT,
-        notes TEXT,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (list_id, lead_key)
-      )
-    `).catch(error => {
-      prospectingTableReady = null;
-      throw error;
-    });
-  }
-  return prospectingTableReady;
-}
-
-function isSafeProspectingId(value) {
-  return typeof value === 'string' && /^[a-zA-Z0-9:_-]{1,120}$/.test(value);
-}
-
-// Shared board state stores only operational status, SDR and displayed business name.
-app.get('/api/prospecting/lists/:listId/statuses', async (req, res) => {
-  try {
-    const { listId } = req.params;
-    if (!isSafeProspectingId(listId)) {
-      return res.status(400).json({ error: 'Lista invalida' });
-    }
-    await ensureProspectingTable();
-    const statuses = await db.all(
-      `SELECT lead_key, lead_name, status, owner_name, notes, updated_at
-       FROM prospecting_lead_status
-       WHERE list_id = $1`,
-      [listId]
-    );
-    res.json({ success: true, listId, statuses });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.put('/api/prospecting/lists/:listId/leads/:leadKey/status', async (req, res) => {
-  try {
-    const { listId, leadKey } = req.params;
-    const allowedStatuses = [
-      'pending',
-      'researching',
-      'approached',
-      'replied',
-      'qualified',
-      'meeting',
-      'proposal',
-      'closed',
-      'active_client',
-      'nurture',
-      'discarded',
-      'not_fit'
-    ];
-    const status = String(req.body.status || '');
-    const leadName = String(req.body.leadName || '').trim().slice(0, 180);
-    const ownerName = String(req.body.ownerName || '').trim().slice(0, 80);
-    const notes = String(req.body.notes || '').trim().slice(0, 500);
-
-    if (!isSafeProspectingId(listId) || !isSafeProspectingId(leadKey)) {
-      return res.status(400).json({ error: 'Lista ou lead invalido' });
-    }
-    if (!allowedStatuses.includes(status) || !leadName || !ownerName) {
-      return res.status(400).json({ error: 'Informe status, nome do lead e SDR responsavel' });
-    }
-
-    await ensureProspectingTable();
-    const result = await db.query(
-      `INSERT INTO prospecting_lead_status (list_id, lead_key, lead_name, status, owner_name, notes, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
-       ON CONFLICT (list_id, lead_key) DO UPDATE SET
-         lead_name = EXCLUDED.lead_name,
-         status = EXCLUDED.status,
-         owner_name = EXCLUDED.owner_name,
-         notes = EXCLUDED.notes,
-         updated_at = CURRENT_TIMESTAMP
-       RETURNING lead_key, lead_name, status, owner_name, notes, updated_at`,
-      [listId, leadKey, leadName, status, ownerName, notes]
-    );
-    res.json({ success: true, listId, lead: result.rows[0] });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/remote-auth-status', async (req, res) => {
-  try {
-    if (!sessionManager.pgStore) {
-      return res.json({ remoteAuth: false, message: 'PostgresStore não inicializado' });
-    }
-    const sessions = await sessionManager.pgStore.listSessions();
-    const storage = await sessionManager.pgStore.getStorageStats();
-    res.json({
-      remoteAuth: true,
-      savedSessions: sessions.length,
-      storage: {
-        mainCount: storage.mainCount,
-        mainMB: (storage.mainBytes / 1024 / 1024).toFixed(2),
-        rollbackCount: storage.backupCount,
-        rollbackMB: (storage.backupBytes / 1024 / 1024).toFixed(2),
-        totalMB: ((storage.mainBytes + storage.backupBytes) / 1024 / 1024).toFixed(2)
-      },
-      sessions: sessions.map(s => ({
-        id: s.session_id,
-        sizeMB: (s.data_size / 1024 / 1024).toFixed(2),
-        updatedAt: s.updated_at,
-        validZip: s.valid_zip,
-        mainValidZip: s.main_valid_zip,
-        recoverableFromBackup: s.recoverable_from_backup,
-        backupCount: Number(s.backup_count || 0),
-        latestBackupAt: s.latest_backup_at,
-        needsQr: !s.valid_zip && !s.recoverable_from_backup,
-        signature: s.signature
-      }))
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
 });
 
 app.get('/api/health', async (req, res) => {
-  // Timeout de 8 segundos para nunca travar
-  const timeout = setTimeout(() => {
-    if (!res.headersSent) {
-      res.json({
-        success: true,
-        status: 'healthy',
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
-        note: 'Database query timed out, but API is running'
-      });
-    }
-  }, 8000);
-
-  try {
-    const health = await sessionManager.healthCheck();
-    const dbCapacity = await db.getDatabaseCapacityPercentage();
-    const messagesCount = await db.getMessagesCount();
-    const dbSize = await db.getDatabaseSize();
-
-    clearTimeout(timeout);
-    if (!res.headersSent) {
-      res.json({
-        success: true,
-        status: 'healthy',
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
-        database: {
-          capacity: `${dbCapacity.toFixed(2)}%`,
-          size: dbSize?.size || 'unknown',
-          messages: messagesCount,
-          status: dbCapacity < 80 ? 'healthy' : 'warning'
-        },
-        sendQueue: {
-          active: activeGlobalSends,
-          queued: globalSendQueue.length,
-          maxConcurrency: GLOBAL_SEND_CONCURRENCY,
-          dedupeMs: SEND_DEDUPE_MS
-        },
-        ...health
-      });
-    }
-  } catch (error) {
-    clearTimeout(timeout);
-    if (!res.headersSent) {
-      res.status(500).json({
-        success: false,
-        status: 'unhealthy',
-        error: error.message
-      });
-    }
-  }
-});
-
-app.get('/api/ping', (req, res) => {
   res.json({
-    success: true,
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
+    status: whatsapp.configured() ? 'healthy' : 'degraded',
+    engine: 'evolution',
+    evolution: {
+      configured: whatsapp.configured(),
+      baseUrl: whatsapp.baseUrl || null,
+      instancePrefix: whatsapp.instancePrefix
+    },
+    recentErrors,
+    timestamp: new Date().toISOString()
   });
 });
 
+app.get('/api/ping', (req, res) => res.json({ pong: true, engine: 'evolution' }));
+
 app.get('/api/my-session', authMiddleware, async (req, res) => {
   try {
-    const currentUser = await db.getUserById(req.userId);
-    const skipAutoWhatsAppSession = currentUser?.email === 'admin@flow.com';
     const sessionId = `user_${req.userId}`;
-    const dbSession = await db.getSession(sessionId);
-    const session = await normalizeLiveSessionForRequest(sessionId, dbSession, 'my_session');
-    
-    if (!session) {
-      const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-      const forceQrRequired = dbSession && shouldForceQrForDbStatus(dbSession.status);
-      const recoverable = dbSession && isSavedAuthTrusted(hasRemoteAuth, dbSession.status, forceQrRequired, sessionId, dbSession) && needsLiveSessionReconnect(dbSession.status);
-      const shouldPrepareQr = dbSession && !recoverable && needsLiveSessionReconnect(dbSession.status);
-      const status = recoverable ? 'initializing' : normalizeStatusWithoutRemoteAuth(dbSession?.status || 'not_created');
-      const reactivationStarted = recoverable
-        ? kickSessionActivationWithQrFallback(sessionId, req.userId, dbSession, 'my_session_saved_auth')
-        : false;
-      if (!skipAutoWhatsAppSession && (shouldPrepareQr || (!recoverable && dbSession && isQrRequiredDbStatus(dbSession.status)))) {
-        setImmediate(() => {
-          ensureQrOrSessionProgress(sessionId, req.userId, dbSession, 0, true).catch(error => {
-            console.error(`Erro ao preparar QR no my-session para ${sessionId}:`, error.message);
-          });
-        });
-      }
-      return res.json({
-        success: true,
-        sessionId,
-        status: (!skipAutoWhatsAppSession && shouldPrepareQr) ? 'initializing' : status,
-        canSend: false,
-        hasRemoteAuth,
-        recoverable: !!recoverable,
-        reactivationStarted: reactivationStarted || (!skipAutoWhatsAppSession && shouldPrepareQr),
-        dbStatus: dbSession?.status || null,
-        message: recoverable
-          ? 'Sessao salva no RemoteAuth. Reativacao automatica iniciada; acompanhe o status.'
-          : forceQrRequired
-          ? 'QR Code necessario. O QR sera liberado automaticamente para escanear.'
-          : hasRemoteAuth
-          ? 'Sessao salva no RemoteAuth. Clique em criar sessao para reidratar.'
-          : 'Sessao ainda nao conectada. Clique em criar sessao para gerar QR.'
-      });
-    }
-
-    res.json({
-      success: true,
-      sessionId: session.id,
-      status: session.status,
-      canSend: session.status === 'connected',
-      qrCode: session.qrCode,
-      info: session.info
-    });
+    const row = await ensureDbSession(sessionId, req.userId);
+    const view = await getSessionView(sessionId, row, { activate: req.query.activate === 'true', waitMs: 3000 });
+    res.json({ success: true, session: view });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    rememberError('my-session', error);
+    return sendError(res, error, 500);
   }
 });
 
 app.get('/api/my-qr', authMiddleware, async (req, res) => {
   try {
+    const user = await getCurrentUser(req);
     const sessionId = `user_${req.userId}`;
-    const dbSession = await db.getSession(sessionId);
-    let session = await normalizeLiveSessionForRequest(sessionId, dbSession, 'my_qr');
-    
-    if (!session) {
-      session = await ensureQrOrSessionProgress(sessionId, req.userId, dbSession, req.query.waitMs ?? 30000, req.query.forceQr === 'true');
-    }
-
-    if (!session) {
-      return res.status(202).json({
-        success: true,
-        qrCode: null,
-        status: 'initializing',
-        canSend: false,
-        message: 'QR Code sendo preparado. Aguarde alguns segundos.'
-      });
-    }
-
-    if (session.status === 'connected') {
-      return res.json({
-        success: true,
-        qrCode: null,
-        status: 'connected',
-        canSend: true,
-        message: 'Sessao ja esta conectada.'
-      });
-    }
-
-    if (!session.qrCode) {
-      return res.status(202).json({
-        success: true,
-        qrCode: null,
-        status: session.status,
-        canSend: false,
-        message: 'QR Code sendo preparado. Aguarde alguns segundos.'
-      });
-    }
-
-    res.json({
-      success: true,
-      qrCode: session.qrCode,
-      status: session.status,
-      canSend: session.status === 'connected'
+    const row = await ensureDbSession(sessionId, req.userId);
+    const view = await getSessionView(sessionId, row, {
+      activate: true,
+      forceQr: req.query.forceQr === 'true',
+      waitMs: parseInt(req.query.waitMs || '8000', 10),
+      user
     });
+    res.status(view.qrCode || view.status === 'connected' ? 200 : 202).json({ success: true, ...view, session: view });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    rememberError('my-qr', error);
+    return sendError(res, error, 500);
   }
 });
 
-
 app.post('/api/sessions', authMiddleware, async (req, res) => {
   try {
-    const currentUser = await db.getUserById(req.userId);
-    const isAdmin = currentUser.email === 'admin@flow.com';
+    const admin = await isAdmin(req);
+    const targetSessionId = req.body?.sessionId || `user_${req.userId}`;
+    const targetUserId = admin && targetSessionId.startsWith('user_')
+      ? parseInt(targetSessionId.replace('user_', ''), 10)
+      : req.userId;
+    const user = await db.getUserById(targetUserId);
+    if (!user) return res.status(404).json({ error: 'Usuario alvo nao encontrado' });
+    if (!admin && targetUserId !== req.userId) return res.status(403).json({ error: 'Acesso negado' });
 
-    // Se admin enviar sessionId no body, usar esse. Senão, usar o próprio userId
-    let targetSessionId;
-    let targetUserId;
+    const row = await ensureDbSession(targetSessionId, targetUserId);
+    const view = await getSessionView(targetSessionId, row, {
+      activate: true,
+      forceQr: req.body?.forceQr === true,
+      waitMs: parseInt(req.body?.waitMs || '8000', 10),
+      user
+    });
 
-    if (isAdmin && req.body.sessionId) {
-      // Admin criando sessão para outro usuário
-      targetSessionId = req.body.sessionId;
-      // Extrair userId do sessionId (formato: user_X)
-      targetUserId = parseInt(targetSessionId.replace('user_', ''));
-
-      // Verificar se o usuário existe
-      const targetUser = await db.getUserById(targetUserId);
-      if (!targetUser) {
-        return res.status(404).json({ error: 'Usuário não encontrado' });
-      }
-    } else {
-      // Usuário criando sua própria sessão
-      targetSessionId = `user_${req.userId}`;
-      targetUserId = req.userId;
-    }
-
-    let dbSession = await db.getSession(targetSessionId);
-    let forceQr = req.body?.forceQr === true || shouldForceQrForDbStatus(dbSession?.status);
-    const remoteAuthAvailable = !!(sessionManager.useRemoteAuth && sessionManager.pgStore);
-    const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(targetSessionId);
-    const recentInitFailure = hasRemoteAuth ? sessionManager.getRecentInitFailure(targetSessionId) : null;
-    if (!forceQr && recentInitFailure) {
-      console.warn(`[CREATE SESSION] ${targetSessionId} teve falha recente de reidratacao; liberando QR fallback automaticamente.`);
-      forceQr = true;
-    }
-
-    const existingSession = await normalizeLiveSessionForRequest(targetSessionId, dbSession, 'create_session');
-    if (existingSession) {
-      // Se a sessão existe e está em estado ativo, retorna ela
-      if (!forceQr && shouldReuseExistingSession(existingSession)) {
-        const existingNeedsProgress = ['initializing', 'authenticated', 'reconnecting'].includes(existingSession.status);
-        const fallbackResult = existingNeedsProgress && hasRemoteAuth
-          ? await waitWithSavedAuthQrFallback(targetSessionId, targetUserId, hasRemoteAuth, true, req.body?.waitMs ?? 30000, 'CREATE EXISTING')
-          : null;
-        const shouldWaitForProgress = !fallbackResult && existingNeedsProgress;
-        const progressedSession = fallbackResult?.progressedSession || (shouldWaitForProgress
-          ? await waitForSessionProgress(targetSessionId, req.body?.waitMs || 15000)
-          : null);
-        const view = fallbackResult?.view || await getSessionView(targetSessionId);
-        const status = fallbackResult?.status || (progressedSession ? progressedSession.status : (view?.status || existingSession.status));
-        return res.json({
-          success: true,
-          sessionId: existingSession.id,
-          status,
-          qrCode: view?.qrCode || progressedSession?.qrCode || existingSession.qrCode || null,
-          canSend: view?.canSend || false,
-          hasRemoteAuth: view?.hasRemoteAuth || false,
-          recoverable: view?.recoverable || false,
-          action: fallbackResult?.usedQrFallback ? 'auto_qr_fallback' : 'already_in_progress',
-          session: view || progressedSession || existingSession,
-          message: existingSession.status === 'connected' ? 'WhatsApp já está conectado!' : 'Sessão já existe. Aguarde o QR Code.'
-        });
-      }
-      // Se está em estado morto (failed, disconnected, auth_failure), limpa e recria
-      console.log(`🔄 Sessão ${targetSessionId} está em estado '${existingSession.status}', recriando...`);
-    }
-
-    if (!remoteAuthAvailable) {
-      return res.status(503).json({
-        success: false,
-        sessionId: targetSessionId,
-        status: dbSession?.status || 'not_created',
-        action: 'remote_auth_unavailable',
-        hasRemoteAuth: false,
-        recoverable: false,
-        message: 'RemoteAuth ainda nao esta disponivel. Aguarde alguns segundos e tente novamente.'
-      });
-    }
-
-    const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession?.status, forceQr, targetSessionId, dbSession);
-
-    if (!dbSession) {
-      await db.createSession(targetSessionId, targetUserId);
-      dbSession = await db.getSession(targetSessionId);
-    }
-
-    if (dbSession) {
-      await db.updateSessionStatus(targetSessionId, canTrustSavedAuth ? 'authenticated' : 'initializing');
-      dbSession = { ...dbSession, status: canTrustSavedAuth ? 'authenticated' : 'initializing' };
-    }
-
-    let activationUsedQrFallback = false;
-    try {
-      await beginSessionActivation(targetSessionId, targetUserId, hasRemoteAuth, canTrustSavedAuth, forceQr, 'CREATE SESSION');
-    } catch (error) {
-      if (hasRemoteAuth && canTrustSavedAuth && !forceQr && isActivationFallbackError(error)) {
-        console.warn(`[CREATE SESSION] ${targetSessionId} falhou ao iniciar RemoteAuth (${error.message}); liberando QR automaticamente.`);
-        await db.updateSessionStatus(targetSessionId, 'initializing');
-        await beginSessionActivation(targetSessionId, targetUserId, hasRemoteAuth, false, true, 'CREATE SESSION_immediate_auto_qr');
-        activationUsedQrFallback = true;
-      } else {
-      console.error(`❌ Erro ao criar sessão ${targetSessionId}:`, error.message);
-      try {
-        await db.updateSessionStatus(targetSessionId, canTrustSavedAuth ? 'authenticated' : 'failed');
-      } catch (_) { /* ignora */ }
-      io.to(`user_${targetUserId}`).emit('session_error', {
-        sessionId: targetSessionId,
-        error: error.message
-      });
-      throw error;
-      }
-    }
-
-    const progressResult = await waitWithSavedAuthQrFallback(
-      targetSessionId,
-      targetUserId,
-      hasRemoteAuth,
-      canTrustSavedAuth && !activationUsedQrFallback,
-      req.body?.waitMs ?? 30000,
-      'CREATE SESSION'
-    );
-    const { progressedSession, view, status } = progressResult;
-    const usedQrFallback = activationUsedQrFallback || progressResult.usedQrFallback;
-    const isReady = status === 'connected';
-    const needsQr = status === 'qr_code';
-
-    res.status(isReady || needsQr ? 200 : 202).json({
+    res.status(view.qrCode || view.status === 'connected' ? 200 : 202).json({
       success: true,
+      status: view.status,
       sessionId: targetSessionId,
-      status,
-      qrCode: view?.qrCode || (progressedSession?.status === 'qr_code' ? progressedSession.qrCode : null),
-      canSend: view?.canSend || false,
-      hasRemoteAuth: view?.hasRemoteAuth || hasRemoteAuth,
-      recoverable: view?.recoverable || false,
-      action: usedQrFallback ? 'auto_qr_fallback' : (canTrustSavedAuth ? 'reactivate_saved_auth' : 'create_qr'),
-      message: isReady
-        ? 'Sessao pronta para disparo.'
-        : needsQr
-          ? 'QR Code disponivel para escanear.'
-          : usedQrFallback
-            ? 'Sessao salva nao recuperou rapido; QR Code foi iniciado automaticamente.'
-          : canTrustSavedAuth
-            ? 'Reativacao iniciada pela sessao salva; acompanhe o status.'
-            : 'Criacao de QR iniciada; acompanhe o status.',
-      session: view || { id: targetSessionId, status, qrCode: null }
+      session: view,
+      qrCode: view.qrCode
     });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    rememberError('create-session', error, { body: req.body });
+    return sendError(res, error, 500);
   }
 });
 
 app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const dbSession = await db.getSession(sessionId);
-
-    if (!dbSession) {
-      return res.status(404).json({
-        success: false,
-        error: 'Sessao nao encontrada',
-        action: 'create_session'
-      });
+    let row = await db.getSession(sessionId);
+    if (!row && (await isAdmin(req)) && sessionId.startsWith('user_')) {
+      const userId = parseInt(sessionId.replace('user_', ''), 10);
+      row = await ensureDbSession(sessionId, userId);
+    } else if (!row) {
+      row = await ensureDbSession(sessionId, req.userId);
     }
+    await assertSessionAccess(req, sessionId);
 
-    const currentUser = await db.getUserById(req.userId);
-    const isAdmin = currentUser.email === 'admin@flow.com';
+    const user = await db.getUserById(row.user_id);
+    const view = await getSessionView(sessionId, row, {
+      activate: true,
+      forceQr: req.body?.forceQr === true,
+      waitMs: parseInt(req.body?.waitMs || '8000', 10),
+      user
+    });
 
-    if (!isAdmin && dbSession.user_id !== req.userId) {
-      return res.status(403).json({ success: false, error: 'Acesso negado' });
-    }
-
-    const remoteAuthAvailable = !!(sessionManager.useRemoteAuth && sessionManager.pgStore);
-    let forceQr = req.body?.forceQr === true || shouldForceQrForDbStatus(dbSession.status);
-    const existingSession = await normalizeLiveSessionForRequest(sessionId, dbSession, 'reactivate');
-    const hasRemoteAuth = await sessionManager.hasSavedRemoteAuth(sessionId);
-    const recentInitFailure = hasRemoteAuth ? sessionManager.getRecentInitFailure(sessionId) : null;
-    if (!forceQr && recentInitFailure) {
-      console.warn(`[REACTIVATE] ${sessionId} teve falha recente de reidratacao; liberando QR fallback automaticamente.`);
-      forceQr = true;
-    }
-
-    if (existingSession && !forceQr && shouldReuseExistingSession(existingSession)) {
-      const existingNeedsProgress = ['initializing', 'authenticated', 'reconnecting'].includes(existingSession.status);
-      const fallbackResult = existingNeedsProgress && hasRemoteAuth
-        ? await waitWithSavedAuthQrFallback(sessionId, dbSession.user_id || parseInt(sessionId.replace('user_', ''), 10), hasRemoteAuth, true, req.body?.waitMs ?? 30000, 'REACTIVATE EXISTING')
-        : null;
-      const shouldWaitForProgress = !fallbackResult && existingNeedsProgress;
-      const progressedSession = fallbackResult?.progressedSession || (shouldWaitForProgress
-        ? await waitForSessionProgress(sessionId, req.body?.waitMs || 15000)
-        : null);
-      const view = fallbackResult?.view || await getSessionView(sessionId, dbSession);
-      const status = fallbackResult?.status || (progressedSession ? progressedSession.status : (view?.status || existingSession.status));
-      return res.json({
-        success: true,
-        action: fallbackResult?.usedQrFallback ? 'auto_qr_fallback' : (status === 'connected' ? 'already_connected' : 'already_in_progress'),
-        status,
-        qrCode: view?.qrCode || progressedSession?.qrCode || null,
-        canSend: view?.canSend || false,
-        hasRemoteAuth: view?.hasRemoteAuth || false,
-        recoverable: view?.recoverable || false,
-        message: status === 'connected'
-          ? 'Sessao ja esta conectada.'
-          : fallbackResult?.usedQrFallback
-            ? 'Sessao salva nao recuperou rapido; QR Code foi liberado automaticamente.'
-          : 'Sessao ja esta em inicializacao; continue acompanhando o status.',
-        session: view
-      });
-    }
-
-    // If this looks like a saved session but RemoteAuth is temporarily unavailable,
-    // do not create a fresh LocalAuth/QR flow that can confuse the operator.
-    if (!remoteAuthAvailable && needsLiveSessionReconnect(dbSession.status)) {
-      return res.status(503).json({
-        success: false,
-        action: 'remote_auth_unavailable',
-        status: dbSession.status,
-        dbStatus: dbSession.status,
-        hasRemoteAuth: false,
-        recoverable: false,
-        message: 'RemoteAuth ainda nao esta disponivel. Aguarde alguns segundos e tente reativar novamente.'
-      });
-    }
-
-    if (existingSession) {
-      console.log(`[REACTIVATE] Limpando sessao viva em estado ${existingSession.status}: ${sessionId}`);
-      await sessionManager.cleanupSession(sessionId);
-    }
-
-    const targetUserId = dbSession.user_id || parseInt(sessionId.replace('user_', ''), 10);
-    const canTrustSavedAuth = isSavedAuthTrusted(hasRemoteAuth, dbSession.status, forceQr, sessionId, dbSession);
-    const action = canTrustSavedAuth ? 'reactivate_saved_auth' : 'create_qr';
-
-    await db.updateSessionStatus(sessionId, canTrustSavedAuth ? 'authenticated' : 'initializing');
-
-    let activationUsedQrFallback = false;
-    try {
-      await beginSessionActivation(sessionId, targetUserId, hasRemoteAuth, canTrustSavedAuth, forceQr, 'REACTIVATE');
-    } catch (error) {
-      if (hasRemoteAuth && canTrustSavedAuth && !forceQr && isActivationFallbackError(error)) {
-        console.warn(`[REACTIVATE] ${sessionId} falhou ao iniciar RemoteAuth (${error.message}); liberando QR automaticamente.`);
-        await db.updateSessionStatus(sessionId, 'initializing');
-        await beginSessionActivation(sessionId, targetUserId, hasRemoteAuth, false, true, 'REACTIVATE_immediate_auto_qr');
-        activationUsedQrFallback = true;
-      } else {
-      console.error(`[REACTIVATE] Falha ao reativar ${sessionId}:`, error.message);
-      try {
-        if (canTrustSavedAuth) {
-          await db.markSessionRequiresQr(sessionId, 'auth_failure');
-        } else {
-          await db.updateSessionStatus(sessionId, 'failed');
-        }
-      } catch (_) { /* ignore */ }
-      io.to(`user_${targetUserId}`).emit('session_error', {
-        sessionId,
-        error: error.message
-      });
-      throw error;
-      }
-    }
-
-    const progressResult = await waitWithSavedAuthQrFallback(
-      sessionId,
-      targetUserId,
-      hasRemoteAuth,
-      canTrustSavedAuth && !activationUsedQrFallback,
-      req.body?.waitMs ?? 30000,
-      'REACTIVATE'
-    );
-    const { progressedSession, view, status } = progressResult;
-    const usedQrFallback = activationUsedQrFallback || progressResult.usedQrFallback;
-    const isReady = status === 'connected';
-    const needsQr = status === 'qr_code';
-
-    res.status(isReady || needsQr ? 200 : 202).json({
-      success: isReady || needsQr || status === 'initializing' || status === 'authenticated',
-      action: usedQrFallback ? 'auto_qr_fallback' : action,
-      sessionId,
-      status,
-      dbStatus: view.dbStatus,
-      hasRemoteAuth: view.hasRemoteAuth,
-      recoverable: view.recoverable,
-      canSend: view.canSend,
-      qrCode: view?.qrCode || (progressedSession?.status === 'qr_code' ? progressedSession.qrCode : null),
-      message: isReady
-        ? 'Sessao reativada e pronta para disparo.'
-        : needsQr
-          ? 'QR Code disponivel para escanear.'
-          : usedQrFallback
-            ? 'Sessao salva nao recuperou rapido; QR Code foi iniciado automaticamente.'
-          : canTrustSavedAuth
-            ? 'Reativacao iniciada pela sessao salva; acompanhe o status.'
-            : 'Criacao de QR iniciada; acompanhe o status.',
-      session: view
+    res.status(view.qrCode || view.status === 'connected' ? 200 : 202).json({
+      success: true,
+      status: view.status,
+      action: 'evolution_connect',
+      session: view,
+      qrCode: view.qrCode
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      action: 'reactivate_error',
-      error: error.message
-    });
+    rememberError('reactivate', error, { sessionId: req.params.sessionId });
+    return sendError(res, error, 500);
   }
 });
 
 app.get('/api/sessions', authMiddleware, async (req, res) => {
   try {
-    const sessions = await db.getSessionsByUserId(req.userId);
-
-    const sessionsWithStatus = await Promise.all(sessions.map(async session => {
-      return await getSessionView(session.id, session);
+    const rows = (await isAdmin(req)) ? await db.getAllSessionsFromDB() : await db.getSessionsByUserId(req.userId);
+    const sessions = await Promise.all(rows.map(async row => {
+      try {
+        return await getSessionView(row.id, row, { activate: false });
+      } catch (error) {
+        rememberError('list-session-state', error, { sessionId: row.id });
+        return publicSessionView(row);
+      }
     }));
-
-    res.json({ success: true, sessions: sessionsWithStatus });
+    res.json({ success: true, sessions });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return sendError(res, error, 500);
   }
 });
 
 app.get('/api/sessions/:sessionId', authMiddleware, async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const dbSession = await db.getSession(sessionId);
+    let row = await db.getSession(sessionId);
+    if (!row && sessionId === `user_${req.userId}`) row = await ensureDbSession(sessionId, req.userId);
+    if (!row) return res.status(404).json({ error: 'Sessao nao encontrada' });
+    await assertSessionAccess(req, sessionId);
 
-    if (!dbSession) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
-    }
-
-    const currentUser = await db.getUserById(req.userId);
-    const isAdmin = currentUser.email === 'admin@flow.com';
-
-    if (!isAdmin && dbSession.user_id !== req.userId) {
-      return res.status(403).json({ error: 'Acesso negado' });
-    }
-
-    await normalizeLiveSessionForRequest(sessionId, dbSession, 'session_view');
-    let sessionView = await getSessionView(sessionId);
-
-    if (wantsImmediateSessionActivation(req) && sessionView && !sessionView.canSend) {
-      const targetUserId = dbSession.user_id || parseInt(sessionId.replace('user_', ''), 10);
-      const shouldStart = sessionView.status === 'saved_auth' ||
-        sessionView.recoverable ||
-        ['disconnected', 'failed', 'auth_failure', 'qr_code'].includes(sessionView.dbStatus || sessionView.status);
-
-      if (shouldStart) {
-        const forceQr = req.query?.forceQr === 'true' ||
-          shouldForceQrForDbStatus(sessionView.dbStatus || dbSession.status) ||
-          sessionView.hasRemoteAuth === false;
-
-        try {
-          await ensureQrOrSessionProgress(
-            sessionId,
-            targetUserId,
-            dbSession,
-            req.query?.waitMs || 30000,
-            forceQr
-          );
-        } catch (activationError) {
-          console.warn(`[SESSION VIEW] Falha ao ativar ${sessionId} sob demanda: ${activationError.message}`);
-        }
-
-        sessionView = await getSessionView(sessionId, dbSession);
-      }
-
-      if (sessionView && sessionView.hasRemoteAuth && ['saved_auth', 'initializing', 'authenticated'].includes(sessionView.status)) {
-        try {
-          await waitWithSavedAuthQrFallback(
-            sessionId,
-            targetUserId,
-            true,
-            true,
-            req.query?.waitMs || 30000,
-            'SESSION_VIEW_ACTIVATE'
-          );
-        } catch (fallbackError) {
-          console.warn(`[SESSION VIEW] Falha no fallback automatico de ${sessionId}: ${fallbackError.message}`);
-        }
-
-        sessionView = await getSessionView(sessionId);
-      }
-
-      if (sessionView?.status === 'saved_auth') {
-        sessionView.status = 'initializing';
-        sessionView.reactivationStarted = true;
-      }
-    }
-
-    res.json({
-      success: true,
-      session: sessionView
+    const user = await db.getUserById(row.user_id);
+    const view = await getSessionView(sessionId, row, {
+      activate: req.query.activate === 'true',
+      waitMs: parseInt(req.query.waitMs || '0', 10),
+      forceQr: req.query.forceQr === 'true',
+      user
     });
+    res.json({ success: true, session: view });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    rememberError('get-session', error, { sessionId: req.params.sessionId });
+    return sendError(res, error, 500);
   }
 });
 
 app.get('/api/sessions/:sessionId/qr', authMiddleware, async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const dbSession = await db.getSession(sessionId);
+    let row = await db.getSession(sessionId);
+    if (!row && sessionId === `user_${req.userId}`) row = await ensureDbSession(sessionId, req.userId);
+    if (!row) return res.status(404).json({ error: 'Sessao nao encontrada' });
+    await assertSessionAccess(req, sessionId);
 
-    if (!dbSession) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
-    }
+    const user = await db.getUserById(row.user_id);
+    const view = await getSessionView(sessionId, row, {
+      activate: true,
+      waitMs: parseInt(req.query.waitMs || '8000', 10),
+      forceQr: req.query.forceQr === 'true',
+      user
+    });
 
-    const currentUser = await db.getUserById(req.userId);
-    const isAdmin = currentUser.email === 'admin@flow.com';
-
-    if (!isAdmin && dbSession.user_id !== req.userId) {
-      return res.status(403).json({ error: 'Acesso negado' });
-    }
-
-    let session = await normalizeLiveSessionForRequest(sessionId, dbSession, 'session_qr');
-
-    if (!session) {
-      session = await ensureQrOrSessionProgress(sessionId, dbSession.user_id, dbSession, req.query.waitMs ?? 30000, req.query.forceQr === 'true');
-    }
-
-    if (!session) {
-      return res.status(202).json({
-        success: true,
-        qrCode: null,
-        status: 'initializing',
-        message: 'QR Code sendo preparado. Aguarde alguns segundos.'
-      });
-    }
-
-    if (session.status === 'connected') {
-      return res.json({
-        success: true,
-        qrCode: null,
-        status: 'connected',
-        canSend: true,
-        message: 'Sessao ja esta conectada.'
-      });
-    }
-
-    if (!session.qrCode) {
-      return res.status(202).json({
-        success: true,
-        qrCode: null,
-        status: session.status,
-        canSend: false,
-        message: 'QR Code sendo preparado. Aguarde alguns segundos.'
-      });
-    }
-
-    res.json({
+    res.status(view.qrCode || view.status === 'connected' ? 200 : 202).json({
       success: true,
-      qrCode: session.qrCode,
-      status: session.status,
-      canSend: false
+      status: view.status,
+      qrCode: view.qrCode,
+      session: view
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    rememberError('get-qr', error, { sessionId: req.params.sessionId });
+    return sendError(res, error, 500);
   }
 });
 
 app.delete('/api/sessions/:sessionId', authMiddleware, async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const dbSession = await db.getSession(sessionId);
-
-    if (!dbSession) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
-    }
-
-    const currentUser = await db.getUserById(req.userId);
-    const isAdmin = currentUser.email === 'admin@flow.com';
-
-    if (!isAdmin && dbSession.user_id !== req.userId) {
-      return res.status(403).json({ error: 'Acesso negado' });
-    }
-
-    await sessionManager.deleteSession(sessionId);
-
-    res.json({
-      success: true,
-      message: 'Sessão deletada com sucesso'
-    });
+    await assertSessionAccess(req, sessionId);
+    await whatsapp.logout(sessionId);
+    await db.resetSessionAuthForQr(sessionId, 'disconnected');
+    res.json({ success: true, message: 'Sessao desconectada na Evolution' });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    rememberError('delete-session', error, { sessionId: req.params.sessionId });
+    return sendError(res, error, 500);
   }
 });
 
 app.post('/api/sessions/:sessionId/messages', authMiddleware, async (req, res) => {
-  try {
-    let { sessionId } = req.params;
-    const { to, message, mediaUrl } = req.body;
-
-    // Auto-detectar sessão se não for informada ou for 'auto'
-    if (!sessionId || sessionId === 'auto') {
-      const userSessions = await db.getSessionsByUserId(req.userId);
-      const activeSessions = userSessions.filter(s => {
-        const session = sessionManager.getSession(s.id);
-        return session && (session.status === 'connected' || session.status === 'authenticated');
-      });
-
-      if (activeSessions.length === 0) {
-        if (userSessions.length === 1) {
-          sessionId = userSessions[0].id;
-        } else {
-          return res.status(404).json({ error: 'Nenhuma sessão encontrada para auto-detectar' });
-        }
-      }
-
-      if (activeSessions.length === 1) {
-        sessionId = activeSessions[0].id;
-      } else if (activeSessions.length > 1) {
-        return res.status(400).json({
-          error: 'Múltiplas sessões conectadas. Especifique qual usar.',
-          sessions: activeSessions.map(s => s.id)
-        });
-      }
-    }
-
-    const dbSession = await db.getSession(sessionId);
-    if (!dbSession || dbSession.user_id !== req.userId) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
-    }
-
-    if (!to || !message) {
-      return res.status(400).json({
-        error: 'Campos "to" e "message" são obrigatórios'
-      });
-    }
-
-    return await sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl);
-  } catch (error) {
-    console.error(`Erro ao enviar mensagem para ${req.body.to} na sessão ${req.params.sessionId}:`, error);
-    return respondWhatsAppSendError(res, error, { sessionId: req.params.sessionId, to: req.body?.to });
-  }
+  return handleSessionMessage(req, res, req.params.sessionId);
 });
 
 app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) => {
+  return handleSessionMessage(req, res, req.params.sessionId);
+});
+
+app.post('/api/messages/send', authMiddleware, async (req, res) => {
   try {
-    let { sessionId } = req.params;
-    const { to, message, mediaUrl } = req.body;
-
-    console.log(`📤 [SEND MESSAGE] Requisição recebida:`);
-    console.log(`   - User ID: ${req.userId}`);
-    console.log(`   - Session ID param: ${sessionId}`);
-    console.log(`   - To: ${to}`);
-
-    // Auto-detectar sessão se não for informada ou for 'auto'
-    if (!sessionId || sessionId === 'auto') {
-      console.log(`🔍 [SEND MESSAGE] Auto-detectando sessão para user ${req.userId}...`);
-      const userSessions = await db.getSessionsByUserId(req.userId);
-      console.log(`   - Sessões encontradas: ${userSessions.length}`);
-      userSessions.forEach(s => {
-        console.log(`     * ${s.id} - Status DB: ${s.status}`);
-      });
-
-      const activeSessions = userSessions.filter(s => {
-        const session = sessionManager.getSession(s.id);
-        const isActive = session && (session.status === 'connected' || session.status === 'authenticated');
-        console.log(`     * ${s.id} - Em memória: ${!!session} - Status: ${session?.status || 'N/A'} - Ativa: ${isActive}`);
-        return isActive;
-      });
-
-      console.log(`   - Sessões ativas: ${activeSessions.length}`);
-
-      if (activeSessions.length === 0) {
-        console.log(`❌ [SEND MESSAGE] Nenhuma sessão conectada encontrada`);
-        if (userSessions.length === 1) {
-          sessionId = userSessions[0].id;
-          console.log(`✅ [SEND MESSAGE] Sessão única encontrada no banco para reconexão: ${sessionId}`);
-        } else {
-          return res.status(404).json({ error: 'Nenhuma sessão encontrada para auto-detectar' });
-        }
-      }
-
-      if (activeSessions.length === 1) {
-        sessionId = activeSessions[0].id;
-        console.log(`✅ [SEND MESSAGE] Sessão auto-detectada: ${sessionId}`);
-      } else if (activeSessions.length > 1) {
-        console.log(`⚠️ [SEND MESSAGE] Múltiplas sessões conectadas`);
-        return res.status(400).json({
-          error: 'Múltiplas sessões conectadas. Especifique qual usar.',
-          sessions: activeSessions.map(s => s.id)
-        });
-      }
-    }
-
-    console.log(`🔍 [SEND MESSAGE] Verificando sessão ${sessionId} no banco...`);
-    const dbSession = await db.getSession(sessionId);
-
-    if (!dbSession) {
-      console.log(`❌ [SEND MESSAGE] Sessão ${sessionId} não encontrada no banco`);
-      return res.status(404).json({ error: 'Sessão não encontrada no banco de dados' });
-    }
-
-    console.log(`   - Sessão encontrada no banco:`);
-    console.log(`     * ID: ${dbSession.id}`);
-    console.log(`     * User ID: ${dbSession.user_id}`);
-    console.log(`     * Status: ${dbSession.status}`);
-    console.log(`     * Req User ID: ${req.userId}`);
-
-    const currentUser = await db.getUserById(req.userId);
-    const isAdmin = currentUser.email === 'admin@flow.com';
-
-    if (!isAdmin && dbSession.user_id !== req.userId) {
-      console.log(`❌ [SEND MESSAGE] Sessão pertence ao usuário ${dbSession.user_id}, mas requisição é do usuário ${req.userId}`);
-      return res.status(403).json({
-        error: 'Você não tem permissão para usar esta sessão',
-        details: {
-          sessionUserId: dbSession.user_id,
-          requestUserId: req.userId
-        }
-      });
-    }
-
-    if (isAdmin) {
-      console.log(`✅ [SEND MESSAGE] Admin ${req.userId} autorizado a usar sessão de outro usuário`);
-    }
-
-    if (!to || !message) {
-      return res.status(400).json({
-        error: 'Campos "to" e "message" são obrigatórios'
-      });
-    }
-
-    console.log(`✅ [SEND MESSAGE] Enfileirando mensagem via SessionManager...`);
-    return await sendOrQueueWhatsApp(res, sessionId, to, message, mediaUrl);
+    const sessionId = resolveTargetSessionId(req, req.body?.sessionId);
+    await assertSessionAccess(req, sessionId);
+    const result = await sendWhatsAppText({ sessionId, to: req.body.to, message: req.body.message, mediaUrl: req.body.mediaUrl });
+    res.status(result.confirmed ? 200 : 202).json(result);
   } catch (error) {
-    console.error(`❌ [SEND MESSAGE] Erro ao enviar mensagem:`, error.message);
-    return respondWhatsAppSendError(res, error, { sessionId: req.params.sessionId, to: req.body?.to });
+    rememberError('send-auto', error, { sessionId: req.body?.sessionId, to: req.body?.to });
+    return sendError(res, error, error.status || 500);
   }
 });
 
 app.post('/api/sessions/:sessionId/messages/media', authMiddleware, async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const { to, mediaUrl, caption } = req.body;
-
-    const currentUser = await db.getUserById(req.userId);
-    const isAdmin = currentUser.email === 'admin@flow.com';
-
-    const dbSession = await db.getSession(sessionId);
-    if (!dbSession) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
-    }
-
-    if (!isAdmin && dbSession.user_id !== req.userId) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
-    }
-
-    if (!to || !mediaUrl) {
-      return res.status(400).json({
-        error: 'Campos "to" e "mediaUrl" são obrigatórios'
-      });
-    }
-
-    const result = await withGlobalWhatsAppSendLimit(
-      () => sessionManager.sendMedia(sessionId, to, mediaUrl, caption),
-      { sessionId, to, media: true }
-    );
-    if (!res.headersSent) {
-      const isConfirmed = result?.confirmed === true && !result?.unconfirmed;
-      const isPending = !isConfirmed;
-      res.status(isPending ? 409 : 200).json({
-        success: isConfirmed,
-        status: result?.status || (isPending ? 'pending' : 'delivered'),
-        finalStatus: isPending ? 'pending' : (result?.status || 'delivered'),
-        shouldMarkLead: isPending ? 'pending' : 'sent',
-        confirmed: isConfirmed,
-        invalidNumber: false,
-        messageId: isPending ? null : (result?.messageId || result?.id || null),
-        unconfirmed: isPending,
-        message: isPending ? 'Envio de mídia nao confirmado pelo WhatsApp; manter pendente' : 'Mídia enviada com sucesso',
-        data: result
-      });
-    }
+    await assertSessionAccess(req, sessionId);
+    const result = await sendWhatsAppText({
+      sessionId,
+      to: req.body.to,
+      message: req.body.caption || '',
+      mediaUrl: req.body.mediaUrl
+    });
+    res.status(result.confirmed ? 200 : 202).json(result);
   } catch (error) {
-    return respondWhatsAppSendError(res, error, { sessionId: req.params.sessionId, to: req.body?.to });
+    rememberError('send-media', error, { sessionId: req.params.sessionId, to: req.body?.to });
+    return sendError(res, error, error.status || 500);
+  }
+});
+
+app.post('/api/webhooks/evolution', async (req, res) => {
+  try {
+    const expected = process.env.EVOLUTION_WEBHOOK_SECRET;
+    if (expected && req.get('x-prospectflow-secret') !== expected) {
+      return res.status(401).json({ error: 'Webhook nao autorizado' });
+    }
+
+    const event = whatsapp.ingestWebhook(req.body);
+    if (event?.instanceName) {
+      const sessionId = event.instanceName.replace(new RegExp(`^${whatsapp.instancePrefix}_`), '');
+      if (event.status === 'connected') {
+        await db.markSessionReady(sessionId, null, null, true).catch(() => {});
+      } else if (event.status === 'qr_code') {
+        await db.updateSessionStatus(sessionId, 'qr_code').catch(() => {});
+      } else if (event.status === 'disconnected') {
+        await db.updateSessionStatus(sessionId, 'disconnected').catch(() => {});
+      }
+      io.emit('whatsapp_status', { sessionId, ...event });
+    }
+
+    const messageId = req.body?.data?.key?.id || req.body?.data?.id || req.body?.key?.id || req.body?.messageId || null;
+    const rawStatus = String(req.body?.data?.status || req.body?.status || req.body?.event || '').toLowerCase();
+    const deliveredStates = ['delivery_ack', 'delivered', 'read', 'played', 'server_ack', 'send.message', 'send_message'];
+    const failedStates = ['error', 'failed', 'undelivered'];
+    if (messageId && deliveredStates.some(state => rawStatus.includes(state))) {
+      await db.updateMessageStatus(messageId, 'delivered').catch(() => {});
+      io.emit('whatsapp_message_status', { messageId, status: 'delivered' });
+    } else if (messageId && failedStates.some(state => rawStatus.includes(state))) {
+      await db.updateMessageStatus(messageId, 'failed').catch(() => {});
+      io.emit('whatsapp_message_status', { messageId, status: 'failed' });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    rememberError('evolution-webhook', error);
+    res.status(200).json({ success: false });
   }
 });
 
 app.put('/api/sessions/:sessionId/webhook', authMiddleware, async (req, res) => {
   try {
-    const { sessionId } = req.params;
-    const { webhookUrl } = req.body;
-
-    const dbSession = await db.getSession(sessionId);
-    if (!dbSession) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
-    }
-
-    const currentUser = await db.getUserById(req.userId);
-    const isAdmin = currentUser.email === 'admin@flow.com';
-
-    if (!isAdmin && dbSession.user_id !== req.userId) {
-      return res.status(403).json({ error: 'Acesso negado' });
-    }
-
-    if (!webhookUrl) {
-      return res.status(400).json({ error: 'webhookUrl é obrigatório' });
-    }
-
-    await db.updateSessionWebhook(sessionId, webhookUrl);
-
-    console.log(`✅ Webhook configurado para sessão ${sessionId}: ${webhookUrl}`);
-
-    res.json({
-      success: true,
-      message: 'Webhook configurado com sucesso',
-      webhookUrl
-    });
+    await assertSessionAccess(req, req.params.sessionId);
+    await db.updateSessionWebhook(req.params.sessionId, req.body.webhookUrl || req.body.url || null);
+    res.json({ success: true });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return sendError(res, error, 500);
   }
 });
 
 app.get('/api/sessions/:sessionId/webhook', authMiddleware, async (req, res) => {
   try {
-    const { sessionId } = req.params;
-
-    const dbSession = await db.getSession(sessionId);
-    if (!dbSession) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
-    }
-
-    const currentUser = await db.getUserById(req.userId);
-    const isAdmin = currentUser.email === 'admin@flow.com';
-
-    if (!isAdmin && dbSession.user_id !== req.userId) {
-      return res.status(403).json({ error: 'Acesso negado' });
-    }
-
-    const webhookUrl = await db.getSessionWebhook(sessionId);
-
-    res.json({
-      success: true,
-      webhookUrl
-    });
+    await assertSessionAccess(req, req.params.sessionId);
+    const webhookUrl = await db.getSessionWebhook(req.params.sessionId);
+    res.json({ success: true, webhookUrl });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return sendError(res, error, 500);
   }
 });
 
 app.get('/api/sessions/:sessionId/contacts', authMiddleware, async (req, res) => {
   try {
-    const { sessionId } = req.params;
-
-    const dbSession = await db.getSession(sessionId);
-    if (!dbSession || dbSession.user_id !== req.userId) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
-    }
-
-    const contacts = await db.getContactsBySession(sessionId);
-
-    res.json({
-      success: true,
-      contacts
-    });
+    await assertSessionAccess(req, req.params.sessionId);
+    const contacts = await db.getContactsBySession(req.params.sessionId);
+    res.json({ success: true, contacts });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return sendError(res, error, 500);
   }
 });
 
 app.get('/api/sessions/:sessionId/contacts/:contactPhone/messages', authMiddleware, async (req, res) => {
   try {
-    const { sessionId, contactPhone } = req.params;
-    const { limit = 100, source = 'db' } = req.query;
-
-    const dbSession = await db.getSession(sessionId);
-    if (!dbSession || dbSession.user_id !== req.userId) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
-    }
-
-    let messages;
-    if (source === 'memory') {
-      messages = sessionManager.getInMemoryMessages(sessionId, contactPhone);
-    } else {
-      messages = await db.getMessagesByContact(sessionId, contactPhone, parseInt(limit));
-      messages = messages.reverse();
-    }
-
-    res.json({
-      success: true,
-      messages,
-      source
-    });
+    await assertSessionAccess(req, req.params.sessionId);
+    const messages = await db.getMessagesByContact(req.params.sessionId, req.params.contactPhone, 100);
+    res.json({ success: true, messages });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return sendError(res, error, 500);
   }
 });
 
-app.get('/api/sessions/:sessionId/messages/memory', authMiddleware, async (req, res) => {
+app.get('/api/sessions/:sessionId/alive', authMiddleware, async (req, res) => {
   try {
-    const { sessionId } = req.params;
-    const { contactPhone } = req.query;
-
-    const dbSession = await db.getSession(sessionId);
-    if (!dbSession || dbSession.user_id !== req.userId) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
-    }
-
-    const messages = sessionManager.getInMemoryMessages(sessionId, contactPhone);
-
-    res.json({
-      success: true,
-      messages,
-      count: messages.length
-    });
+    await assertSessionAccess(req, req.params.sessionId);
+    const view = await whatsapp.getState(req.params.sessionId);
+    res.json({ success: true, alive: view.status === 'connected', status: view.status, engine: 'evolution' });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return sendError(res, error, 500);
   }
 });
 
-app.delete('/api/sessions/:sessionId/messages/memory', authMiddleware, async (req, res) => {
+app.get('/api/debug/errors', authMiddleware, async (req, res) => {
+  if (!(await isAdmin(req))) return res.status(403).json({ error: 'Acesso negado' });
+  res.json({ success: true, errors: recentErrors });
+});
+
+app.get('/api/debug/sessions', authMiddleware, async (req, res) => {
+  if (!(await isAdmin(req))) return res.status(403).json({ error: 'Acesso negado' });
+  const rows = await db.getAllSessionsFromDB();
+  res.json({
+    success: true,
+    engine: 'evolution',
+    sessions: rows.map(row => ({
+      ...row,
+      instanceName: whatsapp.instanceNameForSession(row.id)
+    }))
+  });
+});
+
+app.get('/api/admin/users-export', authMiddleware, async (req, res) => {
   try {
-    const { sessionId } = req.params;
-    const { contactPhone } = req.query;
-
-    const dbSession = await db.getSession(sessionId);
-    if (!dbSession || dbSession.user_id !== req.userId) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
-    }
-
-    sessionManager.clearInMemoryMessages(sessionId, contactPhone);
-
+    if (!(await isAdmin(req))) return res.status(403).json({ error: 'Acesso negado' });
+    const users = await db.getAllUsers();
     res.json({
       success: true,
-      message: 'Mensagens em memória limpas com sucesso'
+      users: users.map(user => ({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        company: user.company || null,
+        created_at: user.created_at
+      }))
     });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return sendError(res, error, 500);
   }
 });
 
-app.post('/api/sessions/:sessionId/auto-replies', authMiddleware, async (req, res) => {
+app.post('/api/admin/reset-whatsapp-sessions', authMiddleware, async (req, res) => {
   try {
-    const { sessionId } = req.params;
-    const { triggerType, triggerValue, responseMessage } = req.body;
-
-    const dbSession = await db.getSession(sessionId);
-    if (!dbSession || dbSession.user_id !== req.userId) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
+    if (!(await isAdmin(req))) return res.status(403).json({ error: 'Acesso negado' });
+    const rows = await db.getAllSessionsFromDB();
+    const results = [];
+    for (const row of rows) {
+      try {
+        await whatsapp.deleteInstance(row.id);
+        await db.resetSessionAuthForQr(row.id, 'disconnected');
+        results.push({ sessionId: row.id, success: true });
+      } catch (error) {
+        rememberError('admin-reset-session', error, { sessionId: row.id });
+        results.push({ sessionId: row.id, success: false, error: error.message });
+      }
     }
-
-    if (!triggerType || !triggerValue || !responseMessage) {
-      return res.status(400).json({
-        error: 'Campos triggerType, triggerValue e responseMessage são obrigatórios'
-      });
-    }
-
-    const result = await db.createAutoReply(sessionId, triggerType, triggerValue, responseMessage);
-
+    await db.run('DROP TABLE IF EXISTS whatsapp_auth_session_backups CASCADE').catch(error => rememberError('drop-legacy-auth-backups', error));
+    await db.run('DROP TABLE IF EXISTS whatsapp_auth_sessions CASCADE').catch(error => rememberError('drop-legacy-auth-sessions', error));
     res.json({
       success: true,
-      id: result.lastInsertRowid,
-      message: 'Resposta automática criada com sucesso'
+      engine: 'evolution',
+      legacyAuthRemoved: true,
+      results
     });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return sendError(res, error, 500);
   }
 });
 
-app.get('/api/sessions/:sessionId/auto-replies', authMiddleware, async (req, res) => {
+app.post('/api/admin/cleanup-sessions', authMiddleware, async (req, res) => {
+  if (!(await isAdmin(req))) return res.status(403).json({ error: 'Acesso negado' });
+  await db.run('DROP TABLE IF EXISTS whatsapp_auth_session_backups CASCADE').catch(error => rememberError('cleanup-drop-auth-backups', error));
+  await db.run('DROP TABLE IF EXISTS whatsapp_auth_sessions CASCADE').catch(error => rememberError('cleanup-drop-auth-sessions', error));
+  res.json({ success: true, engine: 'evolution', cleaned: 0, legacyAuthRemoved: true, message: 'Motor antigo removido; credenciais legadas descartadas.' });
+});
+
+app.get('/api/admin/reactivate-session/:sessionId', async (req, res) => {
   try {
-    const { sessionId } = req.params;
-
-    const dbSession = await db.getSession(sessionId);
-    if (!dbSession || dbSession.user_id !== req.userId) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
-    }
-
-    const autoReplies = await db.getAutoReplies(sessionId);
-
-    res.json({
-      success: true,
-      autoReplies
-    });
+    const sessionId = req.params.sessionId;
+    const row = await db.getSession(sessionId);
+    if (!row) return res.status(404).json({ error: 'Sessao nao encontrada' });
+    const user = await db.getUserById(row.user_id);
+    const view = await getSessionView(sessionId, row, { activate: true, forceQr: true, waitMs: 8000, user });
+    res.json({ success: true, action: 'evolution_connect', session: view, qrCode: view.qrCode });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return sendError(res, error, 500);
   }
 });
 
-app.delete('/api/auto-replies/:id', authMiddleware, async (req, res) => {
+app.post('/api/admin/require-qr/:sessionId', async (req, res) => {
   try {
-    const { id } = req.params;
-
-    await db.deleteAutoReply(id);
-
-    res.json({
-      success: true,
-      message: 'Resposta automática deletada'
-    });
+    const sessionId = req.params.sessionId;
+    await whatsapp.logout(sessionId).catch(() => {});
+    await db.resetSessionAuthForQr(sessionId, 'qr_code');
+    const row = await db.getSession(sessionId);
+    const user = row ? await db.getUserById(row.user_id) : null;
+    const view = await whatsapp.getQr(sessionId, { waitMs: 8000, forceQr: true, user });
+    if (row) await updateDbFromView(sessionId, view);
+    res.json({ success: true, session: publicSessionView(row, view), qrCode: view.qrCode });
   } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-app.post('/api/sessions/:sessionId/scheduled-messages', authMiddleware, async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const { contactPhone, message, mediaUrl, scheduledAt } = req.body;
-
-    const dbSession = await db.getSession(sessionId);
-    if (!dbSession || dbSession.user_id !== req.userId) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
-    }
-
-    if (!contactPhone || !message || !scheduledAt) {
-      return res.status(400).json({
-        error: 'Campos contactPhone, message e scheduledAt são obrigatórios'
-      });
-    }
-
-    const result = await db.createScheduledMessage(sessionId, contactPhone, message, mediaUrl, scheduledAt);
-
-    res.json({
-      success: true,
-      id: result.lastInsertRowid,
-      message: 'Mensagem agendada com sucesso'
-    });
-  } catch (error) {
-    res.status(400).json({ error: error.message });
+    return sendError(res, error, 500);
   }
 });
 
 app.post('/api/meta/config', authMiddleware, async (req, res) => {
   try {
     const { accessToken, phoneNumberId, businessAccountId } = req.body;
-
-    if (!accessToken || !phoneNumberId) {
-      return res.status(400).json({
-        error: 'Campos accessToken e phoneNumberId são obrigatórios'
-      });
-    }
-
-    const result = await db.saveMetaConfig(req.userId, accessToken, phoneNumberId, businessAccountId);
-
-    res.json({
-      success: true,
-      message: 'Configuração Meta salva com sucesso'
-    });
+    if (!accessToken || !phoneNumberId) return res.status(400).json({ error: 'accessToken e phoneNumberId sao obrigatorios' });
+    await db.saveMetaConfig(req.userId, accessToken, phoneNumberId, businessAccountId);
+    res.json({ success: true });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return sendError(res, error, 500);
   }
 });
 
 app.get('/api/meta/config', authMiddleware, async (req, res) => {
   try {
-    const metaConfig = await db.getMetaConfig(req.userId);
-
-    if (!metaConfig) {
-      return res.json({
-        success: true,
-        configured: false,
-        config: null
-      });
-    }
-
-    res.json({
-      success: true,
-      configured: true,
-      config: {
-        phoneNumberId: metaConfig.phone_number_id,
-        businessAccountId: metaConfig.business_account_id,
-        hasAccessToken: !!metaConfig.access_token
-      }
-    });
+    const config = await db.getMetaConfig(req.userId);
+    res.json({ success: true, configured: !!config, config: config ? { phoneNumberId: config.phone_number_id, businessAccountId: config.business_account_id } : null });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return sendError(res, error, 500);
   }
 });
 
 app.post('/api/meta/send', authMiddleware, async (req, res) => {
   try {
-    const { to, message } = req.body;
-
-    if (!to || !message) {
-      return res.status(400).json({
-        error: 'Campos "to" e "message" são obrigatórios'
-      });
-    }
-
-    const metaConfig = await db.getMetaConfig(req.userId);
-    if (!metaConfig) {
-      return res.status(400).json({
-        error: 'Configure a API do Meta primeiro em /api/meta/config'
-      });
-    }
-
-    const metaAPI = new MetaWhatsAppAPI(metaConfig.access_token, metaConfig.phone_number_id);
-    const result = await metaAPI.sendMessage(to, message);
-
+    const config = await db.getMetaConfig(req.userId);
+    if (!config) return res.status(400).json({ error: 'Configure a API do Meta primeiro em /api/meta/config' });
+    const meta = new MetaWhatsAppAPI(config.access_token, config.phone_number_id);
+    const result = await meta.sendMessage(req.body.to, req.body.message);
     res.json(result);
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return sendError(res, error, 500);
   }
 });
 
-app.post('/api/meta/send-media', authMiddleware, async (req, res) => {
+app.get('/api/prospecting/lists/:listId/statuses', async (req, res) => {
   try {
-    const { to, mediaType, mediaUrl, caption } = req.body;
-
-    if (!to || !mediaType || !mediaUrl) {
-      return res.status(400).json({
-        error: 'Campos "to", "mediaType" e "mediaUrl" são obrigatórios'
-      });
-    }
-
-    const metaConfig = await db.getMetaConfig(req.userId);
-    if (!metaConfig) {
-      return res.status(400).json({
-        error: 'Configure a API do Meta primeiro em /api/meta/config'
-      });
-    }
-
-    const metaAPI = new MetaWhatsAppAPI(metaConfig.access_token, metaConfig.phone_number_id);
-    const result = await metaAPI.sendMedia(to, mediaType, mediaUrl, caption);
-
-    res.json(result);
+    const rows = await db.all('SELECT * FROM prospecting_lead_status WHERE list_id = $1', [req.params.listId]);
+    res.json({ success: true, statuses: rows });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return sendError(res, error, 500);
   }
 });
 
-app.post('/api/meta/send-template', authMiddleware, async (req, res) => {
+app.put('/api/prospecting/lists/:listId/leads/:leadKey/status', async (req, res) => {
   try {
-    const { to, templateName, languageCode = 'pt_BR', components = [] } = req.body;
-
-    if (!to || !templateName) {
-      return res.status(400).json({
-        error: 'Campos "to" e "templateName" são obrigatórios'
-      });
-    }
-
-    const metaConfig = await db.getMetaConfig(req.userId);
-    if (!metaConfig) {
-      return res.status(400).json({
-        error: 'Configure a API do Meta primeiro em /api/meta/config'
-      });
-    }
-
-    const metaAPI = new MetaWhatsAppAPI(metaConfig.access_token, metaConfig.phone_number_id);
-    const result = await metaAPI.sendTemplate(to, templateName, languageCode, components);
-
-    res.json(result);
+    const { status, leadName, ownerName, notes } = req.body;
+    await db.run(`
+      INSERT INTO prospecting_lead_status (list_id, lead_key, lead_name, status, owner_name, notes, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+      ON CONFLICT (list_id, lead_key)
+      DO UPDATE SET status = EXCLUDED.status, lead_name = EXCLUDED.lead_name, owner_name = EXCLUDED.owner_name, notes = EXCLUDED.notes, updated_at = CURRENT_TIMESTAMP
+    `, [req.params.listId, req.params.leadKey, leadName || req.params.leadKey, status || 'pending', ownerName || null, notes || null]);
+    res.json({ success: true });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return sendError(res, error, 500);
   }
 });
-
-app.post('/api/meta/send-bulk', authMiddleware, async (req, res) => {
-  try {
-    const { contacts, message, delayMs = 1000 } = req.body;
-
-    if (!contacts || !Array.isArray(contacts) || !message) {
-      return res.status(400).json({
-        error: 'Campos contacts (array) e message são obrigatórios'
-      });
-    }
-
-    const metaConfig = await db.getMetaConfig(req.userId);
-    if (!metaConfig) {
-      return res.status(400).json({
-        error: 'Configure a API do Meta primeiro em /api/meta/config'
-      });
-    }
-
-    const metaAPI = new MetaWhatsAppAPI(metaConfig.access_token, metaConfig.phone_number_id);
-    const results = await metaAPI.sendBulkMessages(contacts, message, delayMs);
-
-    res.json({
-      success: true,
-      results
-    });
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-app.post('/api/admin/cleanup-messages', authMiddleware, async (req, res) => {
-  try {
-    const currentUser = await db.getUserById(req.userId);
-    if (currentUser.email !== 'admin@flow.com') {
-      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
-    }
-
-    console.log('🗑️ Iniciando limpeza de mensagens...');
-
-    const countResult = await db.all('SELECT COUNT(*) as count FROM messages');
-    const totalMensagens = countResult[0].count;
-
-    console.log(`📊 Total de mensagens antes da limpeza: ${totalMensagens}`);
-
-    await db.run('DELETE FROM messages');
-
-    const newCountResult = await db.all('SELECT COUNT(*) as count FROM messages');
-    const remainingMessages = newCountResult[0].count;
-
-    console.log(`✅ Limpeza concluída! Mensagens deletadas: ${totalMensagens}`);
-
-    res.json({
-      success: true,
-      message: 'Todas as mensagens foram deletadas com sucesso',
-      deletedCount: totalMensagens,
-      remainingCount: remainingMessages
-    });
-  } catch (error) {
-    console.error('❌ Erro ao limpar mensagens:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// REMOVIDO: health simplificado duplicado que sobrescrevia o detalhado (linha ~271)
-
-cron.schedule('*/5 * * * *', async () => {  // A cada 5 min (era a cada 1 min)
-  const pendingMessages = await db.getPendingScheduledMessages();
-
-  for (const msg of pendingMessages) {
-    try {
-      let result;
-      if (msg.media_url) {
-        result = await withGlobalWhatsAppSendLimit(
-          () => sessionManager.sendMedia(msg.session_id, msg.contact_phone, msg.media_url, msg.message),
-          { sessionId: msg.session_id, to: msg.contact_phone, scheduled: true, media: true }
-        );
-      } else {
-        result = await withGlobalWhatsAppSendLimit(
-          () => sessionManager.sendMessage(msg.session_id, msg.contact_phone, msg.message),
-          { sessionId: msg.session_id, to: msg.contact_phone, scheduled: true }
-        );
-      }
-
-      if (result?.confirmed !== true || result?.unconfirmed || result?.status === 'pending') {
-        console.warn(`Mensagem agendada ${msg.id} ficou pendente sem ACK de entrega; nao marcando como sent.`);
-        continue;
-      }
-
-      if (result?.skipped || result?.status === 'invalid_number') {
-        console.warn(`Mensagem agendada ${msg.id} tem contato invalido; marcando como failed.`);
-        await db.updateScheduledMessageStatus(msg.id, 'failed');
-        continue;
-      }
-
-      await db.updateScheduledMessageStatus(msg.id, 'sent', new Date().toISOString());
-    } catch (error) {
-      console.error(`Erro ao enviar mensagem agendada ${msg.id}:`, error);
-      await db.updateScheduledMessageStatus(msg.id, 'failed');
-    }
-  }
-});
-
-async function initializeDefaultSession() {
-  try {
-    // No Koyeb com filesystem efêmero, NÃO restauramos sessões no startup.
-    // Cada sessão será criada sob demanda quando o usuário acessar.
-    console.log('✅ Startup seguro — hibernando sessoes e criando sob demanda.');
-    await sessionManager.markAllSessionsDisconnected();
-    console.log('💡 Sessões com RemoteAuth ficam em saved_auth e reativam no login/admin; sem auth exigem QR.');
-
-    const memUsage = process.memoryUsage();
-    console.log(`📊 Memória no startup: RSS=${Math.round(memUsage.rss / 1024 / 1024)}MB, Heap=${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`);
-  } catch (error) {
-    console.error('❌ Erro na inicialização:', error.message);
-  }
-}
-
-cron.schedule('0 * * * *', async () => {  // A cada 1 hora — limpeza unificada
-  console.log('🧹 Executando limpeza horária (sessões + mensagens)...');
-  try {
-    // 1. Limpa sessões inativas da memória
-    const cleaned = await sessionManager.cleanupInactiveSessions();
-    if (cleaned > 0) console.log(`   - ${cleaned} sessões inativas removidas`);
-
-    // 2. Limpa mensagens antigas do banco
-    const deletedCount = await db.deleteOldMessages(20);
-    const totalMessages = await db.getMessagesCount();
-    const capacity = await db.getDatabaseCapacityPercentage();
-
-    console.log(`   - ${deletedCount} mensagens antigas removidas (>20min)`);
-    console.log(`   - ${totalMessages} mensagens restantes | Banco: ${capacity.toFixed(1)}%`);
-
-    if (capacity >= 50) {
-      console.log(`⚠️ Capacidade crítica! Executando limpeza adicional...`);
-      const cleanedByCapacity = await db.cleanupByCapacity();
-      console.log(`   - ${cleanedByCapacity} mensagens adicionais removidas`);
-    }
-  } catch (error) {
-    console.error('❌ Erro na limpeza horária:', error.message);
-  }
-});
-
-cron.schedule('0 */6 * * *', async () => {
-  console.log('💾 Executando backup de usuários (a cada 6 horas)...');
-  try {
-    const users = await db.backupUsers();
-    console.log(`✅ Backup concluído: ${users.length} usuários salvos`);
-  } catch (error) {
-    console.error('❌ Erro no backup de usuários:', error.message);
-  }
-});
-
-cron.schedule('*/30 * * * *', async () => {  // A cada 30 min (era a cada 5 min)
-  console.log('🔍 Verificando saúde do sistema (a cada 30 minutos)...');
-  try {
-    const capacity = await db.getDatabaseCapacityPercentage();
-    const sessions = sessionManager.getAllSessions();
-    const activeSessions = sessions.filter(s => s.status === 'connected').length;
-    
-    console.log(`📊 Status do sistema:`);
-    console.log(`   - Capacidade do banco: ${capacity.toFixed(2)}%`);
-    console.log(`   - Sessões ativas: ${activeSessions}/${sessions.length}`);
-    
-    if (capacity > 90) {
-      console.error(`🚨 ALERTA: Banco de dados com ${capacity.toFixed(2)}% de capacidade!`);
-      await db.cleanupByCapacity();
-    }
-  } catch (error) {
-    console.error('❌ Erro na verificação de saúde:', error.message);
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// MONITORAMENTO DE MEMÓRIA — Previne OOM kills no Koyeb
-// Verifica a cada 2 minutos. Se RSS > 400MB, força limpeza agressiva.
-// ═══════════════════════════════════════════════════════════════════
-const MEMORY_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
-// Thresholds calibrados para 8GB Koyeb com até 10 Chromiums (~250MB cada = 2.5GB)
-// Node.js RSS inclui memória compartilhada dos Chromiums, por isso os valores são altos
-const MEMORY_WARN_MB = 3000;     // 3GB — alerta (normal com 10 Chromiums)
-const MEMORY_CRITICAL_MB = 5000; // 5GB — desconecta sessões ociosas
-const MEMORY_EMERGENCY_MB = 6500; // 6.5GB — reinicia (deixa 1.5GB pro OS)
-
-setInterval(async () => {
-  const mem = process.memoryUsage();
-  const heapMB = Math.round(mem.heapUsed / 1024 / 1024);
-  const rssMB = Math.round(mem.rss / 1024 / 1024);
-  console.log(`🧠 Memória — Heap: ${heapMB}MB | RSS: ${rssMB}MB`);
-
-  // Tenta garbage collection se disponível
-  if (global.gc) {
-    global.gc();
-    const afterGC = process.memoryUsage();
-    console.log(`🧹 GC executado — Heap: ${Math.round(afterGC.heapUsed / 1024 / 1024)}MB | RSS: ${Math.round(afterGC.rss / 1024 / 1024)}MB`);
-  }
-
-  if (rssMB >= MEMORY_EMERGENCY_MB) {
-    console.error(`🚨 EMERGÊNCIA DE MEMÓRIA: ${rssMB}MB RSS! Reiniciando processo...`);
-
-    // Marca todas as sessões como desconectadas no banco
-    try {
-      await sessionManager.markAllSessionsDisconnected();
-    } catch (e) { /* ignora */ }
-
-    // Mata processos chromium órfãos antes de sair
-    try {
-      const { execSync } = require('child_process');
-      execSync('pkill -f chromium 2>/dev/null || true');
-    } catch (e) { /* ignora */ }
-
-    // Reinicia o processo — Koyeb faz auto-restart
-    console.log('🔄 Processo reiniciando via Koyeb auto-restart...');
-    process.exit(1);
-
-  } else if (rssMB >= MEMORY_CRITICAL_MB) {
-    console.warn(`⚠️ MEMÓRIA CRÍTICA: ${rssMB}MB RSS! Limpando sessões mortas e ociosas...`);
-
-    // 1. Limpa sessões mortas (failed, disconnected sem client)
-    await sessionManager.forceCleanupDeadSessions();
-
-    // 2. Desconecta APENAS sessões ociosas há mais de 1 hora (não todas)
-    const now = Date.now();
-    const oneHour = 60 * 60 * 1000;
-    let evictedCount = 0;
-    for (const [sid, lastTs] of sessionManager.sessionLastActivity.entries()) {
-      if ((now - lastTs) > oneHour) {
-        const sess = sessionManager.getSession(sid);
-        if (sess && sess.client && (sess.status === 'connected' || sess.status === 'authenticated')) {
-          console.log(`🔌 Evicting por memória: ${sid} (idle ${Math.round((now - lastTs) / 60000)}min)`);
-          await sessionManager.disconnectIdleSession(sid);
-          evictedCount++;
-        }
-      }
-    }
-    console.log(`🧹 ${evictedCount} sessões ociosas desconectadas por pressão de memória`);
-
-    // 3. Limpa cache de mensagens em memória
-    sessionManager.inMemoryMessages.clear();
-    console.log('🧹 Cache de mensagens em memória limpo');
-
-    // 4. NÃO mata renderers — são processos filhos de sessões ativas
-    // pkill mataria Chromiums de sessões conectadas, derrubando todas
-
-  } else if (rssMB >= MEMORY_WARN_MB) {
-    console.warn(`⚠️ Memória elevada: ${rssMB}MB RSS`);
-  }
-}, MEMORY_CHECK_INTERVAL_MS);
-
-// ═══════════════════════════════════════════════════════════════════
-// VERIFICAÇÃO DE SESSÕES ZUMBIS — Apenas sessões REALMENTE presas
-// Roda a cada 15 min. NÃO faz getState em sessões connected saudáveis
-// (getState pode dar timeout se Chromium estiver ocupado, matando sessão boa)
-// ═══════════════════════════════════════════════════════════════════
-const ZOMBIE_CHECK_INTERVAL_MS = 15 * 60 * 1000; // 15 minutos
-const AUTHENTICATED_ZOMBIE_TIMEOUT_MS = Math.max(
-  10 * 60 * 1000,
-  parseInt(process.env.AUTHENTICATED_ZOMBIE_TIMEOUT_MS || '600000', 10)
-);
-
-setInterval(async () => {
-  const now = Date.now();
-  const allSessions = sessionManager.getAllSessions();
-
-  for (const s of allSessions) {
-    // Caso 1: sessao presa em "authenticated" alem do prazo seguro.
-    // O event handler cuida da maioria; esta varredura e apenas um fallback.
-    if (s.status === 'authenticated' && s.lastSeen && (now - s.lastSeen) > AUTHENTICATED_ZOMBIE_TIMEOUT_MS) {
-      console.warn(`🧟 Sessão zumbi: ${s.id} — "authenticated" por ${Math.round((now - s.lastSeen) / 1000)}s`);
-      await sessionManager.cleanupSession(s.id);
-      await db.updateSessionStatus(s.id, await sessionManager.hasSavedRemoteAuth(s.id) ? 'authenticated' : 'disconnected');
-    }
-
-    // Caso 2: Sessão "connected" mas SEM ATIVIDADE por mais de 30 min
-    // Só verifica getState se já está inativa há muito tempo — não mata sessões ativas
-    if (s.status === 'connected' && s.lastSeen && (now - s.lastSeen) > 30 * 60 * 1000) {
-      try {
-        const alive = await sessionManager.isSessionAlive(s.id);
-        if (!alive) {
-          console.warn(`🧟 Sessão ${s.id} — "connected" mas Chromium morto (inativa ${Math.round((now - s.lastSeen) / 60000)}min)`);
-          await sessionManager.cleanupSession(s.id);
-          await db.updateSessionStatus(s.id, await sessionManager.hasSavedRemoteAuth(s.id) ? 'authenticated' : 'disconnected');
-
-          console.log(`[${s.id}] Chromium morto detectado; acionando reativacao com fallback automatico para QR...`);
-          kickSessionActivationWithQrFallback(s.id, s.userId, null, 'zombie_chromium_dead');
-          io.to(`user_${s.userId}`).emit('session_reconnecting', {
-            sessionId: s.id,
-            reason: 'CHROMIUM_DEAD',
-            action: 'reactivate_or_qr'
-          });
-          continue;
-
-          // Tenta auto-reconexão antes de notificar desconexão
-          console.log(`🔄 [${s.id}] Tentando auto-reconexão após detectar Chromium morto...`);
-          try {
-            const reconSession = await sessionManager.autoReconnectForSend(s.id);
-            if (reconSession) {
-              console.log(`✅ [${s.id}] Auto-reconexão pós-zombie bem-sucedida! Sessão restaurada.`);
-              io.to(`user_${s.userId}`).emit('session_reconnected', {
-                sessionId: s.id,
-                reason: 'AUTO_RECONNECT_AFTER_ZOMBIE'
-              });
-            } else {
-              console.warn(`❌ [${s.id}] Auto-reconexão pós-zombie falhou — QR será necessário`);
-              io.to(`user_${s.userId}`).emit('session_disconnected', {
-                sessionId: s.id,
-                reason: 'CHROMIUM_DEAD'
-              });
-            }
-          } catch (reconErr) {
-            console.error(`❌ [${s.id}] Erro na auto-reconexão pós-zombie: ${reconErr.message}`);
-            io.to(`user_${s.userId}`).emit('session_disconnected', {
-              sessionId: s.id,
-              reason: 'CHROMIUM_DEAD'
-            });
-          }
-        }
-      } catch (e) {
-        // Erro ao verificar NÃO mata a sessão — pode ser temporário
-        console.warn(`⚠️ Erro ao verificar sessão ${s.id}: ${e.message} (mantendo ativa)`);
-      }
-    }
-  }
-}, ZOMBIE_CHECK_INTERVAL_MS);
-
-app.get('/api/debug/chromium', async (req, res) => {
-  const { execSync } = require('child_process');
-  try {
-    const chromiumPath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
-    const checks = {
-      chromiumPath: chromiumPath,
-      chromiumExists: require('fs').existsSync(chromiumPath),
-      chromiumVersion: null,
-      puppeteerConfig: {
-        executablePath: chromiumPath,
-        env: process.env.NODE_ENV
-      }
-    };
-
-    try {
-      checks.chromiumVersion = execSync(`${chromiumPath} --version`).toString().trim();
-    } catch (e) {
-      checks.chromiumVersion = `Error: ${e.message}`;
-    }
-
-    res.json(checks);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Endpoint de debug para verificar sessões (apenas admin)
-app.get('/api/debug/sessions', authMiddleware, async (req, res) => {
-  try {
-    const currentUser = await db.getUserById(req.userId);
-    if (currentUser.email !== 'admin@flow.com') {
-      return res.status(403).json({ error: 'Acesso negado' });
-    }
-
-    const allSessionsDB = await db.all('SELECT * FROM sessions');
-    const allSessionsMemory = sessionManager.getAllSessions();
-
-    const debug = {
-      database: allSessionsDB.map(s => ({
-        id: s.id,
-        user_id: s.user_id,
-        status: s.status,
-        phone_number: s.phone_number,
-        phone_name: s.phone_name,
-        created_at: s.created_at,
-        updated_at: s.updated_at
-      })),
-      memory: allSessionsMemory.map(s => ({
-        id: s.id,
-        userId: s.userId,
-        status: s.status,
-        hasClient: !!s.client,
-        phoneNumber: s.info?.wid?.user || null,
-        phoneName: s.info?.pushname || null
-      })),
-      users: await db.all('SELECT id, name, email FROM users')
-    };
-
-    res.json(debug);
-  } catch (error) {
-    console.error('Erro no debug:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Diagnostico completo por sessao (admin) — visao unificada banco x memoria x RemoteAuth
-app.get('/api/admin/session-diagnostics', authMiddleware, async (req, res) => {
-  try {
-    const currentUser = await db.getUserById(req.userId);
-    if (currentUser.email !== 'admin@flow.com') {
-      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
-    }
-
-    const dbSessions = await db.all(
-      `SELECT s.*, u.email AS user_email
-       FROM sessions s
-       LEFT JOIN users u ON u.id = s.user_id
-       ORDER BY s.updated_at DESC`
-    );
-
-    let authRows = [];
-    try {
-      authRows = sessionManager.pgStore ? await sessionManager.pgStore.listSessions() : [];
-    } catch (e) {
-      console.warn(`session-diagnostics: falha ao listar RemoteAuth: ${e.message}`);
-    }
-    const authBySession = new Map(authRows.map(r => [String(r.session_id).replace('RemoteAuth-', ''), r]));
-
-    const sessions = dbSessions.map(s => {
-      const live = sessionManager.getSession(s.id);
-      const auth = authBySession.get(s.id) || null;
-      const verifiedSavedAuth = sessionManager.isVerifiedSavedAuthRecord(s);
-      const lastActivityTs = sessionManager.sessionLastActivity.get(s.id);
-      return {
-        sessionId: s.id,
-        userId: s.user_id,
-        email: s.user_email || null,
-        dbStatus: s.status,
-        liveStatus: live?.status || null,
-        hasClient: !!live?.client,
-        hasQr: !!live?.qrCode,
-        hasRemoteAuth: !!auth,
-        verifiedSavedAuth,
-        canSend: live?.status === 'connected',
-        lastReadyAt: s.last_ready_at || null,
-        lastAuthFailureAt: s.last_auth_failure_at || null,
-        remoteAuthVerifiedAt: s.remote_auth_verified_at || null,
-        lastActivity: lastActivityTs ? new Date(lastActivityTs).toISOString() : null,
-        remoteAuthSize: auth?.data_size ?? null,
-        remoteAuthUpdatedAt: auth?.updated_at || null,
-        remoteAuthBackups: auth?.backup_count ?? 0,
-        falseSavedAuth: s.status === 'saved_auth' && !verifiedSavedAuth
-      };
-    });
-
-    res.json({
-      success: true,
-      generatedAt: new Date().toISOString(),
-      totals: {
-        sessions: sessions.length,
-        byStatus: sessions.reduce((acc, item) => {
-          acc[item.dbStatus] = (acc[item.dbStatus] || 0) + 1;
-          return acc;
-        }, {}),
-        falseSavedAuth: sessions.filter(item => item.falseSavedAuth).length,
-        live: sessions.filter(item => !!item.liveStatus).length,
-        withRemoteAuth: sessions.filter(item => item.hasRemoteAuth).length
-      },
-      sessions
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Endpoint de limpeza manual de mensagens antigas
-app.post('/api/cleanup-messages', authMiddleware, async (req, res) => {
-  try {
-    const currentUser = await db.getUserById(req.userId);
-    if (currentUser.email !== 'admin@flow.com') {
-      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
-    }
-
-    const { hoursOld = 24 } = req.body;
-
-    console.log(`🧹 Limpeza manual de mensagens iniciada (>${hoursOld}h)...`);
-
-    const deletedCount = await db.deleteOldMessages(hoursOld);
-    const totalMessages = await db.getMessagesCount();
-    const dbSize = await db.getDatabaseSize();
-
-    res.json({
-      success: true,
-      deletedCount,
-      remainingMessages: totalMessages,
-      databaseSize: dbSize?.size || 'N/A',
-      databaseSizeBytes: dbSize?.size_bytes || 0,
-      message: `${deletedCount} mensagens antigas foram removidas com sucesso`
-    });
-  } catch (error) {
-    console.error('❌ Erro na limpeza manual:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      message: 'Erro ao executar limpeza de mensagens'
-    });
-  }
-});
-
-// Endpoint para obter estatísticas do banco de dados
-app.get('/api/database-stats', authMiddleware, async (req, res) => {
-  try {
-    const currentUser = await db.getUserById(req.userId);
-    if (currentUser.email !== 'admin@flow.com') {
-      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
-    }
-
-    const totalMessages = await db.getMessagesCount();
-    const dbSize = await db.getDatabaseSize();
-    const allUsers = await db.all('SELECT COUNT(*) as count FROM users');
-    const allSessions = await db.all('SELECT COUNT(*) as count FROM sessions');
-    const allContacts = await db.all('SELECT COUNT(*) as count FROM contacts');
-
-    res.json({
-      success: true,
-      stats: {
-        totalMessages: totalMessages || 0,
-        totalUsers: allUsers[0]?.count || 0,
-        totalSessions: allSessions[0]?.count || 0,
-        totalContacts: allContacts[0]?.count || 0,
-        databaseSize: dbSize?.size || 'N/A',
-        databaseSizeBytes: dbSize?.size_bytes || 0
-      },
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('❌ Erro ao obter estatísticas:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Endpoint simplificado para envio de mensagens (auto-detecta sessão)
-// Atualizado: Admin pode enviar mensagens de qualquer sessão
-app.post('/api/messages/send', authMiddleware, async (req, res) => {
-  try {
-    const { to, message, sessionId, mediaUrl } = req.body;
-
-    if (!to || !message) {
-      return res.status(400).json({
-        error: 'Campos "to" e "message" são obrigatórios'
-      });
-    }
-
-    const currentUser = await db.getUserById(req.userId);
-    const isAdmin = currentUser.email === 'admin@flow.com';
-
-    let targetSessionId = sessionId;
-
-    // Auto-detectar sessão se não for informada
-    if (!targetSessionId) {
-      const userSessions = isAdmin
-        ? await db.all('SELECT * FROM sessions WHERE status IN ($1, $2)', ['connected', 'authenticated'])
-        : await db.getSessionsByUserId(req.userId);
-
-      const activeSessions = userSessions.filter(s => {
-        const session = sessionManager.getSession(s.id);
-        return session && (session.status === 'connected' || session.status === 'authenticated');
-      });
-
-      if (activeSessions.length === 0) {
-        if (!isAdmin && userSessions.length === 1) {
-          targetSessionId = userSessions[0].id;
-        } else {
-          return res.status(404).json({
-            error: 'Nenhuma sessão conectada encontrada. Conecte seu WhatsApp primeiro.',
-            action: 'connect_whatsapp'
-          });
-        }
-      }
-
-      if (activeSessions.length === 1) {
-        targetSessionId = activeSessions[0].id;
-      } else if (activeSessions.length > 1) {
-        return res.status(400).json({
-          error: 'Múltiplas sessões conectadas. Especifique qual usar no campo "sessionId".',
-          sessions: activeSessions.map(s => ({
-            id: s.id,
-            createdAt: s.created_at
-          }))
-        });
-      }
-    }
-
-    // Verificar se a sessão existe
-    const dbSession = await db.getSession(targetSessionId);
-    if (!dbSession) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
-    }
-
-    // Verificar permissões: admin pode usar qualquer sessão, usuário comum apenas suas próprias
-    if (!isAdmin && dbSession.user_id !== req.userId) {
-      return res.status(403).json({ error: 'Sessão não encontrada ou não pertence a você' });
-    }
-
-    return await sendOrQueueWhatsApp(res, targetSessionId, to, message, mediaUrl);
-  } catch (error) {
-    console.error(`Erro ao enviar mensagem:`, error.message);
-    return respondWhatsAppSendError(res, error, { sessionId: req.body?.sessionId, to: req.body?.to });
-  }
-});
-
-// Endpoint para obter URLs de webhook do usuário (para configurar no n8n/Flow)
-app.get('/api/webhooks/info', authMiddleware, async (req, res) => {
-  try {
-    const userSessions = await db.getSessionsByUserId(req.userId);
-
-    if (userSessions.length === 0) {
-      return res.status(404).json({
-        error: 'Nenhuma sessão encontrada. Crie uma sessão primeiro.',
-        action: 'create_session'
-      });
-    }
-
-    const baseUrl = process.env.API_URL || `https://racial-debby-1brunomktecomercial-eb2f294d.koyeb.app`;
-
-    const webhooksInfo = userSessions.map(session => ({
-      sessionId: session.id,
-      status: session.status,
-      webhooks: {
-        // Webhook para ENVIAR mensagens (usar no n8n/Flow para enviar)
-        send: {
-          url: `${baseUrl}/api/sessions/${session.id}/message`,
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer SEU_TOKEN_JWT'
-          },
-          body: {
-            to: '5511999999999',
-            message: 'Sua mensagem aqui'
-          },
-          description: 'Use este endpoint para ENVIAR mensagens via WhatsApp'
-        },
-        // Webhook para RECEBER mensagens (configurar no Flow para receber notificações)
-        receive: {
-          url: session.webhook_url || 'Não configurado',
-          method: 'POST',
-          description: 'Configure este webhook no Flow para RECEBER mensagens do WhatsApp',
-          howToSet: `PUT ${baseUrl}/api/sessions/${session.id}/webhook`,
-          examplePayload: {
-            event: 'message',
-            sessionId: session.id,
-            userId: req.userId,
-            message: {
-              id: 'msg_id',
-              from: '5511999999999',
-              body: 'Mensagem recebida',
-              type: 'chat',
-              timestamp: 1234567890
-            }
-          }
-        }
-      }
-    }));
-
-    res.json({
-      success: true,
-      userId: req.userId,
-      totalSessions: userSessions.length,
-      webhooks: webhooksInfo,
-      instructions: {
-        send: 'Use o webhook "send" no n8n/Flow para ENVIAR mensagens',
-        receive: 'Configure o webhook "receive" para RECEBER mensagens no Flow',
-        authentication: 'Inclua o header Authorization: Bearer SEU_TOKEN em todas as requisições'
-      }
-    });
-  } catch (error) {
-    console.error('Erro ao obter webhooks:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Endpoint de diagnóstico — mostra erros recentes e saúde das sessões
-app.get('/api/debug/errors', authMiddleware, async (req, res) => {
-  try {
-    const currentUser = await db.getUserById(req.userId);
-    if (currentUser.email !== 'admin@flow.com') {
-      return res.status(403).json({ error: 'Acesso negado' });
-    }
-    const health = await sessionManager.healthCheck();
-    const recentErrors = sessionManager.getRecentErrors(20);
-    res.json({
-      success: true,
-      health,
-      recentErrors,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Endpoint para verificar se uma sessão específica está viva
-app.get('/api/sessions/:sessionId/alive', authMiddleware, async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const alive = await sessionManager.isSessionAlive(sessionId);
-    const session = sessionManager.getSession(sessionId);
-    res.json({
-      success: true,
-      sessionId,
-      alive,
-      status: session?.status || 'not_in_memory',
-      lastSeen: session?.lastSeen ? new Date(session.lastSeen).toISOString() : null
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Keep-alive do Render removido — legado da hospedagem antiga (nao usamos Render).
-
-// Monitor de memória básico removido — substituído pelo monitor avançado com 3 thresholds (linha ~1295)
 
 app.use('/api', (req, res) => {
   res.status(404).json({
     success: false,
-    error: 'Endpoint API nao encontrado',
-    path: req.originalUrl
+    error: 'Endpoint nao implementado na API Evolution limpa',
+    engine: 'evolution'
   });
 });
 
-app.use('/api', (err, req, res, next) => {
-  console.error(`Erro nao tratado em ${req.method} ${req.originalUrl}:`, err);
-  if (res.headersSent) return next(err);
-  res.status(500).json({
-    success: false,
-    error: 'Erro interno da API',
-    detail: process.env.NODE_ENV === 'production' ? undefined : err.message
-  });
-});
-
-server.listen(PORT, HOST, async () => {
-  console.log(`\n🚀 ========================================`);
-  console.log(`   WhatsApp API Server v2.0`);
-  console.log(`========================================`);
-  console.log(`📡 Servidor rodando em: http://${HOST}:${PORT}`);
-  console.log(`🌍 Ambiente: ${process.env.NODE_ENV || 'development'}`);
-  console.log('💾 Sessões persistentes: ✅ PostgreSQL (Supabase) — sessões sobrevivem a deploys');
-  console.log(`========================================\n`);
-
-  await initializeDefaultSession();
-
-  console.log(`\n✅ API pronta para receber requisições!`);
-  console.log(`📖 Documentação: http://${HOST}:${PORT}\n`);
+server.listen(PORT, HOST, () => {
+  console.log(`ProspectFlow WhatsApp API Evolution rodando em http://${HOST}:${PORT}`);
+  console.log(`Evolution configurada: ${whatsapp.configured() ? 'sim' : 'nao'}`);
 });
 
 process.on('SIGTERM', async () => {
-  console.log('⚠️ SIGTERM recebido. Encerrando gracefully...');
-  console.log('💾 PRESERVANDO RemoteAuth no PostgreSQL — sessões reconectarão no próximo start');
-
-  // IMPORTANTE: NÃO chamar deleteSession() aqui!
-  // deleteSession() apaga o RemoteAuth do PostgreSQL, forçando todos a escanear QR novamente.
-  // Devemos apenas destruir os processos Chromium e deixar os dados de auth intactos.
-  const sessions = sessionManager.getAllSessions();
-  for (const session of sessions) {
-    try {
-      const liveSession = sessionManager.getSession(session.id);
-      if (liveSession && liveSession.client) {
-        console.log(`🔌 Destruindo Chromium: ${session.id} (auth preservado)`);
-        try {
-          await liveSession.client.destroy();
-        } catch (e) {
-          // Ignora erros de destroy — o processo vai morrer de qualquer forma
-        }
-      }
-      // Marca como disconnected no banco (NÃO deleta)
-      await db.updateSessionStatus(session.id, await sessionManager.hasSavedRemoteAuth(session.id) ? 'authenticated' : 'disconnected');
-    } catch (error) {
-      console.error(`❌ Erro ao encerrar ${session.id}:`, error.message);
-    }
-  }
-
-  server.close(() => {
-    console.log('✅ Servidor encerrado — RemoteAuth preservado para todas as sessões');
-    process.exit(0);
-  });
+  console.log('SIGTERM recebido. Encerrando servidor...');
+  server.close(() => process.exit(0));
 });
 
-function isBenignWhatsAppTempFsError(error) {
-  const message = String(error?.message || error || '').toLowerCase();
-  return message.includes('enoent') &&
-    (
-      message.includes('wwebjs_temp_session') ||
-      message.includes('browsermetrics') ||
-      message.includes('.wwebjs_auth')
-    );
-}
-
-process.on('uncaughtException', (error) => {
-  if (isBenignWhatsAppTempFsError(error)) {
-    console.warn('⚠️ Ignorando erro benigno de arquivo temporario do Chromium/WhatsApp:', error.message || error);
-    return;
-  }
-  console.error('❌ Uncaught Exception:', error);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  const errMsg = (reason && reason.message) ? reason.message.toLowerCase() : String(reason).toLowerCase();
-  if (isBenignWhatsAppTempFsError(reason)) {
-    console.warn('⚠️ Ignorando unhandledRejection benigno de arquivo temporario do Chromium/WhatsApp:', errMsg);
-    return;
-  }
-  console.error('❌ Unhandled Rejection:', errMsg);
-
-  // "Execution context was destroyed" vindo de whatsapp-web.js interno
-  // indica Chromium morto — precisamos identificar qual sessão e reconectar
-  const fatalPatterns = [
-    'execution context was destroyed',
-    'session closed',
-    'target closed',
-    'page crashed',
-    'browser disconnected',
-    'browser has disconnected',
-    'chromium morto',
-  ];
-
-  if (fatalPatterns.some(p => errMsg.includes(p))) {
-    console.warn('🧟 Unhandled Rejection indica Chromium morto — ativando verificação de sessões...');
-    // Agenda uma verificação rápida de todas as sessões ativas
-    setTimeout(async () => {
-      try {
-        const activeSessions = sessionManager.getAllSessions();
-        for (const session of activeSessions) {
-          const sid = session.id;
-          if (session.client) {
-            if (['qr_code', 'initializing', 'authenticated', 'reconnecting'].includes(session.status)) {
-              console.warn(`🧟 [${sid}] Unhandled durante ${session.status}; mantendo sessão viva para concluir QR/autenticação.`);
-              continue;
-            }
-            try {
-              const alive = await sessionManager.isSessionAlive(sid);
-              if (!alive) {
-                console.error(`🧟 [${sid}] Chromium morto detectado via unhandledRejection. Limpando e liberando QR.`);
-                await sessionManager.cleanupSession(sid);
-                await db.markSessionRequiresQr(sid, 'auth_failure');
-                io.to(`user_${session.userId}`).emit('session_disconnected', {
-                  sessionId: sid,
-                  reason: 'CHROMIUM_DEAD_UNHANDLED',
-                  status: 'auth_failure',
-                  action: 'scan_qr'
-                });
-              }
-            } catch (checkErr) {
-              console.warn(`⚠️ [${sid}] Erro verificando saúde: ${checkErr.message}`);
-            }
-          }
-        }
-      } catch (scanErr) {
-        console.error('❌ Erro no scan pós-unhandledRejection:', scanErr.message);
-      }
-    }, 2000); // 2s delay para não conflitar com outros handlers
-  }
-});
+module.exports = { app, server, whatsapp };

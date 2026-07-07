@@ -1,20 +1,19 @@
 {
-  "name": "whatsapp-api-free",
-  "version": "2.0.0",
-  "description": "API REST gratuita para WhatsApp com CRM, chat em tempo real e integração Flow",
+  "name": "prospectflow-whatsapp-evolution-adapter",
+  "version": "3.0.0",
+  "description": "Adaptador ProspectFlow para Evolution API com QR, sessoes e envio confirmavel",
   "main": "src/server.js",
   "scripts": {
-    "start": "node --expose-gc src/server.js",
-    "dev": "nodemon src/server.js"
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "check": "node --check src/server.js && node --check src/EvolutionWhatsAppProvider.js"
   },
   "keywords": [
     "whatsapp",
-    "api",
+    "evolution-api",
+    "prospectflow",
     "webhook",
-    "rest",
-    "free",
-    "crm",
-    "chat"
+    "crm"
   ],
   "author": "",
   "license": "MIT",
@@ -25,15 +24,10 @@
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.2",
-    "node-cron": "^3.0.3",
     "pg": "^8.17.1",
-    "qrcode": "^1.5.3",
-    "socket.io": "^4.6.1",
-    "uuid": "^9.0.1",
-    "whatsapp-web.js": "^1.34.6"
+    "socket.io": "^4.6.1"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1",
-    "patch-package": "^8.0.1"
+    "nodemon": "^3.0.1"
   }
 }

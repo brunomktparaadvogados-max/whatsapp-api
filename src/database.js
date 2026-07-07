@@ -18,7 +18,7 @@ class DatabaseManager {
       max: 5,                          // 5 conexões max — Supabase Micro (1GB RAM) se engasga com mais
       connectionTimeoutMillis: 15000,  // 15s para obter conexão (falha rápido em vez de travar)
       idleTimeoutMillis: 30000,        // fecha conexão idle após 30s (libera para outros)
-      statement_timeout: 15000,        // cancela query após 15s (queries normais <1s, blobs via PostgresStore)
+      statement_timeout: 15000,        // cancela query apos 15s
       query_timeout: 15000             // timeout de query
     });
 
@@ -85,8 +85,7 @@ class DatabaseManager {
   }
 
   /**
-   * Registra listener para ser notificado quando o pool é recriado.
-   * Usado pelo SessionManager para atualizar a referência do PostgresStore.
+   * Registra listener para ser notificado quando o pool e recriado.
    */
   onPoolChange(listener) {
     this._poolChangeListeners.push(listener);
@@ -112,7 +111,7 @@ class DatabaseManager {
         query_timeout: 15000
       });
 
-      // Notifica todos os listeners (PostgresStore, etc.) ANTES de encerrar o pool antigo
+      // Notifica consumidores antes de encerrar o pool antigo.
       for (const listener of this._poolChangeListeners) {
         try {
           listener(this.pool);
@@ -121,11 +120,6 @@ class DatabaseManager {
         }
       }
 
-      // NÃO chamar oldPool.end() — o PostgresStore ou outros consumidores
-      // podem ter queries in-flight no pool antigo. Deixar as conexões
-      // expirarem pelo idleTimeoutMillis (60s) naturalmente.
-      // Chamar end() causa "Cannot use a pool after calling end on the pool"
-      // em qualquer consumidor que ainda referencie o pool antigo.
       oldPool.removeAllListeners();  // Evita event leaks do pool antigo
 
       this._consecutiveErrors = 0;
@@ -193,20 +187,26 @@ class DatabaseManager {
         phone_number TEXT,
         phone_name TEXT,
         webhook_url TEXT,
-        remote_auth_verified_at TIMESTAMP,
+        evolution_verified_at TIMESTAMP,
         last_ready_at TIMESTAMP,
         last_auth_failure_at TIMESTAMP,
-        auth_generation INTEGER DEFAULT 0,
+        engine TEXT DEFAULT 'evolution',
+        engine_instance_name TEXT,
+        last_send_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
 
-    await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS remote_auth_verified_at TIMESTAMP`);
+    await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS evolution_verified_at TIMESTAMP`);
     await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_ready_at TIMESTAMP`);
     await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_auth_failure_at TIMESTAMP`);
-    await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS auth_generation INTEGER DEFAULT 0`);
+    await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS engine TEXT DEFAULT 'evolution'`);
+    await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS engine_instance_name TEXT`);
+    await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_send_at TIMESTAMP`);
+    await this.run(`ALTER TABLE sessions DROP COLUMN IF EXISTS remote_auth_verified_at`);
+    await this.run(`ALTER TABLE sessions DROP COLUMN IF EXISTS auth_generation`);
 
     await this.run(`
       CREATE TABLE IF NOT EXISTS contacts (
@@ -456,9 +456,12 @@ class DatabaseManager {
 
   async createSession(sessionId, userId) {
     return await this.run(`
-      INSERT INTO sessions (id, user_id)
-      VALUES ($1, $2)
-      ON CONFLICT (id) DO NOTHING
+      INSERT INTO sessions (id, user_id, engine, engine_instance_name)
+      VALUES ($1, $2, 'evolution', $1)
+      ON CONFLICT (id) DO UPDATE SET
+        engine = 'evolution',
+        engine_instance_name = COALESCE(sessions.engine_instance_name, EXCLUDED.engine_instance_name),
+        updated_at = CURRENT_TIMESTAMP
     `, [sessionId, userId]);
   }
 
@@ -469,27 +472,18 @@ class DatabaseManager {
     );
   }
 
-  async markSessionReady(sessionId, phoneNumber = null, phoneName = null, remoteAuthVerified = false) {
+  async markSessionReady(sessionId, phoneNumber = null, phoneName = null, persistenceVerified = false) {
     return await this.run(
       `UPDATE sessions
        SET status = 'connected',
            phone_number = COALESCE($2, phone_number),
            phone_name = COALESCE($3, phone_name),
            last_ready_at = CURRENT_TIMESTAMP,
-           remote_auth_verified_at = CASE WHEN $4 THEN CURRENT_TIMESTAMP ELSE remote_auth_verified_at END,
+           evolution_verified_at = CASE WHEN $4 THEN CURRENT_TIMESTAMP ELSE evolution_verified_at END,
+           engine = 'evolution',
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $1`,
-      [sessionId, phoneNumber, phoneName, remoteAuthVerified]
-    );
-  }
-
-  async markRemoteAuthVerified(sessionId) {
-    return await this.run(
-      `UPDATE sessions
-       SET remote_auth_verified_at = CURRENT_TIMESTAMP,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1`,
-      [sessionId]
+      [sessionId, phoneNumber, phoneName, persistenceVerified]
     );
   }
 
@@ -497,7 +491,6 @@ class DatabaseManager {
     return await this.run(
       `UPDATE sessions
        SET status = $2,
-           remote_auth_verified_at = NULL,
            last_auth_failure_at = CURRENT_TIMESTAMP,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $1`,
@@ -511,10 +504,9 @@ class DatabaseManager {
        SET status = $2,
            phone_number = NULL,
            phone_name = NULL,
-           remote_auth_verified_at = NULL,
            last_ready_at = NULL,
            last_auth_failure_at = CURRENT_TIMESTAMP,
-           auth_generation = COALESCE(auth_generation, 0) + 1,
+           engine = 'evolution',
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $1`,
       [sessionId, status]
