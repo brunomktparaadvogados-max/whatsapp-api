@@ -14,7 +14,10 @@ const path = require('path');
 // LIMITES DE MEMÓRIA — Sessões sob demanda para 20+ usuários
 // ═══════════════════════════════════════════════════════════════════
 const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 5; // Mantem poucos Chromiums vivos no Koyeb nano
-const MAX_RSS_MB = parseInt(process.env.MAX_RSS_MB) || 1400;                         // Alinhado ao HealthGuard; 650MB derrubava sessoes com poucos Chromiums
+const MAX_RSS_MB = Math.max(
+  1000,
+  parseInt(process.env.MAX_RSS_MB || '1400', 10) || 1400
+); // 650MB derrubava sessoes com poucos Chromiums vivos no Koyeb.
 const QR_CODE_TIMEOUT_MS = parseInt(process.env.QR_CODE_TIMEOUT_MS) || 30 * 60 * 1000; // janela de reutilizacao do mesmo QR na UI
 const QR_ACTIVE_KEEPALIVE_MS = Math.max(
   2 * 60 * 1000,
@@ -77,7 +80,10 @@ const SESSION_INIT_RETRY_DELAY_MS = parseInt(process.env.SESSION_INIT_RETRY_DELA
 const SESSION_INIT_CONCURRENCY = parseInt(process.env.SESSION_INIT_CONCURRENCY) || 1;
 // 3s: com concorrencia 1, 15s de stagger somava minutos de espera extra na fila
 // de inicializacao so para gerar um QR — usuario via "Gerando QR..." eterno.
-const SESSION_INIT_STAGGER_MS = parseInt(process.env.SESSION_INIT_STAGGER_MS) || 3000;
+const SESSION_INIT_STAGGER_MS = Math.min(
+  parseInt(process.env.SESSION_INIT_STAGGER_MS || '1000', 10) || 1000,
+  1000
+);
 const REMOTE_AUTH_INIT_RETRIES = parseInt(process.env.REMOTE_AUTH_INIT_RETRIES) || 6;
 const REMOTE_AUTH_INIT_RETRY_DELAY_MS = parseInt(process.env.REMOTE_AUTH_INIT_RETRY_DELAY_MS) || 5000;
 const REQUIRE_REMOTE_AUTH = process.env.REQUIRE_REMOTE_AUTH !== 'false';
