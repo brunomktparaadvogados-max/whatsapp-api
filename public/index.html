@@ -1442,10 +1442,36 @@
             badge.textContent = getStatusText(status);
         }
 
+        async function fetchUserQrNow(userId, sessionId, forceQr = true) {
+            const key = `qrFetchInFlight_${userId}`;
+            if (window[key]) return;
+            window[key] = true;
+            try {
+                const response = await fetch(`${API_URL}/api/sessions/${sessionId}/qr?waitMs=8000&forceQr=${forceQr ? 'true' : 'false'}`, {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` }
+                });
+                const data = await readApiJson(response, 'buscar QR Code');
+                if (data.status === 'connected') {
+                    renderUserSessionPanel(userId, sessionId, { id: sessionId, status: 'connected', canSend: true });
+                    return;
+                }
+                if (data.qrCode) {
+                    renderUserSessionPanel(userId, sessionId, { id: sessionId, status: 'qr_code', qrCode: data.qrCode });
+                    return;
+                }
+                scheduleUserSessionRefresh(userId, 2000);
+            } catch (error) {
+                console.warn(`Falha ao buscar QR imediato de ${sessionId}:`, error.message);
+                scheduleUserSessionRefresh(userId, 2000);
+            } finally {
+                window[key] = false;
+            }
+        }
+
         function renderUserSessionPanel(userId, sessionId, session) {
             const contentDiv = document.getElementById(`session-content-${userId}`);
             const status = session?.status || 'not_created';
-            const qrCode = session?.qrCode || session?.qr_code || null;
+            const qrCode = status === 'connected' ? null : (session?.qrCode || session?.qr_code || null);
             const autoQrKey = `autoForceQr_${userId}`;
             updateUserSessionBadge(userId, status);
             if (status !== 'saved_auth') {
@@ -1475,11 +1501,12 @@
                 if (!qrCode) {
                     if (!window[autoQrKey]) {
                         window[autoQrKey] = Date.now();
-                    } else if ((Date.now() - window[autoQrKey]) > 8000) {
+                        setTimeout(() => fetchUserQrNow(userId, sessionId, true), 100);
+                    } else if ((Date.now() - window[autoQrKey]) > 4000) {
                         window[autoQrKey] = Date.now();
-                        setTimeout(() => createUserSession(userId, true), 100);
+                        setTimeout(() => fetchUserQrNow(userId, sessionId, true), 100);
                     }
-                    scheduleUserSessionRefresh(userId, 3000);
+                    scheduleUserSessionRefresh(userId, 2000);
                 }
                 return;
             }
@@ -1553,6 +1580,9 @@
                 const session = data.session;
 
                 renderUserSessionPanel(userId, sessionId, session);
+                if (['initializing', 'authenticated', 'qr_code'].includes(session?.status) && !session?.qrCode) {
+                    setTimeout(() => fetchUserQrNow(userId, sessionId, true), 100);
+                }
                 if (['saved_auth', 'disconnected', 'failed', 'auth_failure'].includes(session?.status)) {
                     const needsQr = session.status !== 'saved_auth' || session.verifiedSavedAuth === false || session.hasRemoteAuth === false;
                     setTimeout(() => createUserSession(userId, needsQr), 200);
@@ -1609,8 +1639,9 @@
                         setTimeout(() => createUserSession(userId, true), 500);
                         return;
                     }
-                    if (['initializing', 'authenticated', 'saved_auth'].includes(session.status)) {
-                        scheduleUserSessionRefresh(userId, 3000);
+                    if (['initializing', 'authenticated', 'saved_auth', 'qr_code'].includes(session.status) && !session.qrCode) {
+                        setTimeout(() => fetchUserQrNow(userId, sessionId, true), 100);
+                        scheduleUserSessionRefresh(userId, 2000);
                     }
                 } else {
                     contentDiv.innerHTML = `

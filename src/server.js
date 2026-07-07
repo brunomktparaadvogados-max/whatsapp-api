@@ -325,6 +325,7 @@ async function getSessionView(sessionId, dbSession = null) {
   const status = liveSession
     ? liveSession.status
     : (recoverable ? 'initializing' : (forceQrRequired ? savedDbSession.status : normalizeStatusWithoutRemoteAuth(savedDbSession.status)));
+  const qrCode = liveSession?.status === 'qr_code' ? liveSession.qrCode : null;
 
   return {
     ...savedDbSession,
@@ -334,7 +335,7 @@ async function getSessionView(sessionId, dbSession = null) {
     verifiedSavedAuth,
     recoverable,
     canSend: liveSession ? liveSession.status === 'connected' : false,
-    qrCode: liveSession ? liveSession.qrCode : null,
+    qrCode,
     info: liveSession ? liveSession.info : null,
     live: !!liveSession
   };
@@ -1791,15 +1792,23 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
       });
     }
 
-    if (!session.qrCode) {
+    if (session.status === 'connected') {
       return res.json({
         success: true,
         qrCode: null,
+        status: 'connected',
+        canSend: true,
+        message: 'Sessao ja esta conectada.'
+      });
+    }
+
+    if (!session.qrCode) {
+      return res.status(202).json({
+        success: true,
+        qrCode: null,
         status: session.status,
-        canSend: session.status === 'connected',
-        message: session.status === 'connected'
-          ? 'WhatsApp já está conectado!'
-          : 'QR Code ainda não disponível. Aguarde...'
+        canSend: false,
+        message: 'QR Code sendo preparado. Aguarde alguns segundos.'
       });
     }
 
@@ -1945,7 +1954,7 @@ app.post('/api/sessions', authMiddleware, async (req, res) => {
       success: true,
       sessionId: targetSessionId,
       status,
-      qrCode: view?.qrCode || null,
+      qrCode: view?.qrCode || (progressedSession?.status === 'qr_code' ? progressedSession.qrCode : null),
       canSend: view?.canSend || false,
       hasRemoteAuth: view?.hasRemoteAuth || hasRemoteAuth,
       recoverable: view?.recoverable || false,
@@ -2097,7 +2106,7 @@ app.post('/api/sessions/:sessionId/reactivate', authMiddleware, async (req, res)
       hasRemoteAuth: view.hasRemoteAuth,
       recoverable: view.recoverable,
       canSend: view.canSend,
-      qrCode: view.qrCode,
+      qrCode: view?.qrCode || (progressedSession?.status === 'qr_code' ? progressedSession.qrCode : null),
       message: isReady
         ? 'Sessao reativada e pronta para disparo.'
         : needsQr
@@ -2240,17 +2249,31 @@ app.get('/api/sessions/:sessionId/qr', authMiddleware, async (req, res) => {
       });
     }
 
+    if (session.status === 'connected') {
+      return res.json({
+        success: true,
+        qrCode: null,
+        status: 'connected',
+        canSend: true,
+        message: 'Sessao ja esta conectada.'
+      });
+    }
+
     if (!session.qrCode) {
-      return res.status(404).json({
-        error: 'QR Code não disponível',
-        status: session.status
+      return res.status(202).json({
+        success: true,
+        qrCode: null,
+        status: session.status,
+        canSend: false,
+        message: 'QR Code sendo preparado. Aguarde alguns segundos.'
       });
     }
 
     res.json({
       success: true,
       qrCode: session.qrCode,
-      status: session.status
+      status: session.status,
+      canSend: false
     });
   } catch (error) {
     res.status(500).json({ error: error.message });

@@ -45,6 +45,10 @@ const RECENT_ACTIVITY_PRESERVE_MS = Math.max(
   5 * 60 * 1000,
   parseInt(process.env.RECENT_ACTIVITY_PRESERVE_MS ?? String(10 * 60 * 1000), 10) || 0
 );
+const DISPATCH_PROTECTION_GRACE_MS = Math.max(
+  5 * 60 * 1000,
+  parseInt(process.env.WHATSAPP_DISPATCH_PROTECTION_GRACE_MS ?? String(15 * 60 * 1000), 10) || 0
+);
 const STALE_SESSION_HEALTHCHECK_MS = parseInt(process.env.STALE_SESSION_HEALTHCHECK_MS) || 2 * 60 * 1000;
 const MIN_MESSAGE_INTERVAL_MS = 1500;             // 1.5 segundos entre mensagens (anti-rate-limit)
 const MAX_SEND_RETRIES = 0;                       // SEM retries — evita mensagens duplicadas
@@ -212,6 +216,7 @@ class SessionManager {
       session.lastSeen = now;
       session.lastDispatchAt = now;
       session.dispatchInProgress = active;
+      session.dispatchProtectedUntil = now + DISPATCH_PROTECTION_GRACE_MS;
     }
     this.lastMessageTime.set(sessionId, now);
     this.sessionLastActivity.set(sessionId, now);
@@ -219,11 +224,13 @@ class SessionManager {
 
   isSessionBusy(sessionId) {
     const session = this.sessions.get(sessionId);
+    const protectedByRecentDispatch = !!session?.dispatchProtectedUntil && session.dispatchProtectedUntil > Date.now();
     return this.sessionSendLock.has(sessionId) ||
       this.reconnectPromises.has(sessionId) ||
       this.sessionStartPromises.has(sessionId) ||
       this.reconnectingSet.has(sessionId) ||
-      session?.dispatchInProgress === true;
+      session?.dispatchInProgress === true ||
+      protectedByRecentDispatch;
   }
 
   shouldPreserveLiveSession(sessionId) {
