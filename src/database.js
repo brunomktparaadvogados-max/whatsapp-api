@@ -161,6 +161,15 @@ class DatabaseManager {
     return result.rows;
   }
 
+  async healthCheck() {
+    const started = Date.now();
+    await this.query('SELECT 1 AS ok', [], 1);
+    return {
+      ok: true,
+      latencyMs: Date.now() - started
+    };
+  }
+
   async initTables() {
     await this.run(`
       CREATE TABLE IF NOT EXISTS users (

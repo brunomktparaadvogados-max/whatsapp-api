@@ -18,6 +18,10 @@ ERRO: defina DATABASE_URL antes de executar.
 Exemplo:
   export DATABASE_URL='postgresql://usuario:senha@host:5432/postgres'
   bash install-vps-evolution.sh
+
+Em VPS sem IPv6, nao use o host direto db.<project>.supabase.co se ele resolver apenas AAAA.
+Use o pooler IPv4 do Supabase, por exemplo:
+  postgresql://postgres.<project-ref>:<senha>@aws-0-sa-east-1.pooler.supabase.com:5432/postgres
 MSG
   exit 1
 fi

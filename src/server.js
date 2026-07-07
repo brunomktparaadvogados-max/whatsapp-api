@@ -392,14 +392,39 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/api/health', async (req, res) => {
-  res.json({
-    status: whatsapp.configured() ? 'healthy' : 'degraded',
+  const checks = {
+    database: { ok: false },
+    evolution: { ok: whatsapp.configured() }
+  };
+
+  try {
+    checks.database = await db.healthCheck();
+  } catch (error) {
+    checks.database = { ok: false, error: error.message, code: error.code || null };
+  }
+
+  try {
+    const evolutionStatus = whatsapp.configured() ? await whatsapp.request('get', '/instance/fetchInstances') : null;
+    checks.evolution = {
+      ok: whatsapp.configured(),
+      reachable: true,
+      instances: Array.isArray(evolutionStatus) ? evolutionStatus.length : null
+    };
+  } catch (error) {
+    checks.evolution = { ok: false, reachable: false, error: error.message, code: error.code || null };
+  }
+
+  const healthy = checks.database.ok && checks.evolution.ok && checks.evolution.reachable !== false;
+
+  res.status(healthy ? 200 : 503).json({
+    status: healthy ? 'healthy' : 'degraded',
     engine: 'evolution',
     evolution: {
       configured: whatsapp.configured(),
       baseUrl: whatsapp.baseUrl || null,
       instancePrefix: whatsapp.instancePrefix
     },
+    checks,
     recentErrors,
     timestamp: new Date().toISOString()
   });
