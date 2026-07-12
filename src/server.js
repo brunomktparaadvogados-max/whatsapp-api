@@ -9,6 +9,7 @@ require('dotenv').config();
 const DatabaseManager = require('./database');
 const EvolutionWhatsAppProvider = require('./EvolutionWhatsAppProvider');
 const MetaWhatsAppAPI = require('./MetaAPI');
+const BotConversaAPI = require('./BotConversaAPI');
 const { generateToken, authMiddleware } = require('./auth');
 
 const PORT = process.env.PORT || 3000;
@@ -37,6 +38,7 @@ const recentErrors = [];
 const recentSends = new Map();
 const SEND_DEDUPE_MS = parseInt(process.env.WHATSAPP_SEND_DEDUPE_MS || String(15 * 60 * 1000), 10);
 const SEND_DELAY_MS = parseInt(process.env.EVOLUTION_SEND_DELAY_MS || '1200', 10);
+const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v20.0';
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -199,17 +201,123 @@ async function releaseSend(key) {
   }
 }
 
+function normalizeProvider(provider) {
+  if (provider === 'meta' || provider === 'meta_official') return 'meta_official';
+  if (provider === 'botconversa' || provider === 'bot_conversa') return 'bot_conversa';
+  return 'evolution';
+}
+
 function isAmbiguousEvolutionSendError(error) {
   return ['EVOLUTION_REQUEST_FAILED', 'EVOLUTION_NON_JSON_RESPONSE'].includes(error?.code) ||
     (error?.status === 502 && String(error?.details?.url || '').includes('/message/send'));
 }
 
-async function sendWhatsAppText({ sessionId, to, message, mediaUrl = null }) {
+async function sendViaMetaOfficial({ sessionId, userId, to, message, mediaUrl = null }) {
+  const config = await db.getMetaConfig(userId);
+  if (!config) {
+    const err = new Error('API oficial do WhatsApp nao configurada para este usuario');
+    err.status = 400;
+    throw err;
+  }
+
+  const meta = new MetaWhatsAppAPI(config.access_token, config.phone_number_id, { graphVersion: META_GRAPH_VERSION });
+  const result = mediaUrl
+    ? await meta.sendMedia(to, 'image', mediaUrl, message)
+    : await meta.sendMessage(to, message);
+
+  if (!result.success) {
+    const err = new Error(result.error?.error?.message || result.error?.message || 'Falha ao enviar via API oficial do WhatsApp');
+    err.status = result.error?.error?.code ? 502 : 400;
+    err.details = result.error;
+    throw err;
+  }
+
+  const messageId = result.data?.messages?.[0]?.id || crypto.randomUUID();
+  await db.saveMessage({
+    id: messageId,
+    sessionId,
+    contactPhone: to,
+    messageType: mediaUrl ? 'media' : 'chat',
+    body: message,
+    mediaUrl,
+    mediaMimetype: null,
+    fromMe: true,
+    timestamp: Date.now(),
+    status: 'sent'
+  });
+  await db.upsertContact(sessionId, to);
+
+  return {
+    success: true,
+    provider: 'meta_official',
+    sessionId,
+    to,
+    messageId,
+    confirmed: true,
+    status: 'sent',
+    finalStatus: 'sent',
+    shouldMarkLead: 'sent',
+    raw: result.data
+  };
+}
+
+async function sendViaBotConversa({ sessionId, userId, to, firstName = '', message }) {
+  const config = await db.getBotConversaConfig(userId);
+  if (!config) {
+    const err = new Error('BotConversa nao configurado para este usuario');
+    err.status = 400;
+    throw err;
+  }
+
+  const bot = new BotConversaAPI(config.api_key);
+  const result = await bot.sendFlow({ phone: to, firstName, flowId: config.flow_id });
+  const messageId = `botconversa-${result.subscriberId}-${Date.now()}`;
+
+  await db.saveMessage({
+    id: messageId,
+    sessionId,
+    contactPhone: result.to,
+    messageType: 'bot_conversa_flow',
+    body: message || `Fluxo BotConversa ${config.flow_name || config.flow_id}`,
+    mediaUrl: null,
+    mediaMimetype: null,
+    fromMe: true,
+    timestamp: Date.now(),
+    status: 'sent'
+  });
+  await db.upsertContact(sessionId, result.to);
+
+  return {
+    success: true,
+    provider: 'bot_conversa',
+    sessionId,
+    to: result.to,
+    messageId,
+    confirmed: true,
+    status: 'sent',
+    finalStatus: 'sent',
+    shouldMarkLead: 'sent',
+    botConversaSubscriberId: result.subscriberId,
+    botConversaFlowId: result.flowId,
+    raw: result.raw
+  };
+}
+
+async function sendWhatsAppText({ sessionId, to, message, mediaUrl = null, providerOverride = null, firstName = '' }) {
   if (!to || !message) {
     const err = new Error('Campos "to" e "message" sao obrigatorios');
     err.status = 400;
     throw err;
   }
+
+  const sessionRow = await db.getSession(sessionId);
+  if (!sessionRow?.user_id) {
+    const err = new Error('Sessao nao encontrada');
+    err.status = 404;
+    throw err;
+  }
+
+  const activeProvider = normalizeProvider(providerOverride || await db.getWhatsAppProvider(sessionRow.user_id));
 
   const claim = await claimSend(sessionId, to, message, mediaUrl);
   if (claim.duplicate) {
@@ -218,15 +326,40 @@ async function sendWhatsAppText({ sessionId, to, message, mediaUrl = null }) {
       duplicate: true,
       confirmed: false,
       status: 'duplicate_ignored',
-      shouldMarkLead: 'pending',
-      message: 'Mensagem duplicada ignorada para evitar reenvio. Aguarde a confirmacao real de entrega.'
+      shouldMarkLead: 'sent',
+      message: 'Mensagem duplicada ignorada para evitar reenvio ao mesmo lead.'
     };
   }
 
   try {
+    if (activeProvider === 'meta_official') {
+      return await sendViaMetaOfficial({
+        sessionId,
+        userId: sessionRow.user_id,
+        to: claim.number,
+        message,
+        mediaUrl
+      });
+    }
+
+    if (activeProvider === 'bot_conversa') {
+      if (mediaUrl) {
+        const err = new Error('BotConversa usa fluxo configurado e nao aceita midia direta neste disparo');
+        err.status = 400;
+        throw err;
+      }
+      return await sendViaBotConversa({
+        sessionId,
+        userId: sessionRow.user_id,
+        to: claim.number,
+        firstName,
+        message
+      });
+    }
+
     const result = mediaUrl
-      ? await whatsapp.sendMedia(sessionId, to, mediaUrl, message)
-      : await whatsapp.sendText(sessionId, to, message, { delay: SEND_DELAY_MS });
+      ? await whatsapp.sendMedia(sessionId, claim.number, mediaUrl, message)
+      : await whatsapp.sendText(sessionId, claim.number, message, { delay: SEND_DELAY_MS });
 
     const messageId = result.messageId || crypto.randomUUID();
     await db.saveMessage({
@@ -282,7 +415,14 @@ async function handleSessionMessage(req, res, explicitSessionId = null) {
   try {
     const sessionId = resolveTargetSessionId(req, explicitSessionId);
     await assertSessionAccess(req, sessionId);
-    const result = await sendWhatsAppText({ sessionId, to: req.body.to, message: req.body.message, mediaUrl: req.body.mediaUrl });
+    const result = await sendWhatsAppText({
+      sessionId,
+      to: req.body.to,
+      message: req.body.message,
+      mediaUrl: req.body.mediaUrl,
+      providerOverride: req.body.provider,
+      firstName: req.body.firstName || req.body.name || ''
+    });
     res.status(result.confirmed ? 200 : 202).json(result);
   } catch (error) {
     rememberError('send-message', error, { sessionId: explicitSessionId || req.body?.sessionId, to: req.body?.to });
@@ -640,7 +780,14 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
   try {
     const sessionId = resolveTargetSessionId(req, req.body?.sessionId);
     await assertSessionAccess(req, sessionId);
-    const result = await sendWhatsAppText({ sessionId, to: req.body.to, message: req.body.message, mediaUrl: req.body.mediaUrl });
+    const result = await sendWhatsAppText({
+      sessionId,
+      to: req.body.to,
+      message: req.body.message,
+      mediaUrl: req.body.mediaUrl,
+      providerOverride: req.body.provider,
+      firstName: req.body.firstName || req.body.name || ''
+    });
     res.status(result.confirmed ? 200 : 202).json(result);
   } catch (error) {
     rememberError('send-auto', error, { sessionId: req.body?.sessionId, to: req.body?.to });
@@ -656,7 +803,9 @@ app.post('/api/sessions/:sessionId/messages/media', authMiddleware, async (req, 
       sessionId,
       to: req.body.to,
       message: req.body.caption || '',
-      mediaUrl: req.body.mediaUrl
+      mediaUrl: req.body.mediaUrl,
+      providerOverride: req.body.provider,
+      firstName: req.body.firstName || req.body.name || ''
     });
     res.status(result.confirmed ? 200 : 202).json(result);
   } catch (error) {
@@ -854,6 +1003,26 @@ app.post('/api/admin/require-qr/:sessionId', async (req, res) => {
   }
 });
 
+app.get('/api/provider/config', authMiddleware, async (req, res) => {
+  try {
+    const summary = await db.getProviderSummary(req.userId);
+    res.json({ success: true, ...summary });
+  } catch (error) {
+    return sendError(res, error, 500);
+  }
+});
+
+app.put('/api/provider/config', authMiddleware, async (req, res) => {
+  try {
+    const provider = normalizeProvider(req.body?.provider);
+    await db.setWhatsAppProvider(req.userId, provider);
+    const summary = await db.getProviderSummary(req.userId);
+    res.json({ success: true, ...summary });
+  } catch (error) {
+    return sendError(res, error, 500);
+  }
+});
+
 app.post('/api/meta/config', authMiddleware, async (req, res) => {
   try {
     const { accessToken, phoneNumberId, businessAccountId } = req.body;
@@ -878,9 +1047,45 @@ app.post('/api/meta/send', authMiddleware, async (req, res) => {
   try {
     const config = await db.getMetaConfig(req.userId);
     if (!config) return res.status(400).json({ error: 'Configure a API do Meta primeiro em /api/meta/config' });
-    const meta = new MetaWhatsAppAPI(config.access_token, config.phone_number_id);
+    const meta = new MetaWhatsAppAPI(config.access_token, config.phone_number_id, { graphVersion: META_GRAPH_VERSION });
     const result = await meta.sendMessage(req.body.to, req.body.message);
     res.json(result);
+  } catch (error) {
+    return sendError(res, error, 500);
+  }
+});
+
+app.post('/api/bot-conversa/config', authMiddleware, async (req, res) => {
+  try {
+    const { apiKey, flowId, flowName } = req.body;
+    if (!apiKey || !flowId) return res.status(400).json({ error: 'apiKey e flowId sao obrigatorios' });
+    await db.saveBotConversaConfig(req.userId, apiKey, flowId, flowName || null);
+    res.json({ success: true });
+  } catch (error) {
+    return sendError(res, error, 500);
+  }
+});
+
+app.get('/api/bot-conversa/config', authMiddleware, async (req, res) => {
+  try {
+    const config = await db.getBotConversaConfig(req.userId);
+    res.json({
+      success: true,
+      configured: !!config,
+      config: config ? { flowId: config.flow_id, flowName: config.flow_name } : null
+    });
+  } catch (error) {
+    return sendError(res, error, 500);
+  }
+});
+
+app.post('/api/bot-conversa/flows', authMiddleware, async (req, res) => {
+  try {
+    const apiKey = req.body?.apiKey;
+    if (!apiKey) return res.status(400).json({ error: 'apiKey obrigatorio' });
+    const bot = new BotConversaAPI(apiKey);
+    const flows = await bot.listFlows();
+    res.json({ success: true, flows });
   } catch (error) {
     return sendError(res, error, 500);
   }

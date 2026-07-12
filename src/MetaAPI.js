@@ -1,10 +1,10 @@
 const axios = require('axios');
 
 class MetaWhatsAppAPI {
-  constructor(accessToken, phoneNumberId) {
+  constructor(accessToken, phoneNumberId, options = {}) {
     this.accessToken = accessToken;
     this.phoneNumberId = phoneNumberId;
-    this.baseUrl = 'https://graph.facebook.com/v18.0';
+    this.baseUrl = `https://graph.facebook.com/${options.graphVersion || 'v20.0'}`;
   }
 
   async sendMessage(to, message) {

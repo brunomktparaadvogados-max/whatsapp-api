@@ -320,6 +320,30 @@ class DatabaseManager {
     `);
 
     await this.run(`
+      CREATE TABLE IF NOT EXISTS bot_conversa_configs (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        api_key TEXT NOT NULL,
+        flow_id TEXT NOT NULL,
+        flow_name TEXT,
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
+    await this.run(`
+      CREATE TABLE IF NOT EXISTS whatsapp_provider_configs (
+        user_id INTEGER PRIMARY KEY,
+        provider TEXT NOT NULL DEFAULT 'evolution',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
+    await this.run(`
       CREATE TABLE IF NOT EXISTS prospecting_lead_status (
         list_id TEXT NOT NULL,
         lead_key TEXT NOT NULL,
@@ -362,6 +386,8 @@ class DatabaseManager {
             'auto_replies',
             'scheduled_messages',
             'meta_configs',
+            'bot_conversa_configs',
+            'whatsapp_provider_configs',
             'prospecting_lead_status',
             'whatsapp_send_locks',
             'whatsapp_auth_sessions',
@@ -377,6 +403,8 @@ class DatabaseManager {
             'contacts',
             'messages',
             'meta_configs',
+            'bot_conversa_configs',
+            'whatsapp_provider_configs',
             'whatsapp_send_locks',
             'whatsapp_auth_sessions',
             'whatsapp_auth_session_backups',
@@ -687,6 +715,7 @@ class DatabaseManager {
   }
 
   async saveMetaConfig(userId, accessToken, phoneNumberId, businessAccountId = null) {
+    await this.run('UPDATE meta_configs SET is_active = false WHERE user_id = $1', [userId]);
     const result = await this.run(`
       INSERT INTO meta_configs (user_id, access_token, phone_number_id, business_account_id)
       VALUES ($1, $2, $3, $4)
@@ -695,7 +724,57 @@ class DatabaseManager {
   }
 
   async getMetaConfig(userId) {
-    return await this.get('SELECT * FROM meta_configs WHERE user_id = $1 AND is_active = true', [userId]);
+    return await this.get('SELECT * FROM meta_configs WHERE user_id = $1 AND is_active = true ORDER BY id DESC LIMIT 1', [userId]);
+  }
+
+  async saveBotConversaConfig(userId, apiKey, flowId, flowName = null) {
+    await this.run('UPDATE bot_conversa_configs SET is_active = false WHERE user_id = $1', [userId]);
+    return await this.run(`
+      INSERT INTO bot_conversa_configs (user_id, api_key, flow_id, flow_name)
+      VALUES ($1, $2, $3, $4)
+    `, [userId, apiKey, String(flowId), flowName]);
+  }
+
+  async getBotConversaConfig(userId) {
+    return await this.get('SELECT * FROM bot_conversa_configs WHERE user_id = $1 AND is_active = true ORDER BY id DESC LIMIT 1', [userId]);
+  }
+
+  async setWhatsAppProvider(userId, provider) {
+    const allowed = new Set(['evolution', 'meta_official', 'bot_conversa']);
+    const normalized = allowed.has(provider) ? provider : 'evolution';
+    return await this.run(`
+      INSERT INTO whatsapp_provider_configs (user_id, provider, updated_at)
+      VALUES ($1, $2, CURRENT_TIMESTAMP)
+      ON CONFLICT (user_id)
+      DO UPDATE SET provider = EXCLUDED.provider, updated_at = CURRENT_TIMESTAMP
+    `, [userId, normalized]);
+  }
+
+  async getWhatsAppProvider(userId) {
+    const row = await this.get('SELECT provider FROM whatsapp_provider_configs WHERE user_id = $1', [userId]);
+    return row?.provider || 'evolution';
+  }
+
+  async getProviderSummary(userId) {
+    const [provider, meta, bot] = await Promise.all([
+      this.getWhatsAppProvider(userId),
+      this.getMetaConfig(userId),
+      this.getBotConversaConfig(userId)
+    ]);
+    return {
+      provider,
+      evolution: { configured: true },
+      meta_official: {
+        configured: !!meta,
+        phoneNumberId: meta?.phone_number_id || null,
+        businessAccountId: meta?.business_account_id || null
+      },
+      bot_conversa: {
+        configured: !!bot,
+        flowId: bot?.flow_id || null,
+        flowName: bot?.flow_name || null
+      }
+    };
   }
 
   async getAllUsers() {
