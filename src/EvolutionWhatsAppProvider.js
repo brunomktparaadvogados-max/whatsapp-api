@@ -140,11 +140,23 @@ class EvolutionWhatsAppProvider {
     return state || 'unknown';
   }
 
+  clearSessionQr(instanceName) {
+    this.qrCache.delete(instanceName);
+    this.stateCache.set(instanceName, 'connected');
+  }
+
+  clearInstanceCache(instanceName) {
+    this.qrCache.delete(instanceName);
+    this.stateCache.delete(instanceName);
+  }
+
   sessionView(sessionId, payload = {}, fallbackStatus = 'unknown') {
     const instanceName = this.instanceNameForSession(sessionId);
-    const qrCode = this.extractQr(payload) || this.qrCache.get(instanceName) || null;
-    const status = qrCode ? 'qr_code' : this.normalizeState(fallbackStatus, payload);
-    const connected = status === 'connected';
+    const normalizedStatus = this.normalizeState(fallbackStatus, payload);
+    const connected = normalizedStatus === 'connected';
+    if (connected) this.clearSessionQr(instanceName);
+    const qrCode = connected ? null : (this.extractQr(payload) || this.qrCache.get(instanceName) || null);
+    const status = connected ? 'connected' : (qrCode ? 'qr_code' : normalizedStatus);
     return {
       id: sessionId,
       instanceName,
@@ -192,12 +204,6 @@ class EvolutionWhatsAppProvider {
       if (!this.isAlreadyExistsError(error)) throw error;
     }
 
-    if (forceQr) {
-      try {
-        await this.logout(sessionId);
-      } catch (_) {}
-    }
-
     const view = payload ? this.sessionView(sessionId, payload, 'connecting') : await this.connect(sessionId);
     if (view.qrCode) this.qrCache.set(instanceName, view.qrCode);
     return view;
@@ -207,7 +213,11 @@ class EvolutionWhatsAppProvider {
     const instanceName = this.instanceNameForSession(sessionId);
     const payload = await this.request('get', `/instance/connect/${encodeURIComponent(instanceName)}`);
     const view = this.sessionView(sessionId, payload, 'connecting');
-    if (view.qrCode) this.qrCache.set(instanceName, view.qrCode);
+    if (view.status === 'connected') {
+      this.clearSessionQr(instanceName);
+    } else if (view.qrCode) {
+      this.qrCache.set(instanceName, view.qrCode);
+    }
     this.stateCache.set(instanceName, view.status);
     return view;
   }
@@ -217,7 +227,7 @@ class EvolutionWhatsAppProvider {
     try {
       const payload = await this.request('get', `/instance/connectionState/${encodeURIComponent(instanceName)}`);
       const view = this.sessionView(sessionId, payload, payload?.instance?.state || payload?.state);
-      if (view.status === 'connected') this.qrCache.delete(instanceName);
+      if (view.status === 'connected') this.clearSessionQr(instanceName);
       this.stateCache.set(instanceName, view.status);
       return view;
     } catch (error) {
@@ -234,11 +244,24 @@ class EvolutionWhatsAppProvider {
     let lastView = null;
 
     if (forceQr) {
-      await this.ensureInstance(sessionId, { user, forceQr: false });
+      this.clearInstanceCache(instanceName);
+      await this.deleteInstance(sessionId).catch(() => {});
+      lastView = await this.ensureInstance(sessionId, { user, forceQr: false });
+      if (lastView.status === 'connected') {
+        this.clearSessionQr(instanceName);
+        return lastView;
+      }
+      if (lastView.qrCode) return lastView;
     }
 
     while ((Date.now() - started) <= waitMs) {
       try {
+        lastView = await this.getState(sessionId);
+        if (lastView.status === 'connected') {
+          this.clearSessionQr(instanceName);
+          return lastView;
+        }
+
         lastView = await this.connect(sessionId);
       } catch (error) {
         if (error.status === 404) {
@@ -249,7 +272,7 @@ class EvolutionWhatsAppProvider {
       }
 
       if (lastView.status === 'connected') {
-        this.qrCache.delete(instanceName);
+        this.clearSessionQr(instanceName);
         return lastView;
       }
       if (lastView.qrCode) return lastView;
@@ -348,10 +371,13 @@ class EvolutionWhatsAppProvider {
     if (!instanceName) return null;
 
     const qr = this.extractQr(payload) || this.extractQr(payload?.data || {});
-    if (qr) this.qrCache.set(instanceName, qr);
 
     const state = this.normalizeState(payload.state || payload.status || payload?.data?.state || payload?.data?.status, payload);
-    if (state === 'connected') this.qrCache.delete(instanceName);
+    if (state === 'connected') {
+      this.clearSessionQr(instanceName);
+    } else if (qr) {
+      this.qrCache.set(instanceName, qr);
+    }
     if (state && state !== 'unknown') this.stateCache.set(instanceName, state);
 
     return { instanceName, status: state, qrCode: qr };

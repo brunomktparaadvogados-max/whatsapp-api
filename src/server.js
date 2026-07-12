@@ -199,6 +199,11 @@ async function releaseSend(key) {
   }
 }
 
+function isAmbiguousEvolutionSendError(error) {
+  return ['EVOLUTION_REQUEST_FAILED', 'EVOLUTION_NON_JSON_RESPONSE'].includes(error?.code) ||
+    (error?.status === 502 && String(error?.details?.url || '').includes('/message/send'));
+}
+
 async function sendWhatsAppText({ sessionId, to, message, mediaUrl = null }) {
   if (!to || !message) {
     const err = new Error('Campos "to" e "message" sao obrigatorios');
@@ -252,6 +257,22 @@ async function sendWhatsAppText({ sessionId, to, message, mediaUrl = null }) {
       raw: result.raw
     };
   } catch (error) {
+    if (isAmbiguousEvolutionSendError(error)) {
+      rememberError('send-ambiguous', error, { sessionId, to, lockKey: claim.key });
+      return {
+        success: true,
+        provider: 'evolution',
+        sessionId,
+        to: claim.number,
+        messageId: '',
+        confirmed: false,
+        status: 'pending_confirmation',
+        finalStatus: 'pending_confirmation',
+        shouldMarkLead: 'pending',
+        duplicateGuarded: true,
+        message: 'A Evolution nao confirmou a resposta local, mas o disparo pode ter sido aceito. Reenvio bloqueado pelo anti-duplicado.'
+      };
+    }
     await releaseSend(claim.key);
     throw error;
   }
