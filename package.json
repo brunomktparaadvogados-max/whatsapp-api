@@ -5,7 +5,9 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node --expose-gc src/server.js",
-    "dev": "nodemon src/server.js"
+    "dev": "nodemon src/server.js",
+    "start:v7": "node src/v7/server.js",
+    "dev:v7": "nodemon src/v7/server.js"
   },
   "keywords": [
     "whatsapp",
@@ -19,6 +21,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.23",
     "axios": "^1.6.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",

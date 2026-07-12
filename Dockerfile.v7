@@ -1,0 +1,19 @@
+# Dockerfile.v7 — imagem da v7 (Baileys). SEM Chromium: Baileys é WebSocket puro.
+# Resultado: imagem menor, boot mais rápido, RAM muito menor por sessão.
+FROM node:18-bullseye-slim
+
+ENV NODE_ENV=production \
+    NODE_OPTIONS="--max-old-space-size=1024"
+
+WORKDIR /app
+
+COPY package*.json ./
+
+# Só dependências de produção (inclui @whiskeysockets/baileys).
+RUN npm ci --only=production && npm cache clean --force
+
+COPY . .
+
+EXPOSE 8000
+
+CMD ["node", "src/v7/server.js"]
