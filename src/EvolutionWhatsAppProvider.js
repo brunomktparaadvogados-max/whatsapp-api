@@ -101,6 +101,10 @@ class EvolutionWhatsAppProvider {
       msg.includes('j') && msg.includes('existe');
   }
 
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
   extractQr(payload) {
     const candidates = [
       payload?.qrcode?.base64,
@@ -222,6 +226,16 @@ class EvolutionWhatsAppProvider {
       payload = await this.request('post', '/instance/create', body);
     } catch (error) {
       if (!this.isAlreadyExistsError(error)) throw error;
+      if (forceQr) {
+        this.clearInstanceCache(instanceName);
+        await this.deleteInstance(sessionId).catch(() => {});
+        await this.sleep(2200);
+        try {
+          payload = await this.request('post', '/instance/create', body);
+        } catch (retryError) {
+          if (!this.isAlreadyExistsError(retryError)) throw retryError;
+        }
+      }
     }
 
     const view = payload ? this.sessionView(sessionId, payload, 'connecting') : await this.connect(sessionId);
@@ -266,8 +280,8 @@ class EvolutionWhatsAppProvider {
     if (forceQr) {
       this.clearInstanceCache(instanceName);
       await this.deleteInstance(sessionId).catch(() => {});
-      await new Promise(resolve => setTimeout(resolve, 1200));
-      lastView = await this.ensureInstance(sessionId, { user, forceQr: false });
+      await this.sleep(1200);
+      lastView = await this.ensureInstance(sessionId, { user, forceQr: true });
       if (lastView.status === 'connected') {
         this.clearSessionQr(instanceName);
         return lastView;
@@ -298,7 +312,7 @@ class EvolutionWhatsAppProvider {
       }
       if (lastView.qrCode) return lastView;
 
-      await new Promise(resolve => setTimeout(resolve, 700));
+      await this.sleep(700);
     }
 
     return lastView || { id: sessionId, instanceName, status: 'initializing', canSend: false, qrCode: null };
