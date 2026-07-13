@@ -362,7 +362,7 @@
           </div>
           <div class="toolbar">
             <button onclick="toggleUser(${user.id})">Sessao</button>
-            <button class="success" onclick="loadUserSession(${user.id}, true)">Gerar QR</button>
+            <button class="success" onclick="loadUserSession(${user.id}, true, true)">Gerar QR</button>
             <button class="danger" onclick="deleteUser(${user.id}, '${String(user.name).replace(/'/g, "\\'")}')">Deletar</button>
           </div>
           <div class="session-box hidden" id="session-${user.id}"></div>
@@ -377,14 +377,14 @@
       box.classList.toggle('hidden', !opening);
       if (opening) {
         openPanels.add(userId);
-        await loadUserSession(userId, true);
+        await loadUserSession(userId, true, false);
       } else {
         openPanels.delete(userId);
         stopPoll(userId);
       }
     }
 
-    async function loadUserSession(userId, activate) {
+    async function loadUserSession(userId, activate, forceQr = false) {
       const box = $(`session-${userId}`);
       if (!box || box.classList.contains('hidden')) return;
       const sessionId = `user_${userId}`;
@@ -393,20 +393,20 @@
       }
       try {
         const path = activate
-          ? `/api/sessions/${sessionId}/qr?waitMs=8000`
+          ? `/api/sessions/${sessionId}/qr?waitMs=8000&forceQr=${forceQr ? 'true' : 'false'}`
           : `/api/sessions/${sessionId}?activate=true&waitMs=3000`;
         const data = await api(path);
         const session = data.session || data;
         renderSession(box, session, userId);
         box.insertAdjacentHTML('beforeend', `
           <div class="toolbar">
-            <button onclick="loadUserSession(${userId}, true)">Gerar QR agora</button>
+            <button onclick="loadUserSession(${userId}, true, true)">Gerar QR agora</button>
             <button class="danger" onclick="disconnectSession('${sessionId}', ${userId})">Desconectar</button>
           </div>
         `);
         if (session.status !== 'connected') schedulePoll(userId);
       } catch (error) {
-        box.innerHTML = `<p class="error-text">${error.message}</p><button onclick="loadUserSession(${userId}, true)">Tentar novamente</button>`;
+        box.innerHTML = `<p class="error-text">${error.message}</p><button onclick="loadUserSession(${userId}, true, true)">Tentar novamente</button>`;
         schedulePoll(userId);
       }
     }
@@ -414,7 +414,7 @@
     async function generateMyQr() {
       $('myQrBtn').disabled = true;
       try {
-        const data = await api('/api/my-qr?waitMs=8000&forceQr=false');
+        const data = await api('/api/my-qr?waitMs=8000&forceQr=true');
         renderSession($('mySession'), data.session || data);
       } finally {
         $('myQrBtn').disabled = false;
@@ -423,7 +423,7 @@
 
     async function disconnectSession(sessionId, userId = null) {
       await api(`/api/sessions/${sessionId}`, { method: 'DELETE' });
-      if (userId) await loadUserSession(userId, true);
+      if (userId) await loadUserSession(userId, true, true);
       if (currentUser && sessionId === `user_${currentUser.id}`) await generateMyQr();
     }
 

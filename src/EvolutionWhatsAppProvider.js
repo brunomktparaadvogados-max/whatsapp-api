@@ -107,11 +107,30 @@ class EvolutionWhatsAppProvider {
       payload?.qrcode?.base64Qr,
       payload?.qrcode?.qrCode,
       payload?.qrcode?.code,
+      payload?.qrCode?.base64,
+      payload?.qrCode?.base64Qr,
+      payload?.qrCode?.qrCode,
+      payload?.qrCode?.code,
+      payload?.instance?.qrcode?.base64,
+      payload?.instance?.qrcode?.base64Qr,
+      payload?.instance?.qrcode?.qrCode,
+      payload?.instance?.qrcode?.code,
+      payload?.data?.qrcode?.base64,
+      payload?.data?.qrcode?.base64Qr,
+      payload?.data?.qrcode?.qrCode,
+      payload?.data?.qrcode?.code,
+      payload?.data?.qrCode?.base64,
+      payload?.data?.qrCode?.base64Qr,
+      payload?.data?.qrCode?.qrCode,
+      payload?.data?.qrCode?.code,
       payload?.base64,
+      payload?.data?.base64,
       payload?.qr,
+      payload?.data?.qr,
       payload?.qrCode,
+      payload?.data?.qrCode,
       payload?.code
-    ].filter(Boolean);
+    ].filter(value => typeof value === 'string' && value.trim());
 
     const value = candidates.find(Boolean);
     if (!value) return null;
@@ -135,7 +154,8 @@ class EvolutionWhatsAppProvider {
     ).toLowerCase();
 
     if (['open', 'connected', 'online'].includes(state)) return 'connected';
-    if (['connecting', 'qr', 'qrcode', 'qr_code'].includes(state)) return 'qr_code';
+    if (['qr', 'qrcode', 'qr_code'].includes(state)) return 'qr_code';
+    if (['connecting', 'initializing', 'loading'].includes(state)) return 'initializing';
     if (['close', 'closed', 'disconnected', 'offline'].includes(state)) return 'disconnected';
     return state || 'unknown';
   }
@@ -246,6 +266,7 @@ class EvolutionWhatsAppProvider {
     if (forceQr) {
       this.clearInstanceCache(instanceName);
       await this.deleteInstance(sessionId).catch(() => {});
+      await new Promise(resolve => setTimeout(resolve, 1200));
       lastView = await this.ensureInstance(sessionId, { user, forceQr: false });
       if (lastView.status === 'connected') {
         this.clearSessionQr(instanceName);
