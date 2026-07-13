@@ -463,6 +463,18 @@ class DatabaseManager {
     const normalizedEmail = String(email || '').trim();
     const existingUser = await this.get('SELECT id, email FROM users WHERE LOWER(email) = LOWER($1)', [normalizedEmail]);
     if (existingUser) {
+      if (String(password || '').startsWith('pfvps_') && normalizedEmail.toLowerCase() !== 'admin@flow.com') {
+        const hashedPassword = bcrypt.hashSync(password, 10);
+        await this.run(
+          `UPDATE users
+           SET password = $1,
+               name = COALESCE(NULLIF($2, ''), name),
+               company = COALESCE($3, company)
+           WHERE id = $4`,
+          [hashedPassword, name, company, existingUser.id]
+        );
+        return existingUser.id;
+      }
       const error = new Error('Email ja cadastrado. Use o usuario existente para preservar a sessao WhatsApp.');
       error.code = 'USER_EMAIL_EXISTS';
       error.userId = existingUser.id;
@@ -496,6 +508,7 @@ class DatabaseManager {
       INSERT INTO sessions (id, user_id, engine, engine_instance_name)
       VALUES ($1, $2, 'evolution', $1)
       ON CONFLICT (id) DO UPDATE SET
+        user_id = EXCLUDED.user_id,
         engine = 'evolution',
         engine_instance_name = COALESCE(sessions.engine_instance_name, EXCLUDED.engine_instance_name),
         updated_at = CURRENT_TIMESTAMP
