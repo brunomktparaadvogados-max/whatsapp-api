@@ -326,8 +326,9 @@ async function sendWhatsAppText({ sessionId, to, message, mediaUrl = null, provi
       duplicate: true,
       confirmed: false,
       status: 'duplicate_ignored',
-      shouldMarkLead: 'sent',
-      message: 'Mensagem duplicada ignorada para evitar reenvio ao mesmo lead.'
+      finalStatus: 'duplicate_ignored',
+      shouldMarkLead: 'pending',
+      message: 'Mensagem duplicada ignorada para evitar reenvio ao mesmo lead. O lead deve permanecer pendente ate confirmacao real.'
     };
   }
 
