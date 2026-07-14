@@ -166,13 +166,13 @@ function publicSessionView(row, providerView = null) {
   };
 }
 
-async function getSessionView(sessionId, row = null, { activate = false, waitMs = 0, forceQr = false, user = null } = {}) {
+async function getSessionView(sessionId, row = null, { activate = false, waitMs = 0, forceQr = false, resetInstance = false, user = null } = {}) {
   const dbSession = row || await db.getSession(sessionId);
   if (!dbSession) return null;
 
   let view;
   if (activate || forceQr) {
-    view = await whatsapp.getQr(sessionId, { waitMs, forceQr, user });
+    view = await whatsapp.getQr(sessionId, { waitMs, forceQr, resetInstance, user });
   } else {
     view = await whatsapp.getState(sessionId);
   }
@@ -482,6 +482,11 @@ async function sendWhatsAppText({
         duplicateGuarded: true,
         message: 'A Evolution nao confirmou a resposta local, mas o disparo pode ter sido aceito. Reenvio bloqueado pelo anti-duplicado.'
       };
+    }
+    if (error?.code === 'SESSION_STALE_CONNECTION') {
+      await db.updateSessionStatus(sessionId, 'disconnected').catch(statusError => {
+        rememberError('session-stale-status', statusError, { userId: sessionRow.user_id, sessionId });
+      });
     }
     if (persistentReservation) {
       await db.releaseProspectingSend(sessionRow.user_id, claim.number).catch(releaseError => {
@@ -1093,7 +1098,7 @@ app.post('/api/admin/require-qr/:sessionId', async (req, res) => {
     await db.resetSessionAuthForQr(sessionId, 'qr_code');
     const row = await db.getSession(sessionId);
     const user = row ? await db.getUserById(row.user_id) : null;
-    const view = await whatsapp.getQr(sessionId, { waitMs: 8000, forceQr: true, user });
+    const view = await whatsapp.getQr(sessionId, { waitMs: 8000, forceQr: true, resetInstance: true, user });
     if (row) await updateDbFromView(sessionId, view);
     res.json({ success: true, session: publicSessionView(row, view), qrCode: view.qrCode });
   } catch (error) {

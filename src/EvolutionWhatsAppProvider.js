@@ -272,12 +272,12 @@ class EvolutionWhatsAppProvider {
     }
   }
 
-  async getQr(sessionId, { waitMs = 8000, forceQr = false, user = null } = {}) {
+  async getQr(sessionId, { waitMs = 8000, forceQr = false, resetInstance = false, user = null } = {}) {
     const instanceName = this.instanceNameForSession(sessionId);
     const started = Date.now();
     let lastView = null;
 
-    if (forceQr) {
+    if (resetInstance) {
       this.clearInstanceCache(instanceName);
       await this.deleteInstance(sessionId).catch(() => {});
       await this.sleep(1200);
@@ -287,6 +287,21 @@ class EvolutionWhatsAppProvider {
         return lastView;
       }
       if (lastView.qrCode) return lastView;
+    } else if (forceQr) {
+      // A QR refresh must not delete a valid Evolution instance. Repeated
+      // delete/create cycles invalidate pairing attempts and trigger
+      // WhatsApp's temporary "try again later" protection.
+      this.clearInstanceCache(instanceName);
+      try {
+        lastView = await this.getState(sessionId);
+        if (lastView.status === 'connected') return lastView;
+        lastView = await this.connect(sessionId);
+        if (lastView.status === 'connected' || lastView.qrCode) return lastView;
+      } catch (error) {
+        if (error.status !== 404) throw error;
+        lastView = await this.ensureInstance(sessionId, { user, forceQr: false });
+        if (lastView.status === 'connected' || lastView.qrCode) return lastView;
+      }
     }
 
     while ((Date.now() - started) <= waitMs) {
@@ -360,11 +375,39 @@ class EvolutionWhatsAppProvider {
       throw this.httpError(400, 'Numero de WhatsApp invalido.', 'INVALID_PHONE');
     }
 
-    const payload = await this.request('post', `/message/sendText/${encodeURIComponent(instanceName)}`, {
+    const send = () => this.request('post', `/message/sendText/${encodeURIComponent(instanceName)}`, {
       number,
       text,
       delay
     });
+
+    let payload;
+    try {
+      payload = await send();
+    } catch (error) {
+      if (!this.isConnectionClosedError(error)) throw error;
+
+      // connectionState may remain "open" briefly after Baileys loses its
+      // socket. Reconnect once and retry only this explicit pre-send failure.
+      this.clearInstanceCache(instanceName);
+      await this.connect(sessionId).catch(() => null);
+      await this.sleep(1800);
+      const recovered = await this.getState(sessionId).catch(() => ({ status: 'disconnected' }));
+      if (recovered.status !== 'connected') {
+        throw this.httpError(409, 'A sessao perdeu a conexao com o WhatsApp. Aguarde a reconexao ou gere um novo QR.', 'SESSION_STALE_CONNECTION', recovered);
+      }
+
+      try {
+        payload = await send();
+      } catch (retryError) {
+        if (!this.isConnectionClosedError(retryError)) throw retryError;
+        this.clearInstanceCache(instanceName);
+        throw this.httpError(409, 'A Evolution informa conexao aberta, mas o socket do WhatsApp esta fechado. Reconecte a sessao antes de disparar.', 'SESSION_STALE_CONNECTION', {
+          instanceName,
+          state: recovered.status
+        });
+      }
+    }
 
     return {
       provider: 'evolution',
@@ -374,6 +417,13 @@ class EvolutionWhatsAppProvider {
       messageId: payload?.key?.id || payload?.message?.key?.id || payload?.id || null,
       raw: payload
     };
+  }
+
+  isConnectionClosedError(error) {
+    const details = (() => {
+      try { return JSON.stringify(error?.details || {}); } catch (_) { return ''; }
+    })();
+    return `${error?.message || ''} ${details}`.toLowerCase().includes('connection closed');
   }
 
   async sendMedia(sessionId, to, mediaUrl, caption = '') {
