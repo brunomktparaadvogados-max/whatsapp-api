@@ -1,59 +1,55 @@
-# ProspectFlow WhatsApp Evolution Adapter
+# ProspectFlow WhatsApp Adapter
 
-API limpa do ProspectFlow para WhatsApp usando Evolution API como motor oficial.
+Adapter Node.js em producao para o ProspectFlow. A Evolution API e o motor
+padrao; Meta oficial e BotConversa sao provedores opcionais selecionados por
+usuario.
 
-## Arquitetura
+## Producao
 
-- `prospectflow-whatsapp-api`: painel/API do ProspectFlow.
-- `evolution-api`: motor WhatsApp baseado na Evolution API.
-- `evolution-postgres`: banco persistente da Evolution.
-- `evolution-redis`: cache/estado da Evolution.
+- API publica: `https://143-95-221-102.sslip.io`
+- VPS: `/opt/prospectflow-whatsapp`
+- Branch: `codex/koyeb-session-safety`
+- Evolution interna: `http://evolution-api:8080`
+- Instancias: `pfvps_user_{id}`
 
-O ProspectFlow nao abre navegador, nao usa sessao local e nao gerencia credenciais WhatsApp diretamente. QR, reconexao e envio passam pela Evolution.
+Nao usar configuracoes antigas do Koyeb. A VPS executa:
 
-## Variaveis obrigatorias do ProspectFlow
+- `adapter`
+- `evolution-api`
+- `evolution-postgres`
+- `evolution-redis`
+- `caddy`
 
-```env
-DATABASE_URL=postgresql://...
-JWT_SECRET=...
-PUBLIC_BASE_URL=https://sua-api-prospectflow.koyeb.app
-EVOLUTION_API_URL=https://sua-evolution-api.koyeb.app
-EVOLUTION_API_KEY=sua-chave-forte
-EVOLUTION_WEBHOOK_URL=https://sua-api-prospectflow.koyeb.app/api/webhooks/evolution
-EVOLUTION_INSTANCE_PREFIX=pf
-```
+## Contratos
 
-## Variaveis obrigatorias da Evolution
+- `connected` so e valido com `canSend=true`.
+- QR forcado limpa cache e recria a instancia de forma controlada.
+- O envio usa trava persistente por sessao, telefone e conteudo.
+- `pending_confirmation` e `duplicate_ignored` nao sao entrega confirmada.
+- Resposta ambigua preserva a trava e impede reenvio imediato.
+- Um unico provedor executa cada chamada.
 
-```env
-SERVER_PORT=8080
-SERVER_URL=https://sua-evolution-api.koyeb.app
-AUTHENTICATION_API_KEY=sua-chave-forte
-DATABASE_ENABLED=true
-DATABASE_PROVIDER=postgresql
-DATABASE_CONNECTION_URI=postgresql://...
-CACHE_REDIS_ENABLED=true
-CACHE_REDIS_URI=redis://...
-CACHE_REDIS_SAVE_INSTANCES=true
-```
-
-## Contrato funcional
-
-- Usuario novo ou desconectado: API chama `/instance/create` e `/instance/connect/:instanceName` na Evolution.
-- QR disponivel: retornado em `qrCode`.
-- Conectado: `status=connected`, `canSend=true`, sem QR visivel.
-- Envio: `POST /message/sendText/:instanceName` na Evolution.
-- Retorno inicial de envio: pendente, nunca marcado como entregue antes de webhook/status.
-- Webhook da Evolution: atualiza conexao, QR e status de mensagem.
-
-## Checagem local
+## Verificacao
 
 ```bash
 npm ci
-npm run check
-docker compose up --build
+node --check src/server.js
+node --check src/EvolutionWhatsAppProvider.js
 ```
 
-## Observacao de deploy
+## Deploy
 
-O servico Evolution deve existir antes do ProspectFlow conseguir gerar QR. A URL e a chave da Evolution nao existem na documentacao: sao criadas no deploy do servico Evolution.
+```bash
+cd /opt/prospectflow-whatsapp/adapter
+git fetch origin codex/koyeb-session-safety
+git merge --ff-only origin/codex/koyeb-session-safety
+cd ..
+docker compose up -d --build adapter
+docker compose ps
+docker compose logs --tail=120 adapter
+```
+
+Nao documente segredos e nao remova backups ou mudancas desconhecidas da VPS.
+
+Para arquitetura completa, consulte
+`sistemaflow/docs/PROSPECTFLOW_WHATSAPP_OPERATIONS.md`.
