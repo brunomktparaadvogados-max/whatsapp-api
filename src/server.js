@@ -80,7 +80,7 @@ function sendError(res, error, fallbackStatus = 500) {
   });
 }
 
-function assertCurrentProspectFlowDispatchClient(req) {
+function isProspectFlowRequest(req) {
   const origin = String(req.get('origin') || '');
   let hostname = '';
   try {
@@ -89,16 +89,20 @@ function assertCurrentProspectFlowDispatchClient(req) {
     hostname = '';
   }
 
-  if (hostname !== 'marketing-comercial.adv.br' && hostname !== 'www.marketing-comercial.adv.br') return;
+  return hostname === 'marketing-comercial.adv.br' || hostname === 'www.marketing-comercial.adv.br';
+}
+
+function resolveDispatchMode(req) {
+  if (req.body?.dispatchMode) return req.body.dispatchMode;
+  return isProspectFlowRequest(req) ? 'prospecting' : null;
+}
+
+function assertCurrentProspectFlowDispatchClient(req) {
+  if (!isProspectFlowRequest(req)) return true;
 
   const clientHeader = String(req.get('x-prospectflow-client') || '').toLowerCase();
   const contractVersion = Number(req.body?.clientContractVersion || 0);
-  if (clientHeader === 'dispatch-v2' || contractVersion >= 2) return;
-
-  const err = new Error('Atualize a pagina do ProspectFlow antes de disparar. Esta aba usa uma versao antiga e foi bloqueada para evitar mensagens duplicadas.');
-  err.status = 428;
-  err.code = 'CLIENT_UPDATE_REQUIRED';
-  throw err;
+  return clientHeader === 'dispatch-v2' || contractVersion >= 2;
 }
 
 async function getCurrentUser(req) {
@@ -509,7 +513,7 @@ async function handleSessionMessage(req, res, explicitSessionId = null) {
       mediaUrl: req.body.mediaUrl,
       providerOverride: req.body.provider,
       firstName: req.body.firstName || req.body.name || '',
-      dispatchMode: req.body.dispatchMode,
+      dispatchMode: resolveDispatchMode(req),
       leadKey: req.body.leadKey
     });
     res.status(result.confirmed ? 200 : 202).json(result);
@@ -858,20 +862,12 @@ app.delete('/api/sessions/:sessionId', authMiddleware, async (req, res) => {
 });
 
 app.post('/api/sessions/:sessionId/messages', authMiddleware, async (req, res) => {
-  try {
-    assertCurrentProspectFlowDispatchClient(req);
-  } catch (error) {
-    return sendError(res, error, 428);
-  }
+  assertCurrentProspectFlowDispatchClient(req);
   return handleSessionMessage(req, res, req.params.sessionId);
 });
 
 app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) => {
-  try {
-    assertCurrentProspectFlowDispatchClient(req);
-  } catch (error) {
-    return sendError(res, error, 428);
-  }
+  assertCurrentProspectFlowDispatchClient(req);
   return handleSessionMessage(req, res, req.params.sessionId);
 });
 
@@ -888,7 +884,7 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
       mediaUrl: req.body.mediaUrl,
       providerOverride: req.body.provider,
       firstName: req.body.firstName || req.body.name || '',
-      dispatchMode: req.body.dispatchMode,
+      dispatchMode: resolveDispatchMode(req),
       leadKey: req.body.leadKey
     });
     res.status(result.confirmed ? 200 : 202).json(result);
@@ -908,7 +904,9 @@ app.post('/api/sessions/:sessionId/messages/media', authMiddleware, async (req, 
       message: req.body.caption || '',
       mediaUrl: req.body.mediaUrl,
       providerOverride: req.body.provider,
-      firstName: req.body.firstName || req.body.name || ''
+      firstName: req.body.firstName || req.body.name || '',
+      dispatchMode: resolveDispatchMode(req),
+      leadKey: req.body.leadKey
     });
     res.status(result.confirmed ? 200 : 202).json(result);
   } catch (error) {
