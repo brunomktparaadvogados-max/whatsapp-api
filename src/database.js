@@ -261,6 +261,33 @@ class DatabaseManager {
 
     await this.run(`CREATE INDEX IF NOT EXISTS idx_whatsapp_send_locks_expires ON whatsapp_send_locks(expires_at)`);
 
+    await this.run(`
+      CREATE TABLE IF NOT EXISTS prospecting_send_history (
+        user_id INTEGER NOT NULL,
+        session_id TEXT NOT NULL,
+        contact_phone TEXT NOT NULL,
+        message_hash TEXT NOT NULL,
+        lead_key TEXT,
+        status TEXT NOT NULL DEFAULT 'reserved',
+        message_id TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, contact_phone)
+      )
+    `);
+
+    await this.run(`
+      INSERT INTO prospecting_send_history
+        (user_id, session_id, contact_phone, message_hash, lead_key, status)
+      SELECT DISTINCT ON (s.user_id, c.phone_number)
+        s.user_id, c.session_id, c.phone_number, 'legacy-contact', 'adapter-contact-backfill', 'sent_or_accepted'
+      FROM contacts c
+      JOIN sessions s ON s.id = c.session_id
+      WHERE c.phone_number IS NOT NULL AND c.phone_number <> ''
+      ORDER BY s.user_id, c.phone_number, c.created_at ASC
+      ON CONFLICT (user_id, contact_phone) DO NOTHING
+    `);
+
     try {
       await this.run(`
         DO $$
@@ -389,6 +416,7 @@ class DatabaseManager {
             'bot_conversa_configs',
             'whatsapp_provider_configs',
             'prospecting_lead_status',
+            'prospecting_send_history',
             'whatsapp_send_locks',
             'whatsapp_auth_sessions',
             'whatsapp_auth_session_backups',
@@ -405,6 +433,7 @@ class DatabaseManager {
             'meta_configs',
             'bot_conversa_configs',
             'whatsapp_provider_configs',
+            'prospecting_send_history',
             'whatsapp_send_locks',
             'whatsapp_auth_sessions',
             'whatsapp_auth_session_backups',
@@ -635,6 +664,33 @@ class DatabaseManager {
 
   async releaseWhatsAppSendLock(lockKey) {
     return await this.run('DELETE FROM whatsapp_send_locks WHERE lock_key = $1', [lockKey]);
+  }
+
+  async reserveProspectingSend(userId, sessionId, contactPhone, messageHash, leadKey = null) {
+    const result = await this.query(`
+      INSERT INTO prospecting_send_history
+        (user_id, session_id, contact_phone, message_hash, lead_key, status)
+      VALUES ($1, $2, $3, $4, $5, 'reserved')
+      ON CONFLICT (user_id, contact_phone) DO NOTHING
+      RETURNING user_id
+    `, [userId, sessionId, contactPhone, messageHash, leadKey]);
+
+    return result.rowCount > 0;
+  }
+
+  async updateProspectingSend(userId, contactPhone, status, messageId = null) {
+    return await this.run(`
+      UPDATE prospecting_send_history
+      SET status = $3, message_id = COALESCE($4, message_id), updated_at = CURRENT_TIMESTAMP
+      WHERE user_id = $1 AND contact_phone = $2
+    `, [userId, contactPhone, status, messageId]);
+  }
+
+  async releaseProspectingSend(userId, contactPhone) {
+    return await this.run(`
+      DELETE FROM prospecting_send_history
+      WHERE user_id = $1 AND contact_phone = $2 AND status = 'reserved'
+    `, [userId, contactPhone]);
   }
 
   async updateMessageStatus(messageId, status) {

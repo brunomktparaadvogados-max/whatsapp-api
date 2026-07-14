@@ -80,6 +80,27 @@ function sendError(res, error, fallbackStatus = 500) {
   });
 }
 
+function assertCurrentProspectFlowDispatchClient(req) {
+  const origin = String(req.get('origin') || '');
+  let hostname = '';
+  try {
+    hostname = origin ? new URL(origin).hostname.toLowerCase() : '';
+  } catch {
+    hostname = '';
+  }
+
+  if (hostname !== 'marketing-comercial.adv.br' && hostname !== 'www.marketing-comercial.adv.br') return;
+
+  const clientHeader = String(req.get('x-prospectflow-client') || '').toLowerCase();
+  const contractVersion = Number(req.body?.clientContractVersion || 0);
+  if (clientHeader === 'dispatch-v2' || contractVersion >= 2) return;
+
+  const err = new Error('Atualize a pagina do ProspectFlow antes de disparar. Esta aba usa uma versao antiga e foi bloqueada para evitar mensagens duplicadas.');
+  err.status = 428;
+  err.code = 'CLIENT_UPDATE_REQUIRED';
+  throw err;
+}
+
 async function getCurrentUser(req) {
   return await db.getUserById(req.userId);
 }
@@ -177,19 +198,19 @@ async function claimSend(sessionId, to, message, mediaUrl = null) {
   const now = Date.now();
   const existing = recentSends.get(key);
   if (existing && now - existing < SEND_DEDUPE_MS) {
-    return { duplicate: true, key, number };
+    return { duplicate: true, key, number, hash };
   }
   recentSends.set(key, now);
   setTimeout(() => recentSends.delete(key), SEND_DEDUPE_MS).unref?.();
 
   try {
     const acquired = await db.acquireWhatsAppSendLock(key, sessionId, number, hash, SEND_DEDUPE_MS);
-    if (!acquired) return { duplicate: true, key, number };
+    if (!acquired) return { duplicate: true, key, number, hash };
   } catch (error) {
     rememberError('send-lock', error, { sessionId, number });
   }
 
-  return { duplicate: false, key, number };
+  return { duplicate: false, key, number, hash };
 }
 
 async function releaseSend(key) {
@@ -303,7 +324,16 @@ async function sendViaBotConversa({ sessionId, userId, to, firstName = '', messa
   };
 }
 
-async function sendWhatsAppText({ sessionId, to, message, mediaUrl = null, providerOverride = null, firstName = '' }) {
+async function sendWhatsAppText({
+  sessionId,
+  to,
+  message,
+  mediaUrl = null,
+  providerOverride = null,
+  firstName = '',
+  dispatchMode = null,
+  leadKey = null
+}) {
   if (!to || !message) {
     const err = new Error('Campos "to" e "message" sao obrigatorios');
     err.status = 400;
@@ -332,15 +362,49 @@ async function sendWhatsAppText({ sessionId, to, message, mediaUrl = null, provi
     };
   }
 
+  const isProspectingDispatch = dispatchMode === 'prospecting';
+  let persistentReservation = false;
+  if (isProspectingDispatch) {
+    try {
+      persistentReservation = await db.reserveProspectingSend(
+        sessionRow.user_id,
+        sessionId,
+        claim.number,
+        claim.hash,
+        leadKey
+      );
+    } catch (error) {
+      await releaseSend(claim.key);
+      throw error;
+    }
+
+    if (!persistentReservation) {
+      return {
+        success: true,
+        duplicate: true,
+        confirmed: false,
+        status: 'duplicate_ignored',
+        finalStatus: 'duplicate_ignored',
+        shouldMarkLead: 'pending',
+        persistent: true,
+        message: 'Este telefone ja recebeu uma abordagem desta conta. Novo envio bloqueado pelo historico persistente.'
+      };
+    }
+  }
+
   try {
     if (activeProvider === 'meta_official') {
-      return await sendViaMetaOfficial({
+      const result = await sendViaMetaOfficial({
         sessionId,
         userId: sessionRow.user_id,
         to: claim.number,
         message,
         mediaUrl
       });
+      if (persistentReservation) {
+        await db.updateProspectingSend(sessionRow.user_id, claim.number, result.status || 'sent', result.messageId);
+      }
+      return result;
     }
 
     if (activeProvider === 'bot_conversa') {
@@ -349,13 +413,17 @@ async function sendWhatsAppText({ sessionId, to, message, mediaUrl = null, provi
         err.status = 400;
         throw err;
       }
-      return await sendViaBotConversa({
+      const result = await sendViaBotConversa({
         sessionId,
         userId: sessionRow.user_id,
         to: claim.number,
         firstName,
         message
       });
+      if (persistentReservation) {
+        await db.updateProspectingSend(sessionRow.user_id, claim.number, result.status || 'sent', result.messageId);
+      }
+      return result;
     }
 
     const result = mediaUrl
@@ -376,6 +444,9 @@ async function sendWhatsAppText({ sessionId, to, message, mediaUrl = null, provi
       status: 'pending_confirmation'
     });
     await db.upsertContact(sessionId, result.to);
+    if (persistentReservation) {
+      await db.updateProspectingSend(sessionRow.user_id, claim.number, 'pending_confirmation', messageId);
+    }
 
     return {
       success: true,
@@ -392,6 +463,11 @@ async function sendWhatsAppText({ sessionId, to, message, mediaUrl = null, provi
     };
   } catch (error) {
     if (isAmbiguousEvolutionSendError(error)) {
+      if (persistentReservation) {
+        await db.updateProspectingSend(sessionRow.user_id, claim.number, 'pending_confirmation').catch(updateError => {
+          rememberError('prospecting-history-update', updateError, { userId: sessionRow.user_id, sessionId, to: claim.number });
+        });
+      }
       rememberError('send-ambiguous', error, { sessionId, to, lockKey: claim.key });
       return {
         success: true,
@@ -406,6 +482,11 @@ async function sendWhatsAppText({ sessionId, to, message, mediaUrl = null, provi
         duplicateGuarded: true,
         message: 'A Evolution nao confirmou a resposta local, mas o disparo pode ter sido aceito. Reenvio bloqueado pelo anti-duplicado.'
       };
+    }
+    if (persistentReservation) {
+      await db.releaseProspectingSend(sessionRow.user_id, claim.number).catch(releaseError => {
+        rememberError('prospecting-history-release', releaseError, { userId: sessionRow.user_id, sessionId, to: claim.number });
+      });
     }
     await releaseSend(claim.key);
     throw error;
@@ -422,7 +503,9 @@ async function handleSessionMessage(req, res, explicitSessionId = null) {
       message: req.body.message,
       mediaUrl: req.body.mediaUrl,
       providerOverride: req.body.provider,
-      firstName: req.body.firstName || req.body.name || ''
+      firstName: req.body.firstName || req.body.name || '',
+      dispatchMode: req.body.dispatchMode,
+      leadKey: req.body.leadKey
     });
     res.status(result.confirmed ? 200 : 202).json(result);
   } catch (error) {
@@ -770,16 +853,28 @@ app.delete('/api/sessions/:sessionId', authMiddleware, async (req, res) => {
 });
 
 app.post('/api/sessions/:sessionId/messages', authMiddleware, async (req, res) => {
+  try {
+    assertCurrentProspectFlowDispatchClient(req);
+  } catch (error) {
+    return sendError(res, error, 428);
+  }
   return handleSessionMessage(req, res, req.params.sessionId);
 });
 
 app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) => {
+  try {
+    assertCurrentProspectFlowDispatchClient(req);
+  } catch (error) {
+    return sendError(res, error, 428);
+  }
   return handleSessionMessage(req, res, req.params.sessionId);
 });
 
 app.post('/api/messages/send', authMiddleware, async (req, res) => {
+  let sessionId = req.body?.sessionId;
   try {
-    const sessionId = resolveTargetSessionId(req, req.body?.sessionId);
+    assertCurrentProspectFlowDispatchClient(req);
+    sessionId = resolveTargetSessionId(req, req.body?.sessionId);
     await assertSessionAccess(req, sessionId);
     const result = await sendWhatsAppText({
       sessionId,
@@ -787,11 +882,13 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
       message: req.body.message,
       mediaUrl: req.body.mediaUrl,
       providerOverride: req.body.provider,
-      firstName: req.body.firstName || req.body.name || ''
+      firstName: req.body.firstName || req.body.name || '',
+      dispatchMode: req.body.dispatchMode,
+      leadKey: req.body.leadKey
     });
     res.status(result.confirmed ? 200 : 202).json(result);
   } catch (error) {
-    rememberError('send-auto', error, { sessionId: req.body?.sessionId, to: req.body?.to });
+    rememberError('send-auto', error, { userId: req.userId, sessionId, to: req.body?.to });
     return sendError(res, error, error.status || 500);
   }
 });
