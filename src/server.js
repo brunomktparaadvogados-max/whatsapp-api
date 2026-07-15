@@ -102,7 +102,12 @@ function assertCurrentProspectFlowDispatchClient(req) {
 
   const clientHeader = String(req.get('x-prospectflow-client') || '').toLowerCase();
   const contractVersion = Number(req.body?.clientContractVersion || 0);
-  return clientHeader === 'dispatch-v2' || contractVersion >= 2;
+  if (clientHeader === 'dispatch-v2' || contractVersion >= 2) return true;
+
+  const err = new Error('Atualize a pagina do ProspectFlow antes de disparar. Esta versao foi bloqueada para evitar mensagens duplicadas.');
+  err.status = 428;
+  err.code = 'CLIENT_UPDATE_REQUIRED';
+  throw err;
 }
 
 async function getCurrentUser(req) {
@@ -336,7 +341,8 @@ async function sendWhatsAppText({
   providerOverride = null,
   firstName = '',
   dispatchMode = null,
-  leadKey = null
+  leadKey = null,
+  allowResend = false
 }) {
   if (!to || !message) {
     const err = new Error('Campos "to" e "message" sao obrigatorios');
@@ -375,8 +381,17 @@ async function sendWhatsAppText({
         sessionId,
         claim.number,
         claim.hash,
-        leadKey
+        leadKey,
+        allowResend === true
       );
+      if (allowResend === true) {
+        console.info('[DispatchAudit] Reenvio manual confirmado pelo usuario', {
+          userId: sessionRow.user_id,
+          sessionId,
+          to: claim.number,
+          leadKey
+        });
+      }
     } catch (error) {
       await releaseSend(claim.key);
       throw error;
@@ -514,7 +529,8 @@ async function handleSessionMessage(req, res, explicitSessionId = null) {
       providerOverride: req.body.provider,
       firstName: req.body.firstName || req.body.name || '',
       dispatchMode: resolveDispatchMode(req),
-      leadKey: req.body.leadKey
+      leadKey: req.body.leadKey,
+      allowResend: req.body.allowResend === true
     });
     res.status(result.confirmed ? 200 : 202).json(result);
   } catch (error) {
@@ -885,7 +901,8 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
       providerOverride: req.body.provider,
       firstName: req.body.firstName || req.body.name || '',
       dispatchMode: resolveDispatchMode(req),
-      leadKey: req.body.leadKey
+      leadKey: req.body.leadKey,
+      allowResend: req.body.allowResend === true
     });
     res.status(result.confirmed ? 200 : 202).json(result);
   } catch (error) {

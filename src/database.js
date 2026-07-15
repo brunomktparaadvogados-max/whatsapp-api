@@ -666,14 +666,21 @@ class DatabaseManager {
     return await this.run('DELETE FROM whatsapp_send_locks WHERE lock_key = $1', [lockKey]);
   }
 
-  async reserveProspectingSend(userId, sessionId, contactPhone, messageHash, leadKey = null) {
+  async reserveProspectingSend(userId, sessionId, contactPhone, messageHash, leadKey = null, allowResend = false) {
     const result = await this.query(`
       INSERT INTO prospecting_send_history
         (user_id, session_id, contact_phone, message_hash, lead_key, status)
       VALUES ($1, $2, $3, $4, $5, 'reserved')
-      ON CONFLICT (user_id, contact_phone) DO NOTHING
+      ON CONFLICT (user_id, contact_phone) DO UPDATE SET
+        session_id = EXCLUDED.session_id,
+        message_hash = EXCLUDED.message_hash,
+        lead_key = EXCLUDED.lead_key,
+        status = 'reserved',
+        message_id = NULL,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE $6 = TRUE
       RETURNING user_id
-    `, [userId, sessionId, contactPhone, messageHash, leadKey]);
+    `, [userId, sessionId, contactPhone, messageHash, leadKey, allowResend]);
 
     return result.rowCount > 0;
   }
