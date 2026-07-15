@@ -46,7 +46,7 @@ class EvolutionWhatsAppProvider {
     if (!this.configured()) {
       throw this.httpError(
         503,
-        'Evolution API nao configurada. Defina EVOLUTION_API_URL e EVOLUTION_API_KEY no Koyeb.',
+        'Evolution API nao configurada. Defina EVOLUTION_API_URL e EVOLUTION_API_KEY na VPS.',
         'EVOLUTION_NOT_CONFIGURED'
       );
     }
