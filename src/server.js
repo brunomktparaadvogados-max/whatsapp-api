@@ -22,7 +22,7 @@ const io = socketIo(server, {
 });
 
 const db = new DatabaseManager();
-const publicBaseUrl = (process.env.PUBLIC_BASE_URL || process.env.APP_URL || process.env.KOYEB_PUBLIC_DOMAIN || '')
+const publicBaseUrl = (process.env.PUBLIC_BASE_URL || process.env.APP_URL || '')
   .replace(/^https?:\/\/(.+)$/, 'https://$1')
   .replace(/\/+$/, '');
 
