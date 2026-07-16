@@ -202,8 +202,14 @@ function normalizeMessageKey(sessionId, to, message, mediaUrl = null) {
   };
 }
 
-async function claimSend(sessionId, to, message, mediaUrl = null) {
-  const { key, number, hash } = normalizeMessageKey(sessionId, to, message, mediaUrl);
+async function claimSend(sessionId, to, message, mediaUrl = null, resendConfirmationId = null) {
+  const normalized = normalizeMessageKey(sessionId, to, message, mediaUrl);
+  const confirmationId = String(resendConfirmationId || '').trim();
+  const confirmationHash = confirmationId
+    ? crypto.createHash('sha256').update(confirmationId).digest('hex')
+    : '';
+  const key = confirmationHash ? `${sessionId}:resend:${confirmationHash}` : normalized.key;
+  const { number, hash } = normalized;
   const now = Date.now();
   const existing = recentSends.get(key);
   if (existing && now - existing < SEND_DEDUPE_MS) {
@@ -342,7 +348,8 @@ async function sendWhatsAppText({
   firstName = '',
   dispatchMode = null,
   leadKey = null,
-  allowResend = false
+  allowResend = false,
+  resendConfirmationId = null
 }) {
   if (!to || !message) {
     const err = new Error('Campos "to" e "message" sao obrigatorios');
@@ -359,7 +366,21 @@ async function sendWhatsAppText({
 
   const activeProvider = normalizeProvider(providerOverride || await db.getWhatsAppProvider(sessionRow.user_id));
 
-  const claim = await claimSend(sessionId, to, message, mediaUrl);
+  const normalizedResendConfirmationId = String(resendConfirmationId || '').trim();
+  if (allowResend === true && (normalizedResendConfirmationId.length < 16 || normalizedResendConfirmationId.length > 128)) {
+    const err = new Error('Confirme explicitamente o reenvio antes de prosseguir.');
+    err.status = 400;
+    err.code = 'RESEND_CONFIRMATION_REQUIRED';
+    throw err;
+  }
+
+  const claim = await claimSend(
+    sessionId,
+    to,
+    message,
+    mediaUrl,
+    allowResend === true ? normalizedResendConfirmationId : null
+  );
   if (claim.duplicate) {
     return {
       success: true,
@@ -530,7 +551,8 @@ async function handleSessionMessage(req, res, explicitSessionId = null) {
       firstName: req.body.firstName || req.body.name || '',
       dispatchMode: resolveDispatchMode(req),
       leadKey: req.body.leadKey,
-      allowResend: req.body.allowResend === true
+      allowResend: req.body.allowResend === true,
+      resendConfirmationId: req.body.resendConfirmationId
     });
     res.status(result.confirmed ? 200 : 202).json(result);
   } catch (error) {
@@ -902,7 +924,8 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
       firstName: req.body.firstName || req.body.name || '',
       dispatchMode: resolveDispatchMode(req),
       leadKey: req.body.leadKey,
-      allowResend: req.body.allowResend === true
+      allowResend: req.body.allowResend === true,
+      resendConfirmationId: req.body.resendConfirmationId
     });
     res.status(result.confirmed ? 200 : 202).json(result);
   } catch (error) {
