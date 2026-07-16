@@ -98,9 +98,9 @@ function resolveDispatchMode(req) {
   return isProspectFlowRequest(req) ? 'prospecting' : null;
 }
 
-function assertCurrentProspectFlowDispatchClient(req) {
+function assertCurrentProspectFlowDispatchClient(req, force = false) {
   const isProtectedDispatch =
-    isProspectFlowRequest(req) || req.body?.dispatchMode === 'prospecting';
+    force || isProspectFlowRequest(req) || req.body?.dispatchMode === 'prospecting';
   if (!isProtectedDispatch) return true;
 
   const clientHeader = String(req.get('x-prospectflow-client') || '').toLowerCase();
@@ -914,7 +914,7 @@ app.post('/api/sessions/:sessionId/message', authMiddleware, async (req, res) =>
 app.post('/api/messages/send', authMiddleware, async (req, res) => {
   let sessionId = req.body?.sessionId;
   try {
-    assertCurrentProspectFlowDispatchClient(req);
+    assertCurrentProspectFlowDispatchClient(req, true);
     sessionId = resolveTargetSessionId(req, req.body?.sessionId);
     await assertSessionAccess(req, sessionId);
     const result = await sendWhatsAppText({
