@@ -40,7 +40,6 @@ const SEND_DEDUPE_MS = parseInt(process.env.WHATSAPP_SEND_DEDUPE_MS || String(15
 const SEND_DELAY_MS = parseInt(process.env.EVOLUTION_SEND_DELAY_MS || '1200', 10);
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v20.0';
 const PROSPECTFLOW_DISPATCH_CLIENT = 'dispatch-v3-20260716';
-const PROSPECTFLOW_CONTRACT_VERSION = 3;
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -100,14 +99,12 @@ function resolveDispatchMode(req) {
 }
 
 function assertCurrentProspectFlowDispatchClient(req) {
-  if (!isProspectFlowRequest(req)) return true;
+  const isProtectedDispatch =
+    isProspectFlowRequest(req) || req.body?.dispatchMode === 'prospecting';
+  if (!isProtectedDispatch) return true;
 
   const clientHeader = String(req.get('x-prospectflow-client') || '').toLowerCase();
-  const contractVersion = Number(req.body?.clientContractVersion || 0);
-  if (
-    clientHeader === PROSPECTFLOW_DISPATCH_CLIENT ||
-    contractVersion >= PROSPECTFLOW_CONTRACT_VERSION
-  ) return true;
+  if (clientHeader === PROSPECTFLOW_DISPATCH_CLIENT) return true;
 
   const err = new Error('Atualize a pagina do ProspectFlow antes de disparar. Esta versao foi bloqueada para evitar mensagens duplicadas.');
   err.status = 428;
