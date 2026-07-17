@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "check": "node --check src/server.js && node --check src/EvolutionWhatsAppProvider.js"
+    "check": "node --check src/server.js && node --check src/EvolutionWhatsAppProvider.js && node --check src/WWebJSProvider.js"
   },
   "keywords": [
     "whatsapp",
@@ -25,7 +25,9 @@
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.17.1",
-    "socket.io": "^4.6.1"
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.6.1",
+    "whatsapp-web.js": "^1.34.2"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"

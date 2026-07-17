@@ -8,6 +8,7 @@ require('dotenv').config();
 
 const DatabaseManager = require('./database');
 const EvolutionWhatsAppProvider = require('./EvolutionWhatsAppProvider');
+const WWebJSProvider = require('./WWebJSProvider');
 const MetaWhatsAppAPI = require('./MetaAPI');
 const BotConversaAPI = require('./BotConversaAPI');
 const { generateToken, authMiddleware } = require('./auth');
@@ -32,6 +33,12 @@ const whatsapp = new EvolutionWhatsAppProvider({
   webhookUrl: process.env.EVOLUTION_WEBHOOK_URL || (publicBaseUrl ? `${publicBaseUrl}/api/webhooks/evolution` : null),
   webhookSecret: process.env.EVOLUTION_WEBHOOK_SECRET,
   instancePrefix: process.env.EVOLUTION_INSTANCE_PREFIX || 'pf'
+});
+
+const wwebjs = new WWebJSProvider({
+  io,
+  maxSessions: parseInt(process.env.WWEBJS_MAX_SESSIONS || '4', 10),
+  sendTimeoutMs: parseInt(process.env.WWEBJS_SEND_TIMEOUT_MS || '45000', 10)
 });
 
 const recentErrors = [];
@@ -156,9 +163,25 @@ async function updateDbFromView(sessionId, view) {
   }
 }
 
-function publicSessionView(row, providerView = null) {
+function sessionProviderLabel(provider) {
+  return normalizeProvider(provider || 'evolution');
+}
+
+function providerForInstance(provider) {
+  const normalized = sessionProviderLabel(provider);
+  return normalized === 'wwebjs' ? wwebjs : whatsapp;
+}
+
+async function getSessionProvider(rowOrUserId) {
+  const userId = typeof rowOrUserId === 'object' ? rowOrUserId?.user_id : rowOrUserId;
+  if (!userId) return 'evolution';
+  return sessionProviderLabel(await db.getWhatsAppProvider(userId));
+}
+
+function publicSessionView(row, providerView = null, provider = 'evolution') {
   const status = providerView?.status || row?.status || 'not_created';
   const connected = status === 'connected';
+  const engine = sessionProviderLabel(providerView?.engine || provider);
   return {
     id: row?.id || providerView?.id,
     user_id: row?.user_id,
@@ -166,8 +189,11 @@ function publicSessionView(row, providerView = null) {
     canSend: connected,
     qrCode: connected ? null : (providerView?.qrCode || null),
     qr_code: connected ? null : (providerView?.qrCode || null),
-    engine: 'evolution',
-    instanceName: providerView?.instanceName || whatsapp.instanceNameForSession(row?.id || providerView?.id),
+    engine,
+    provider: engine,
+    instanceName: providerView?.instanceName || (engine === 'wwebjs'
+      ? `wwebjs_${row?.id || providerView?.id}`
+      : whatsapp.instanceNameForSession(row?.id || providerView?.id)),
     info: providerView?.info || {
       wid: row?.phone_number ? { user: row.phone_number } : undefined,
       pushname: row?.phone_name || undefined
@@ -180,17 +206,22 @@ function publicSessionView(row, providerView = null) {
 async function getSessionView(sessionId, row = null, { activate = false, waitMs = 0, forceQr = false, resetInstance = false, user = null } = {}) {
   const dbSession = row || await db.getSession(sessionId);
   if (!dbSession) return null;
+  const provider = await getSessionProvider(dbSession);
+  const providerClient = providerForInstance(provider);
 
   let view;
   if (activate || forceQr) {
-    view = await whatsapp.getQr(sessionId, { waitMs, forceQr, resetInstance, user });
+    if (provider === 'wwebjs' && (forceQr || resetInstance)) {
+      await providerClient.deleteInstance(sessionId);
+    }
+    view = await providerClient.getQr(sessionId, { waitMs, forceQr, resetInstance, user, userId: dbSession.user_id });
   } else {
-    view = await whatsapp.getState(sessionId);
+    view = await providerClient.getState(sessionId);
   }
 
   await updateDbFromView(sessionId, view);
   const refreshed = await db.getSession(sessionId);
-  return publicSessionView(refreshed || dbSession, view);
+  return publicSessionView(refreshed || dbSession, view, provider);
 }
 
 function normalizeMessageKey(sessionId, to, message, mediaUrl = null) {
@@ -242,6 +273,7 @@ async function releaseSend(key) {
 function normalizeProvider(provider) {
   if (provider === 'meta' || provider === 'meta_official') return 'meta_official';
   if (provider === 'botconversa' || provider === 'bot_conversa') return 'bot_conversa';
+  if (provider === 'wwebjs' || provider === 'whatsapp_web' || provider === 'whatsapp-web.js' || provider === 'whatsapp_web_js') return 'wwebjs';
   return 'evolution';
 }
 
@@ -466,6 +498,45 @@ async function sendWhatsAppText({
         await db.updateProspectingSend(sessionRow.user_id, claim.number, result.status || 'sent', result.messageId);
       }
       return result;
+    }
+
+    if (activeProvider === 'wwebjs') {
+      const result = mediaUrl
+        ? await wwebjs.sendMedia(sessionId, claim.number, mediaUrl, message, { userId: sessionRow.user_id })
+        : await wwebjs.sendText(sessionId, claim.number, message, { userId: sessionRow.user_id });
+
+      await db.saveMessage({
+        id: result.messageId,
+        sessionId,
+        contactPhone: result.to,
+        messageType: mediaUrl ? 'media' : 'chat',
+        body: message,
+        mediaUrl,
+        mediaMimetype: null,
+        fromMe: true,
+        timestamp: Date.now(),
+        status: 'sent'
+      });
+      await db.upsertContact(sessionId, result.to);
+      await db.markSessionReady(sessionId, result.raw?.chatId || null, null, true).catch(statusError => {
+        rememberError('wwebjs-session-ready', statusError, { userId: sessionRow.user_id, sessionId });
+      });
+      if (persistentReservation) {
+        await db.updateProspectingSend(sessionRow.user_id, claim.number, 'sent', result.messageId);
+      }
+
+      return {
+        success: true,
+        provider: 'wwebjs',
+        sessionId,
+        to: result.to,
+        messageId: result.messageId,
+        confirmed: true,
+        status: 'sent',
+        finalStatus: 'sent',
+        shouldMarkLead: 'sent',
+        raw: result.raw
+      };
     }
 
     const result = mediaUrl
@@ -829,7 +900,8 @@ app.get('/api/sessions', authMiddleware, async (req, res) => {
         return await getSessionView(row.id, row, { activate: false });
       } catch (error) {
         rememberError('list-session-state', error, { sessionId: row.id });
-        return publicSessionView(row);
+        const provider = await getSessionProvider(row).catch(() => 'evolution');
+        return publicSessionView(row, null, provider);
       }
     }));
     res.json({ success: true, sessions });
@@ -892,9 +964,11 @@ app.delete('/api/sessions/:sessionId', authMiddleware, async (req, res) => {
   try {
     const { sessionId } = req.params;
     await assertSessionAccess(req, sessionId);
-    await whatsapp.logout(sessionId);
+    const row = await db.getSession(sessionId);
+    const provider = await getSessionProvider(row);
+    await providerForInstance(provider).logout(sessionId);
     await db.resetSessionAuthForQr(sessionId, 'disconnected');
-    res.json({ success: true, message: 'Sessao desconectada na Evolution' });
+    res.json({ success: true, message: `Sessao desconectada no provider ${provider}` });
   } catch (error) {
     rememberError('delete-session', error, { sessionId: req.params.sessionId });
     return sendError(res, error, 500);

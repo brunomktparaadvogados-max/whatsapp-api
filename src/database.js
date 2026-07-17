@@ -816,7 +816,7 @@ class DatabaseManager {
   }
 
   async setWhatsAppProvider(userId, provider) {
-    const allowed = new Set(['evolution', 'meta_official', 'bot_conversa']);
+    const allowed = new Set(['evolution', 'wwebjs', 'meta_official', 'bot_conversa']);
     const normalized = allowed.has(provider) ? provider : 'evolution';
     return await this.run(`
       INSERT INTO whatsapp_provider_configs (user_id, provider, updated_at)
@@ -840,6 +840,10 @@ class DatabaseManager {
     return {
       provider,
       evolution: { configured: true },
+      wwebjs: {
+        configured: true,
+        maxSessions: parseInt(process.env.WWEBJS_MAX_SESSIONS || '4', 10)
+      },
       meta_official: {
         configured: !!meta,
         phoneNumberId: meta?.phone_number_id || null,

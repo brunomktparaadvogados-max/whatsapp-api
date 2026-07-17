@@ -19,6 +19,11 @@ services:
       EVOLUTION_WEBHOOK_SECRET: ${EVOLUTION_WEBHOOK_SECRET:-}
       EVOLUTION_INSTANCE_PREFIX: ${EVOLUTION_INSTANCE_PREFIX:-pf}
       EVOLUTION_SEND_DELAY_MS: ${EVOLUTION_SEND_DELAY_MS:-1200}
+      WWEBJS_AUTH_PATH: /app/.wwebjs_auth
+      WWEBJS_MAX_SESSIONS: ${WWEBJS_MAX_SESSIONS:-4}
+      WWEBJS_SEND_TIMEOUT_MS: ${WWEBJS_SEND_TIMEOUT_MS:-45000}
+    volumes:
+      - wwebjs-auth-data:/app/.wwebjs_auth
     depends_on:
       - evolution-api
     restart: unless-stopped
@@ -69,3 +74,4 @@ services:
 volumes:
   evolution-postgres-data:
   evolution-redis-data:
+  wwebjs-auth-data:
