@@ -9,6 +9,7 @@ require('dotenv').config();
 const DatabaseManager = require('./database');
 const EvolutionWhatsAppProvider = require('./EvolutionWhatsAppProvider');
 const WWebJSProvider = require('./WWebJSProvider');
+const EvolutionGoProvider = require('./EvolutionGoProvider');
 const MetaWhatsAppAPI = require('./MetaAPI');
 const BotConversaAPI = require('./BotConversaAPI');
 const { generateToken, authMiddleware } = require('./auth');
@@ -39,6 +40,13 @@ const wwebjs = new WWebJSProvider({
   io,
   maxSessions: parseInt(process.env.WWEBJS_MAX_SESSIONS || '4', 10),
   sendTimeoutMs: parseInt(process.env.WWEBJS_SEND_TIMEOUT_MS || '45000', 10)
+});
+
+const evolutionGo = new EvolutionGoProvider({
+  baseUrl: process.env.EVOGO_BASE_URL,
+  globalKey: process.env.EVOGO_GLOBAL_API_KEY,
+  instancePrefix: process.env.EVOGO_INSTANCE_PREFIX || 'pfgo',
+  timeoutMs: parseInt(process.env.EVOGO_TIMEOUT_MS || '45000', 10)
 });
 
 const recentErrors = [];
@@ -169,7 +177,9 @@ function sessionProviderLabel(provider) {
 
 function providerForInstance(provider) {
   const normalized = sessionProviderLabel(provider);
-  return normalized === 'wwebjs' ? wwebjs : whatsapp;
+  if (normalized === 'wwebjs') return wwebjs;
+  if (normalized === 'evolution_go') return evolutionGo;
+  return whatsapp;
 }
 
 async function getSessionProvider(rowOrUserId) {
@@ -193,7 +203,9 @@ function publicSessionView(row, providerView = null, provider = 'evolution') {
     provider: engine,
     instanceName: providerView?.instanceName || (engine === 'wwebjs'
       ? `wwebjs_${row?.id || providerView?.id}`
-      : whatsapp.instanceNameForSession(row?.id || providerView?.id)),
+      : (engine === 'evolution_go'
+        ? evolutionGo.instanceNameForSession(row?.id || providerView?.id)
+        : whatsapp.instanceNameForSession(row?.id || providerView?.id))),
     info: providerView?.info || {
       wid: row?.phone_number ? { user: row.phone_number } : undefined,
       pushname: row?.phone_name || undefined
@@ -274,6 +286,7 @@ function normalizeProvider(provider) {
   if (provider === 'meta' || provider === 'meta_official') return 'meta_official';
   if (provider === 'botconversa' || provider === 'bot_conversa') return 'bot_conversa';
   if (provider === 'wwebjs' || provider === 'whatsapp_web' || provider === 'whatsapp-web.js' || provider === 'whatsapp_web_js') return 'wwebjs';
+  if (provider === 'evolution_go' || provider === 'evolution-go' || provider === 'evogo' || provider === 'whatsmeow') return 'evolution_go';
   return 'evolution';
 }
 
@@ -539,6 +552,45 @@ async function sendWhatsAppText({
       };
     }
 
+    if (activeProvider === 'evolution_go') {
+      const result = mediaUrl
+        ? await evolutionGo.sendMedia(sessionId, claim.number, mediaUrl, message, { userId: sessionRow.user_id, delay: SEND_DELAY_MS })
+        : await evolutionGo.sendText(sessionId, claim.number, message, { userId: sessionRow.user_id, delay: SEND_DELAY_MS });
+
+      await db.saveMessage({
+        id: result.messageId,
+        sessionId,
+        contactPhone: result.to,
+        messageType: mediaUrl ? 'media' : 'chat',
+        body: message,
+        mediaUrl,
+        mediaMimetype: null,
+        fromMe: true,
+        timestamp: Date.now(),
+        status: 'sent'
+      });
+      await db.upsertContact(sessionId, result.to);
+      await db.markSessionReady(sessionId, result.raw?.chatId || result.raw?.data?.Info?.Chat || null, null, true).catch(statusError => {
+        rememberError('evolution-go-session-ready', statusError, { userId: sessionRow.user_id, sessionId });
+      });
+      if (persistentReservation) {
+        await db.updateProspectingSend(sessionRow.user_id, claim.number, 'sent', result.messageId);
+      }
+
+      return {
+        success: true,
+        provider: 'evolution_go',
+        sessionId,
+        to: result.to,
+        messageId: result.messageId,
+        confirmed: true,
+        status: 'sent',
+        finalStatus: 'sent',
+        shouldMarkLead: 'sent',
+        raw: result.raw
+      };
+    }
+
     const result = mediaUrl
       ? await whatsapp.sendMedia(sessionId, claim.number, mediaUrl, message)
       : await whatsapp.sendText(sessionId, claim.number, message, { delay: SEND_DELAY_MS });
@@ -759,7 +811,8 @@ app.get('/health', (req, res) => {
 app.get('/api/health', async (req, res) => {
   const checks = {
     database: { ok: false },
-    evolution: { ok: whatsapp.configured() }
+    evolution: { ok: whatsapp.configured() },
+    evolution_go: { ok: evolutionGo.configured() }
   };
 
   try {
@@ -779,6 +832,14 @@ app.get('/api/health', async (req, res) => {
     checks.evolution = { ok: false, reachable: false, error: error.message, code: error.code || null };
   }
 
+  try {
+    checks.evolution_go = evolutionGo.configured()
+      ? await evolutionGo.health()
+      : { ok: false, configured: false };
+  } catch (error) {
+    checks.evolution_go = { ok: false, reachable: false, error: error.message, code: error.code || null };
+  }
+
   const healthy = checks.database.ok && checks.evolution.ok && checks.evolution.reachable !== false;
 
   res.status(healthy ? 200 : 503).json({
@@ -788,6 +849,11 @@ app.get('/api/health', async (req, res) => {
       configured: whatsapp.configured(),
       baseUrl: whatsapp.baseUrl || null,
       instancePrefix: whatsapp.instancePrefix
+    },
+    evolution_go: {
+      configured: evolutionGo.configured(),
+      baseUrl: evolutionGo.baseUrl || null,
+      instancePrefix: evolutionGo.instancePrefix
     },
     checks,
     recentErrors,
@@ -1113,8 +1179,10 @@ app.get('/api/sessions/:sessionId/contacts/:contactPhone/messages', authMiddlewa
 app.get('/api/sessions/:sessionId/alive', authMiddleware, async (req, res) => {
   try {
     await assertSessionAccess(req, req.params.sessionId);
-    const view = await whatsapp.getState(req.params.sessionId);
-    res.json({ success: true, alive: view.status === 'connected', status: view.status, engine: 'evolution' });
+    const row = await db.getSession(req.params.sessionId);
+    const provider = await getSessionProvider(row);
+    const view = await providerForInstance(provider).getState(req.params.sessionId);
+    res.json({ success: true, alive: view.status === 'connected', status: view.status, engine: provider });
   } catch (error) {
     return sendError(res, error, 500);
   }

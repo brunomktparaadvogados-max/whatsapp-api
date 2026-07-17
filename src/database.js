@@ -816,7 +816,7 @@ class DatabaseManager {
   }
 
   async setWhatsAppProvider(userId, provider) {
-    const allowed = new Set(['evolution', 'wwebjs', 'meta_official', 'bot_conversa']);
+    const allowed = new Set(['evolution', 'wwebjs', 'evolution_go', 'meta_official', 'bot_conversa']);
     const normalized = allowed.has(provider) ? provider : 'evolution';
     return await this.run(`
       INSERT INTO whatsapp_provider_configs (user_id, provider, updated_at)
@@ -843,6 +843,11 @@ class DatabaseManager {
       wwebjs: {
         configured: true,
         maxSessions: parseInt(process.env.WWEBJS_MAX_SESSIONS || '4', 10)
+      },
+      evolution_go: {
+        configured: Boolean(process.env.EVOGO_BASE_URL && (process.env.EVOGO_GLOBAL_API_KEY || process.env.EVOLUTION_API_KEY)),
+        baseUrl: process.env.EVOGO_BASE_URL || null,
+        instancePrefix: process.env.EVOGO_INSTANCE_PREFIX || 'pfgo'
       },
       meta_official: {
         configured: !!meta,

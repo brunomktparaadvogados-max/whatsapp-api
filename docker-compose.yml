@@ -22,10 +22,51 @@ services:
       WWEBJS_AUTH_PATH: /app/.wwebjs_auth
       WWEBJS_MAX_SESSIONS: ${WWEBJS_MAX_SESSIONS:-4}
       WWEBJS_SEND_TIMEOUT_MS: ${WWEBJS_SEND_TIMEOUT_MS:-45000}
+      EVOGO_BASE_URL: http://evolution-go:4000
+      EVOGO_GLOBAL_API_KEY: ${EVOGO_GLOBAL_API_KEY:-prospectflow-go-local-key-change-me}
+      EVOGO_INSTANCE_PREFIX: ${EVOGO_INSTANCE_PREFIX:-pfgo}
+      EVOGO_TIMEOUT_MS: ${EVOGO_TIMEOUT_MS:-45000}
     volumes:
       - wwebjs-auth-data:/app/.wwebjs_auth
     depends_on:
       - evolution-api
+      - evolution-go
+    restart: unless-stopped
+
+  evolution-go:
+    image: evoapicloud/evolution-go:latest
+    container_name: evolution-go
+    ports:
+      - "4000:4000"
+    environment:
+      SERVER_PORT: 4000
+      CLIENT_NAME: prospectflow
+      GLOBAL_API_KEY: ${EVOGO_GLOBAL_API_KEY:-prospectflow-go-local-key-change-me}
+      POSTGRES_AUTH_DB: postgresql://postgres:postgres@evolution-go-postgres:5432/evogo_auth?sslmode=disable
+      POSTGRES_USERS_DB: postgresql://postgres:postgres@evolution-go-postgres:5432/evogo_users?sslmode=disable
+      DATABASE_SAVE_MESSAGES: "false"
+      WADEBUG: INFO
+      LOGTYPE: console
+      CONNECT_ON_STARTUP: "false"
+      WEBHOOK_FILES: "true"
+    volumes:
+      - evolution-go-data:/app/dbdata
+      - evolution-go-logs:/app/logs
+    depends_on:
+      - evolution-go-postgres
+    mem_limit: 1g
+    restart: unless-stopped
+
+  evolution-go-postgres:
+    image: postgres:15-alpine
+    container_name: evolution-go-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - evolution-go-postgres-data:/var/lib/postgresql/data
+      - ./scripts/evolution-go-init.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     restart: unless-stopped
 
   evolution-api:
@@ -75,3 +116,6 @@ volumes:
   evolution-postgres-data:
   evolution-redis-data:
   wwebjs-auth-data:
+  evolution-go-data:
+  evolution-go-logs:
+  evolution-go-postgres-data:
