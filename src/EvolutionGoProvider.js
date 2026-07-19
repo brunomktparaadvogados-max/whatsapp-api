@@ -91,7 +91,7 @@ class EvolutionGoProvider {
   }
 
   extractQr(raw) {
-    const qr = raw?.qrcode || raw?.data?.qrcode || raw?.qrCode || raw?.data?.qrCode || raw?.data?.qr || null;
+    const qr = raw?.data?.code || raw?.code || raw?.qrCode || raw?.data?.qrCode || raw?.data?.qr || raw?.qrcode || raw?.data?.qrcode || null;
     if (!qr) return null;
     if (typeof qr === 'string') return qr.startsWith('data:') ? qr : `data:image/png;base64,${qr}`;
     if (qr.base64) return qr.base64.startsWith('data:') ? qr.base64 : `data:image/png;base64,${qr.base64}`;
@@ -100,7 +100,8 @@ class EvolutionGoProvider {
 
   mapStatus(raw) {
     const status = String(raw?.status || raw?.data?.status || raw?.data?.state || '').toLowerCase();
-    const connected = raw?.connected === true || raw?.data?.connected === true ||
+    const explicitLoggedIn = raw?.loggedIn === true || raw?.data?.loggedIn === true;
+    const connected = explicitLoggedIn || raw?.data?.myJid || raw?.myJid ||
       ['connected', 'open', 'online'].includes(status);
     if (connected) return 'connected';
     if (this.extractQr(raw)) return 'qr_code';
@@ -137,12 +138,15 @@ class EvolutionGoProvider {
 
   async getQr(sessionId, { waitMs = 8000 } = {}) {
     const { token } = await this.ensureInstance(sessionId);
-    await this.request('POST', '/instance/connect', { apikey: token, body: {} }).catch(() => {});
+    await this.request('POST', '/instance/connect', {
+      apikey: token,
+      body: { immediate: true, subscribe: ['messages.upsert', 'connection.update'] }
+    }).catch(() => {});
     const started = Date.now();
     while (Date.now() - started <= waitMs) {
       const state = await this.getState(sessionId).catch(() => null);
       if (state && (state.status === 'connected' || state.qrCode)) return state;
-      const rawQr = await this.request('GET', '/instance/qrcode', { apikey: token }).catch(() => null);
+      const rawQr = await this.request('GET', '/instance/qr', { apikey: token }).catch(() => null);
       if (rawQr) {
         const view = this.sessionView(sessionId, rawQr);
         if (view.qrCode || view.status === 'connected') return view;
@@ -195,8 +199,11 @@ class EvolutionGoProvider {
   }
 
   async deleteInstance(sessionId) {
-    const { token } = await this.ensureInstance(sessionId);
-    await this.request('DELETE', '/instance/delete', { apikey: token }).catch(() => {});
+    const name = this.instanceNameForSession(sessionId);
+    await this.request('DELETE', `/instance/delete/${encodeURIComponent(name)}`, { apikey: this.globalKey }).catch(async () => {
+      const token = this.instanceTokenForSession(sessionId);
+      await this.request('DELETE', '/instance/delete', { apikey: token }).catch(() => {});
+    });
     this.stateCache.delete(sessionId);
     return { success: true };
   }
