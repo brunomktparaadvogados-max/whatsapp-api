@@ -9,7 +9,11 @@ function getDatabaseSsl(databaseUrl) {
 
   try {
     const hostname = new URL(databaseUrl).hostname;
-    if (hostname === 'evolution-postgres' || hostname === 'evolution-go-postgres') {
+    if (
+      hostname === 'evolution-postgres' ||
+      hostname === 'evolution-go-postgres' ||
+      hostname === 'prospectflow-evolution-postgres'
+    ) {
       return false;
     }
   } catch (_) {
