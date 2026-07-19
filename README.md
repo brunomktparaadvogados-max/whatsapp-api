@@ -1,15 +1,16 @@
 # ProspectFlow WhatsApp Adapter
 
 Adapter Node.js em producao para o ProspectFlow. A Evolution API e o motor
-padrao; Meta oficial e BotConversa sao provedores opcionais selecionados por
-usuario.
+padrao; Evolution GO, WhatsApp Web fallback e Meta oficial sao provedores
+opcionais selecionados por usuario.
 
 ## Producao
 
 - API publica: `https://143-95-221-102.sslip.io`
 - VPS: `/opt/prospectflow-whatsapp`
-- Branch: `codex/koyeb-session-safety`
+- Branch: `codex/evolution-go-provider`
 - Evolution interna: `http://evolution-api:8080`
+- Evolution GO interna: `http://evolution-go:4000`
 - Instancias: `pfvps_user_{id}`
 
 Nao usar configuracoes antigas do Koyeb. A VPS executa:
@@ -41,12 +42,11 @@ node --check src/EvolutionWhatsAppProvider.js
 
 ```bash
 cd /opt/prospectflow-whatsapp/adapter
-git fetch origin codex/koyeb-session-safety
-git merge --ff-only origin/codex/koyeb-session-safety
-cd ..
-docker compose up -d --build adapter
+git fetch origin codex/evolution-go-provider
+git checkout -B codex/evolution-go-provider origin/codex/evolution-go-provider
+docker compose up -d --build evolution-go-postgres evolution-go prospectflow-whatsapp-api
 docker compose ps
-docker compose logs --tail=120 adapter
+docker compose logs --tail=120 prospectflow-whatsapp-api
 ```
 
 Nao documente segredos e nao remova backups ou mudancas desconhecidas da VPS.

@@ -11,7 +11,6 @@ const EvolutionWhatsAppProvider = require('./EvolutionWhatsAppProvider');
 const WWebJSProvider = require('./WWebJSProvider');
 const EvolutionGoProvider = require('./EvolutionGoProvider');
 const MetaWhatsAppAPI = require('./MetaAPI');
-const BotConversaAPI = require('./BotConversaAPI');
 const { generateToken, authMiddleware } = require('./auth');
 
 const PORT = process.env.PORT || 3000;
@@ -284,7 +283,6 @@ async function releaseSend(key) {
 
 function normalizeProvider(provider) {
   if (provider === 'meta' || provider === 'meta_official') return 'meta_official';
-  if (provider === 'botconversa' || provider === 'bot_conversa') return 'bot_conversa';
   if (provider === 'wwebjs' || provider === 'whatsapp_web' || provider === 'whatsapp-web.js' || provider === 'whatsapp_web_js') return 'wwebjs';
   if (provider === 'evolution_go' || provider === 'evolution-go' || provider === 'evogo' || provider === 'whatsmeow') return 'evolution_go';
   return 'evolution';
@@ -341,48 +339,6 @@ async function sendViaMetaOfficial({ sessionId, userId, to, message, mediaUrl = 
     finalStatus: 'sent',
     shouldMarkLead: 'sent',
     raw: result.data
-  };
-}
-
-async function sendViaBotConversa({ sessionId, userId, to, firstName = '', message }) {
-  const config = await db.getBotConversaConfig(userId);
-  if (!config) {
-    const err = new Error('BotConversa nao configurado para este usuario');
-    err.status = 400;
-    throw err;
-  }
-
-  const bot = new BotConversaAPI(config.api_key);
-  const result = await bot.sendFlow({ phone: to, firstName, flowId: config.flow_id });
-  const messageId = `botconversa-${result.subscriberId}-${Date.now()}`;
-
-  await db.saveMessage({
-    id: messageId,
-    sessionId,
-    contactPhone: result.to,
-    messageType: 'bot_conversa_flow',
-    body: message || `Fluxo BotConversa ${config.flow_name || config.flow_id}`,
-    mediaUrl: null,
-    mediaMimetype: null,
-    fromMe: true,
-    timestamp: Date.now(),
-    status: 'sent'
-  });
-  await db.upsertContact(sessionId, result.to);
-
-  return {
-    success: true,
-    provider: 'bot_conversa',
-    sessionId,
-    to: result.to,
-    messageId,
-    confirmed: true,
-    status: 'sent',
-    finalStatus: 'sent',
-    shouldMarkLead: 'sent',
-    botConversaSubscriberId: result.subscriberId,
-    botConversaFlowId: result.flowId,
-    raw: result.raw
   };
 }
 
@@ -487,25 +443,6 @@ async function sendWhatsAppText({
         to: claim.number,
         message,
         mediaUrl
-      });
-      if (persistentReservation) {
-        await db.updateProspectingSend(sessionRow.user_id, claim.number, result.status || 'sent', result.messageId);
-      }
-      return result;
-    }
-
-    if (activeProvider === 'bot_conversa') {
-      if (mediaUrl) {
-        const err = new Error('BotConversa usa fluxo configurado e nao aceita midia direta neste disparo');
-        err.status = 400;
-        throw err;
-      }
-      const result = await sendViaBotConversa({
-        sessionId,
-        userId: sessionRow.user_id,
-        to: claim.number,
-        firstName,
-        message
       });
       if (persistentReservation) {
         await db.updateProspectingSend(sessionRow.user_id, claim.number, result.status || 'sent', result.messageId);
@@ -1341,39 +1278,15 @@ app.post('/api/meta/send', authMiddleware, async (req, res) => {
 });
 
 app.post('/api/bot-conversa/config', authMiddleware, async (req, res) => {
-  try {
-    const { apiKey, flowId, flowName } = req.body;
-    if (!apiKey || !flowId) return res.status(400).json({ error: 'apiKey e flowId sao obrigatorios' });
-    await db.saveBotConversaConfig(req.userId, apiKey, flowId, flowName || null);
-    res.json({ success: true });
-  } catch (error) {
-    return sendError(res, error, 500);
-  }
+  res.status(410).json({ success: false, error: 'Canal legado desativado. Use Evolution API ou Evolution GO.' });
 });
 
 app.get('/api/bot-conversa/config', authMiddleware, async (req, res) => {
-  try {
-    const config = await db.getBotConversaConfig(req.userId);
-    res.json({
-      success: true,
-      configured: !!config,
-      config: config ? { flowId: config.flow_id, flowName: config.flow_name } : null
-    });
-  } catch (error) {
-    return sendError(res, error, 500);
-  }
+  res.json({ success: true, configured: false, config: null });
 });
 
 app.post('/api/bot-conversa/flows', authMiddleware, async (req, res) => {
-  try {
-    const apiKey = req.body?.apiKey;
-    if (!apiKey) return res.status(400).json({ error: 'apiKey obrigatorio' });
-    const bot = new BotConversaAPI(apiKey);
-    const flows = await bot.listFlows();
-    res.json({ success: true, flows });
-  } catch (error) {
-    return sendError(res, error, 500);
-  }
+  res.status(410).json({ success: false, error: 'Canal legado desativado. Use Evolution API ou Evolution GO.' });
 });
 
 app.get('/api/prospecting/lists/:listId/statuses', async (req, res) => {

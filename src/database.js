@@ -1,6 +1,24 @@
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 
+function getDatabaseSsl(databaseUrl) {
+  const explicitSetting = String(process.env.DATABASE_SSL || '').trim().toLowerCase();
+  if (explicitSetting) {
+    return explicitSetting === 'true' ? { rejectUnauthorized: false } : false;
+  }
+
+  try {
+    const hostname = new URL(databaseUrl).hostname;
+    if (hostname === 'evolution-postgres' || hostname === 'evolution-go-postgres') {
+      return false;
+    }
+  } catch (_) {
+    // Let pg report malformed connection strings with its normal error.
+  }
+
+  return { rejectUnauthorized: false };
+}
+
 class DatabaseManager {
   constructor() {
     const databaseUrl = process.env.DATABASE_URL || process.env.SUPABASE_URL;
@@ -12,9 +30,7 @@ class DatabaseManager {
 
     this.pool = new Pool({
       connectionString: databaseUrl,
-      ssl: {
-        rejectUnauthorized: false
-      },
+      ssl: getDatabaseSsl(databaseUrl),
       max: 5,                          // 5 conexões max — Supabase Micro (1GB RAM) se engasga com mais
       connectionTimeoutMillis: 15000,  // 15s para obter conexão (falha rápido em vez de travar)
       idleTimeoutMillis: 30000,        // fecha conexão idle após 30s (libera para outros)
@@ -103,7 +119,7 @@ class DatabaseManager {
       const databaseUrl = process.env.DATABASE_URL || process.env.SUPABASE_URL;
       this.pool = new Pool({
         connectionString: databaseUrl,
-        ssl: { rejectUnauthorized: false },
+        ssl: getDatabaseSsl(databaseUrl),
         max: 5,
         connectionTimeoutMillis: 15000,
         idleTimeoutMillis: 30000,
@@ -803,20 +819,8 @@ class DatabaseManager {
     return await this.get('SELECT * FROM meta_configs WHERE user_id = $1 AND is_active = true ORDER BY id DESC LIMIT 1', [userId]);
   }
 
-  async saveBotConversaConfig(userId, apiKey, flowId, flowName = null) {
-    await this.run('UPDATE bot_conversa_configs SET is_active = false WHERE user_id = $1', [userId]);
-    return await this.run(`
-      INSERT INTO bot_conversa_configs (user_id, api_key, flow_id, flow_name)
-      VALUES ($1, $2, $3, $4)
-    `, [userId, apiKey, String(flowId), flowName]);
-  }
-
-  async getBotConversaConfig(userId) {
-    return await this.get('SELECT * FROM bot_conversa_configs WHERE user_id = $1 AND is_active = true ORDER BY id DESC LIMIT 1', [userId]);
-  }
-
   async setWhatsAppProvider(userId, provider) {
-    const allowed = new Set(['evolution', 'wwebjs', 'evolution_go', 'meta_official', 'bot_conversa']);
+    const allowed = new Set(['evolution', 'wwebjs', 'evolution_go', 'meta_official']);
     const normalized = allowed.has(provider) ? provider : 'evolution';
     return await this.run(`
       INSERT INTO whatsapp_provider_configs (user_id, provider, updated_at)
@@ -832,13 +836,12 @@ class DatabaseManager {
   }
 
   async getProviderSummary(userId) {
-    const [provider, meta, bot] = await Promise.all([
+    const [provider, meta] = await Promise.all([
       this.getWhatsAppProvider(userId),
-      this.getMetaConfig(userId),
-      this.getBotConversaConfig(userId)
+      this.getMetaConfig(userId)
     ]);
     return {
-      provider,
+      provider: provider === 'bot_conversa' ? 'evolution' : provider,
       evolution: { configured: true },
       wwebjs: {
         configured: true,
@@ -855,9 +858,9 @@ class DatabaseManager {
         businessAccountId: meta?.business_account_id || null
       },
       bot_conversa: {
-        configured: !!bot,
-        flowId: bot?.flow_id || null,
-        flowName: bot?.flow_name || null
+        configured: false,
+        flowId: null,
+        flowName: null
       }
     };
   }
