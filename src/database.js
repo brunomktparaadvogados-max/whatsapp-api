@@ -713,6 +713,14 @@ class DatabaseManager {
     `, [userId, contactPhone, status, messageId]);
   }
 
+  async updateProspectingSendByMessageId(messageId, status) {
+    return await this.run(`
+      UPDATE prospecting_send_history
+      SET status = $2, updated_at = CURRENT_TIMESTAMP
+      WHERE message_id = $1
+    `, [messageId, status]);
+  }
+
   async releaseProspectingSend(userId, contactPhone) {
     return await this.run(`
       DELETE FROM prospecting_send_history

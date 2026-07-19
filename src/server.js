@@ -1054,16 +1054,24 @@ app.post('/api/webhooks/evolution', async (req, res) => {
       io.emit('whatsapp_status', { sessionId, ...event });
     }
 
-    const messageId = req.body?.data?.key?.id || req.body?.data?.id || req.body?.key?.id || req.body?.messageId || null;
+    const messageId = req.body?.data?.key?.id || req.body?.data?.keyId || req.body?.data?.id || req.body?.key?.id || req.body?.messageId || null;
     const rawStatus = String(req.body?.data?.status || req.body?.status || req.body?.event || '').toLowerCase();
-    const deliveredStates = ['delivery_ack', 'delivered', 'read', 'played', 'server_ack', 'send.message', 'send_message'];
+    const sentStates = ['server_ack', 'sent'];
+    const deliveredStates = ['delivery_ack', 'delivered'];
+    const readStates = ['read', 'played'];
     const failedStates = ['error', 'failed', 'undelivered'];
-    if (messageId && deliveredStates.some(state => rawStatus.includes(state))) {
-      await db.updateMessageStatus(messageId, 'delivered').catch(() => {});
-      io.emit('whatsapp_message_status', { messageId, status: 'delivered' });
-    } else if (messageId && failedStates.some(state => rawStatus.includes(state))) {
-      await db.updateMessageStatus(messageId, 'failed').catch(() => {});
-      io.emit('whatsapp_message_status', { messageId, status: 'failed' });
+    let messageStatus = null;
+    if (readStates.some(state => rawStatus.includes(state))) messageStatus = 'read';
+    else if (deliveredStates.some(state => rawStatus.includes(state))) messageStatus = 'delivered';
+    else if (sentStates.some(state => rawStatus.includes(state))) messageStatus = 'sent';
+    else if (failedStates.some(state => rawStatus.includes(state))) messageStatus = 'failed';
+
+    if (messageId && messageStatus) {
+      await Promise.all([
+        db.updateMessageStatus(messageId, messageStatus).catch(() => {}),
+        db.updateProspectingSendByMessageId(messageId, messageStatus).catch(() => {})
+      ]);
+      io.emit('whatsapp_message_status', { messageId, status: messageStatus });
     }
 
     res.json({ success: true });

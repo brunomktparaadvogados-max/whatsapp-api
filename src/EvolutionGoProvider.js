@@ -203,11 +203,21 @@ class EvolutionGoProvider {
 
   async health() {
     try {
-      const raw = await this.request('GET', '/server/ok').catch(() => this.request('GET', '/instance/all'));
+      let raw;
+      try {
+        raw = await this.request('GET', '/instance/all');
+      } catch (error) {
+        if (error.status !== 404) throw error;
+        raw = await this.request('GET', '/server/ok');
+      }
       const count = Array.isArray(raw?.data) ? raw.data.length : (Array.isArray(raw) ? raw.length : null);
       return { ok: true, reachable: true, instances: count };
     } catch (error) {
-      return { ok: false, reachable: false, error: error.code || error.message };
+      return {
+        ok: false,
+        reachable: error.code === 'EVOGO_LICENSE_REQUIRED',
+        error: error.code || error.message
+      };
     }
   }
 }
