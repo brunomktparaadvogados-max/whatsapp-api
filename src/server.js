@@ -1141,13 +1141,18 @@ app.get('/api/debug/errors', authMiddleware, async (req, res) => {
 app.get('/api/debug/sessions', authMiddleware, async (req, res) => {
   if (!(await isAdmin(req))) return res.status(403).json({ error: 'Acesso negado' });
   const rows = await db.getAllSessionsFromDB();
+  const sessions = await Promise.all(rows.map(async row => {
+    const provider = await getSessionProvider(row).catch(() => 'evolution');
+    return {
+      ...row,
+      provider,
+      instanceName: providerForInstance(provider).instanceNameForSession(row.id)
+    };
+  }));
   res.json({
     success: true,
-    engine: 'evolution',
-    sessions: rows.map(row => ({
-      ...row,
-      instanceName: whatsapp.instanceNameForSession(row.id)
-    }))
+    engine: 'multi-provider',
+    sessions
   });
 });
 
@@ -1164,6 +1169,51 @@ app.get('/api/admin/users-export', authMiddleware, async (req, res) => {
         company: user.company || null,
         created_at: user.created_at
       }))
+    });
+  } catch (error) {
+    return sendError(res, error, 500);
+  }
+});
+
+app.get('/api/admin/users/:userId/provider', authMiddleware, async (req, res) => {
+  try {
+    if (!(await isAdmin(req))) return res.status(403).json({ error: 'Acesso negado' });
+    const userId = parseInt(req.params.userId, 10);
+    if (!Number.isFinite(userId)) return res.status(400).json({ error: 'userId invalido' });
+    const user = await db.getUserById(userId);
+    if (!user) return res.status(404).json({ error: 'Usuario nao encontrado' });
+    const sessionId = `user_${userId}`;
+    const row = await ensureDbSession(sessionId, userId);
+    const provider = await getSessionProvider(userId);
+    res.json({
+      success: true,
+      user,
+      provider,
+      session: publicSessionView(row, null, provider)
+    });
+  } catch (error) {
+    return sendError(res, error, 500);
+  }
+});
+
+app.put('/api/admin/users/:userId/provider', authMiddleware, async (req, res) => {
+  try {
+    if (!(await isAdmin(req))) return res.status(403).json({ error: 'Acesso negado' });
+    const userId = parseInt(req.params.userId, 10);
+    if (!Number.isFinite(userId)) return res.status(400).json({ error: 'userId invalido' });
+    const user = await db.getUserById(userId);
+    if (!user) return res.status(404).json({ error: 'Usuario nao encontrado' });
+
+    const provider = normalizeProvider(req.body?.provider);
+    await db.setWhatsAppProvider(userId, provider);
+    const sessionId = `user_${userId}`;
+    const row = await ensureDbSession(sessionId, userId);
+    res.json({
+      success: true,
+      user,
+      provider,
+      session: publicSessionView(row, null, provider),
+      message: `Provider WhatsApp atualizado para ${provider}. Gere/escaneie o QR deste provider antes de disparar.`
     });
   } catch (error) {
     return sendError(res, error, 500);
