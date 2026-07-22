@@ -555,10 +555,10 @@ class DatabaseManager {
   async createSession(sessionId, userId) {
     return await this.run(`
       INSERT INTO sessions (id, user_id, engine, engine_instance_name)
-      VALUES ($1, $2, 'evolution', $1)
+      VALUES ($1, $2, 'evolution_go', $1)
       ON CONFLICT (id) DO UPDATE SET
         user_id = EXCLUDED.user_id,
-        engine = 'evolution',
+        engine = 'evolution_go',
         engine_instance_name = COALESCE(sessions.engine_instance_name, EXCLUDED.engine_instance_name),
         updated_at = CURRENT_TIMESTAMP
     `, [sessionId, userId]);
@@ -579,7 +579,7 @@ class DatabaseManager {
            phone_name = COALESCE($3, phone_name),
            last_ready_at = CURRENT_TIMESTAMP,
            evolution_verified_at = CASE WHEN $4 THEN CURRENT_TIMESTAMP ELSE evolution_verified_at END,
-           engine = 'evolution',
+           engine = 'evolution_go',
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $1`,
       [sessionId, phoneNumber, phoneName, persistenceVerified]
@@ -605,7 +605,7 @@ class DatabaseManager {
            phone_name = NULL,
            last_ready_at = NULL,
            last_auth_failure_at = CURRENT_TIMESTAMP,
-           engine = 'evolution',
+           engine = 'evolution_go',
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $1`,
       [sessionId, status]
