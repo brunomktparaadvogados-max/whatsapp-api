@@ -679,7 +679,10 @@ app.post('/api/auth/login', async (req, res) => {
     await ensureDbSession(sessionId, user.id);
 
     if (!skipWhatsApp) {
-      whatsapp.getQr(sessionId, { waitMs: 1, user }).catch(error => rememberError('login-qr-warmup', error, { sessionId }));
+      const provider = await getSessionProvider(user.id);
+      providerForInstance(provider)
+        .getQr(sessionId, { waitMs: 1, user, userId: user.id })
+        .catch(error => rememberError('login-qr-warmup', error, { sessionId, provider }));
     }
 
     const row = await db.getSession(sessionId);
@@ -1233,9 +1236,10 @@ app.post('/api/admin/reset-whatsapp-sessions', authMiddleware, async (req, res) 
     const results = [];
     for (const row of rows) {
       try {
-        await whatsapp.deleteInstance(row.id);
+        const provider = await getSessionProvider(row);
+        await providerForInstance(provider).deleteInstance(row.id);
         await db.resetSessionAuthForQr(row.id, 'disconnected');
-        results.push({ sessionId: row.id, success: true });
+        results.push({ sessionId: row.id, provider, success: true });
       } catch (error) {
         rememberError('admin-reset-session', error, { sessionId: row.id });
         results.push({ sessionId: row.id, success: false, error: error.message });
@@ -1278,11 +1282,13 @@ app.get('/api/admin/reactivate-session/:sessionId', async (req, res) => {
 app.post('/api/admin/require-qr/:sessionId', async (req, res) => {
   try {
     const sessionId = req.params.sessionId;
-    await whatsapp.logout(sessionId).catch(() => {});
     await db.resetSessionAuthForQr(sessionId, 'qr_code');
     const row = await db.getSession(sessionId);
+    const provider = await getSessionProvider(row);
+    const providerClient = providerForInstance(provider);
+    await providerClient.logout(sessionId).catch(() => {});
     const user = row ? await db.getUserById(row.user_id) : null;
-    const view = await whatsapp.getQr(sessionId, { waitMs: 8000, forceQr: true, resetInstance: true, user });
+    const view = await providerClient.getQr(sessionId, { waitMs: 8000, forceQr: true, resetInstance: true, user });
     if (row) await updateDbFromView(sessionId, view);
     res.json({ success: true, session: publicSessionView(row, view), qrCode: view.qrCode });
   } catch (error) {
