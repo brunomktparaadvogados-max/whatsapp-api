@@ -8,6 +8,8 @@ class EvolutionGoProvider {
     this.instancePrefix = process.env.EVOGO_INSTANCE_PREFIX || instancePrefix;
     this.timeoutMs = Number(process.env.EVOGO_TIMEOUT_MS || timeoutMs);
     this.stateCache = new Map();
+    this.ensuredInstances = new Map();
+    this.ensureInflight = new Map();
   }
 
   configured() {
@@ -21,6 +23,13 @@ class EvolutionGoProvider {
   instanceTokenForSession(sessionId) {
     const h = crypto.createHmac('sha256', this.globalKey).update(this.instanceNameForSession(sessionId)).digest('hex');
     return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+  }
+
+  instanceMeta(sessionId) {
+    return {
+      name: this.instanceNameForSession(sessionId),
+      token: this.instanceTokenForSession(sessionId)
+    };
   }
 
   httpError(status, message, code = 'EVOGO_ERROR', details = null) {
@@ -80,16 +89,28 @@ class EvolutionGoProvider {
   }
 
   async ensureInstance(sessionId) {
-    const name = this.instanceNameForSession(sessionId);
-    const token = this.instanceTokenForSession(sessionId);
-    try {
-      await this.request('POST', '/instance/create', { body: { name, token } });
-    } catch (error) {
-      const detailText = JSON.stringify(error.details || {});
-      const alreadyExists = error.status === 400 || error.status === 409 || /exist/i.test(`${error.message || ''} ${detailText}`);
-      if (!alreadyExists) throw error;
-    }
-    return { name, token };
+    const meta = this.instanceMeta(sessionId);
+    const cached = this.ensuredInstances.get(sessionId);
+    if (cached === meta.token) return meta;
+
+    if (this.ensureInflight.has(sessionId)) return await this.ensureInflight.get(sessionId);
+
+    const promise = (async () => {
+      try {
+        await this.request('POST', '/instance/create', { body: { name: meta.name, token: meta.token } });
+      } catch (error) {
+        const detailText = JSON.stringify(error.details || {});
+        const alreadyExists = error.status === 400 || error.status === 409 || /exist/i.test(`${error.message || ''} ${detailText}`);
+        if (!alreadyExists) throw error;
+      }
+      this.ensuredInstances.set(sessionId, meta.token);
+      return meta;
+    })().finally(() => {
+      this.ensureInflight.delete(sessionId);
+    });
+
+    this.ensureInflight.set(sessionId, promise);
+    return await promise;
   }
 
   extractRawQr(raw) {
@@ -144,7 +165,7 @@ class EvolutionGoProvider {
   }
 
   async getState(sessionId) {
-    const { token } = await this.ensureInstance(sessionId);
+    const { token } = this.instanceMeta(sessionId);
     try {
       const raw = await this.request('GET', '/instance/status', { apikey: token });
       const view = await this.sessionView(sessionId, raw);
@@ -164,8 +185,12 @@ class EvolutionGoProvider {
     }).catch(() => {});
     const started = Date.now();
     while (Date.now() - started <= waitMs) {
-      const state = await this.getState(sessionId).catch(() => null);
-      if (state && (state.status === 'connected' || state.qrCode)) return state;
+      const rawState = await this.request('GET', '/instance/status', { apikey: token }).catch(() => null);
+      if (rawState) {
+        const state = await this.sessionView(sessionId, rawState);
+        this.stateCache.set(sessionId, state);
+        if (state.status === 'connected' || state.qrCode) return state;
+      }
       const rawQr = await this.request('GET', '/instance/qr', { apikey: token }).catch(() => null);
       if (rawQr) {
         const view = await this.sessionView(sessionId, rawQr);
@@ -225,6 +250,8 @@ class EvolutionGoProvider {
       await this.request('DELETE', '/instance/delete', { apikey: token }).catch(() => {});
     });
     this.stateCache.delete(sessionId);
+    this.ensuredInstances.delete(sessionId);
+    this.ensureInflight.delete(sessionId);
     return { success: true };
   }
 
