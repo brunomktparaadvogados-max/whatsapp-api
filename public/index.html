@@ -151,8 +151,8 @@
   <main class="shell">
     <header>
       <div>
-        <h1>WhatsApp API Evolution</h1>
-        <p class="muted">ProspectFlow conectado ao motor Evolution API.</p>
+        <h1>WhatsApp API Evolution GO</h1>
+        <p class="muted">ProspectFlow conectado ao motor WhatsApp ativo: Evolution GO.</p>
       </div>
       <div class="toolbar">
         <button id="refreshBtn" class="secondary">Atualizar</button>
@@ -182,7 +182,7 @@
             <button id="myDisconnectBtn" class="danger">Desconectar</button>
           </div>
           <div class="notice">
-            A persistencia fica na Evolution. Se a sessao nao estiver conectada, esta tela pede QR diretamente ao motor novo.
+            A persistencia fica no motor WhatsApp ativo. Se a sessao nao estiver conectada, esta tela pede QR diretamente ao Evolution GO.
           </div>
 
           <div id="adminCreateUser" class="hidden">
@@ -271,6 +271,13 @@
       return 'error';
     }
 
+    function qrImageSrc(qr) {
+      const value = String(qr || '').trim();
+      if (!value) return '';
+      if (value.startsWith('data:') || value.startsWith('http://') || value.startsWith('https://')) return value;
+      return `data:image/png;base64,${value}`;
+    }
+
     function renderSession(target, session, userId = null) {
       const status = session?.status || 'unknown';
       const qr = session?.qrCode || session?.qr_code || null;
@@ -279,8 +286,8 @@
         <p><strong>Instancia:</strong> ${session?.instanceName || sessionId}</p>
         <span class="status ${statusClass(status)}">${statusLabel(status)}</span>
         ${status === 'connected' ? '<p class="notice">Pronto para disparar.</p>' : ''}
-        ${qr && status !== 'connected' ? `<img class="qr" src="${qr}" alt="QR Code">` : ''}
-        ${status !== 'connected' && !qr ? '<p class="muted">Pedindo QR para a Evolution...</p>' : ''}
+        ${qr && status !== 'connected' ? `<img class="qr" src="${qrImageSrc(qr)}" alt="QR Code">` : ''}
+        ${status !== 'connected' && !qr ? '<p class="muted">Pedindo QR para o Evolution GO...</p>' : ''}
       `;
     }
 
@@ -389,7 +396,7 @@
       if (!box || box.classList.contains('hidden')) return;
       const sessionId = `user_${userId}`;
       if (activate) {
-        box.innerHTML = '<p class="muted">Pedindo QR/conexao para a Evolution...</p>';
+        box.innerHTML = '<p class="muted">Pedindo QR/conexao para o Evolution GO...</p>';
       }
       try {
         const path = activate

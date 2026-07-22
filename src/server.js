@@ -631,7 +631,7 @@ function resolveTargetSessionId(req, explicitSessionId = null) {
 }
 
 io.on('connection', (socket) => {
-  socket.emit('connected', { message: 'Conectado ao servidor ProspectFlow WhatsApp Evolution' });
+  socket.emit('connected', { message: 'Conectado ao servidor ProspectFlow WhatsApp multi-provider' });
 });
 
 app.post('/api/auth/register', async (req, res) => {
@@ -652,7 +652,7 @@ app.post('/api/auth/register', async (req, res) => {
       user: { id: userId, email, name, company },
       sessionId,
       sessionStatus: 'qr_code',
-      message: 'Usuario criado. O QR Code sera gerado pela Evolution quando a sessao for aberta.'
+      message: 'Usuario criado. O QR Code sera gerado pelo Evolution GO quando a sessao for aberta.'
     });
   } catch (error) {
     if (error.code === 'USER_EMAIL_EXISTS') return sendError(res, error, 409);

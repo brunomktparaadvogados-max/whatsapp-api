@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const QRCode = require('qrcode');
 
 class EvolutionGoProvider {
   constructor({ baseUrl = null, globalKey = null, instancePrefix = 'pfgo', timeoutMs = 45000 } = {}) {
@@ -91,27 +92,45 @@ class EvolutionGoProvider {
     return { name, token };
   }
 
-  extractQr(raw) {
+  extractRawQr(raw) {
     const qr = raw?.data?.code || raw?.code || raw?.qrCode || raw?.data?.qrCode || raw?.data?.qr || raw?.qrcode || raw?.data?.qrcode || null;
+    return qr;
+  }
+
+  async extractQr(raw) {
+    const qr = this.extractRawQr(raw);
     if (!qr) return null;
-    if (typeof qr === 'string') return qr.startsWith('data:') ? qr : `data:image/png;base64,${qr}`;
-    if (qr.base64) return qr.base64.startsWith('data:') ? qr.base64 : `data:image/png;base64,${qr.base64}`;
+    if (typeof qr === 'string') {
+      const value = qr.trim();
+      if (!value) return null;
+      if (value.startsWith('data:') || value.startsWith('http://') || value.startsWith('https://')) return value;
+      const looksLikeImageBase64 = /^(iVBOR|\/9j\/|R0lGOD|UklGR)/.test(value);
+      if (looksLikeImageBase64) return `data:image/png;base64,${value}`;
+      return await QRCode.toDataURL(value);
+    }
+    if (qr.base64) {
+      const value = String(qr.base64 || '').trim();
+      if (!value) return null;
+      if (value.startsWith('data:')) return value;
+      if (/^(iVBOR|\/9j\/|R0lGOD|UklGR)/.test(value)) return `data:image/png;base64,${value}`;
+      return await QRCode.toDataURL(value);
+    }
     return null;
   }
 
-  mapStatus(raw) {
+  mapStatus(raw, qrCode = null) {
     const status = String(raw?.status || raw?.data?.status || raw?.data?.state || '').toLowerCase();
     const explicitLoggedIn = raw?.loggedIn === true || raw?.data?.loggedIn === true;
     const connected = explicitLoggedIn || raw?.data?.myJid || raw?.myJid ||
       ['connected', 'open', 'online'].includes(status);
     if (connected) return 'connected';
-    if (this.extractQr(raw)) return 'qr_code';
+    if (qrCode || this.extractRawQr(raw)) return 'qr_code';
     return 'disconnected';
   }
 
-  sessionView(sessionId, raw, statusOverride = null) {
-    const status = statusOverride || this.mapStatus(raw);
-    const qrCode = status === 'connected' ? null : this.extractQr(raw);
+  async sessionView(sessionId, raw, statusOverride = null) {
+    const qrCode = statusOverride === 'connected' ? null : await this.extractQr(raw);
+    const status = statusOverride || this.mapStatus(raw, qrCode);
     return {
       id: sessionId,
       instanceName: this.instanceNameForSession(sessionId),
@@ -128,12 +147,12 @@ class EvolutionGoProvider {
     const { token } = await this.ensureInstance(sessionId);
     try {
       const raw = await this.request('GET', '/instance/status', { apikey: token });
-      const view = this.sessionView(sessionId, raw);
+      const view = await this.sessionView(sessionId, raw);
       this.stateCache.set(sessionId, view);
       return view;
     } catch (error) {
       if (error.code === 'EVOGO_LICENSE_REQUIRED') throw error;
-      return this.sessionView(sessionId, null, 'disconnected');
+      return await this.sessionView(sessionId, null, 'disconnected');
     }
   }
 
@@ -149,12 +168,12 @@ class EvolutionGoProvider {
       if (state && (state.status === 'connected' || state.qrCode)) return state;
       const rawQr = await this.request('GET', '/instance/qr', { apikey: token }).catch(() => null);
       if (rawQr) {
-        const view = this.sessionView(sessionId, rawQr);
+        const view = await this.sessionView(sessionId, rawQr);
         if (view.qrCode || view.status === 'connected') return view;
       }
       await new Promise(resolve => setTimeout(resolve, 700));
     }
-    return this.sessionView(sessionId, null, 'initializing');
+    return await this.sessionView(sessionId, null, 'initializing');
   }
 
   async sendText(sessionId, to, text, { delay = 0 } = {}) {
