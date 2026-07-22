@@ -144,11 +144,14 @@ class EvolutionGoProvider {
 
   mapStatus(raw, qrCode = null) {
     const status = String(raw?.status || raw?.data?.status || raw?.data?.state || '').toLowerCase();
-    const explicitLoggedIn = raw?.loggedIn === true || raw?.data?.loggedIn === true;
-    const explicitConnected = raw?.Connected === true || raw?.data?.Connected === true || raw?.connected === true || raw?.data?.connected === true;
-    const connected = explicitLoggedIn || raw?.data?.myJid || raw?.myJid ||
-      explicitConnected ||
-      ['connected', 'open', 'online'].includes(status);
+    const explicitLoggedIn = raw?.LoggedIn === true || raw?.data?.LoggedIn === true ||
+      raw?.loggedIn === true || raw?.data?.loggedIn === true;
+    const deviceJid = raw?.data?.myJid || raw?.myJid || raw?.data?.jid || raw?.jid || null;
+
+    // Evolution GO reports Connected=true while its websocket is alive even
+    // when the WhatsApp device was logged out. Only a logged-in device/JID can
+    // send; treating the transport flag as authenticated causes false greens.
+    const connected = explicitLoggedIn || Boolean(deviceJid);
     if (connected) return 'connected';
     if (qrCode || this.extractRawQr(raw)) return 'qr_code';
     return 'disconnected';
@@ -231,10 +234,25 @@ class EvolutionGoProvider {
     const number = String(to).includes('@') ? String(to) : this.normalizePhone(to);
     if (!number) throw this.httpError(400, 'Numero de WhatsApp invalido.', 'INVALID_PHONE');
 
-    const raw = await this.request('POST', '/send/text', {
-      apikey: token,
-      body: { number, text: String(text || ''), delay: Number(delay) || 0 }
-    });
+    let raw;
+    try {
+      raw = await this.request('POST', '/send/text', {
+        apikey: token,
+        body: { number, text: String(text || ''), delay: Number(delay) || 0 }
+      });
+    } catch (error) {
+      const detailText = `${error?.message || ''} ${JSON.stringify(error?.details || {})}`;
+      if (/device jid|not logged|logged out|not connected/i.test(detailText)) {
+        this.stateCache.delete(sessionId);
+        throw this.httpError(
+          409,
+          'Sessao do WhatsApp desconectada. Gere um novo QR e conecte o aparelho antes de disparar.',
+          'SESSION_STALE_CONNECTION',
+          error?.details || null
+        );
+      }
+      throw error;
+    }
     const messageId = raw?.data?.Info?.ID || raw?.data?.info?.id || raw?.messageId || raw?.data?.messageId || null;
     if (!messageId) {
       throw this.httpError(502, 'Evolution GO nao retornou ID de mensagem.', 'EVOGO_UNCONFIRMED_SEND', raw);

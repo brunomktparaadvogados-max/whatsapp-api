@@ -290,7 +290,12 @@ function normalizeProvider(provider) {
 }
 
 function isAmbiguousEvolutionSendError(error) {
-  return ['EVOLUTION_REQUEST_FAILED', 'EVOLUTION_NON_JSON_RESPONSE'].includes(error?.code) ||
+  return [
+    'EVOLUTION_REQUEST_FAILED',
+    'EVOLUTION_NON_JSON_RESPONSE',
+    'EVOGO_TIMEOUT',
+    'EVOGO_UNCONFIRMED_SEND'
+  ].includes(error?.code) ||
     (error?.status === 502 && String(error?.details?.url || '').includes('/message/send'));
 }
 
@@ -574,7 +579,7 @@ async function sendWhatsAppText({
       rememberError('send-ambiguous', error, { sessionId, to, lockKey: claim.key });
       return {
         success: true,
-        provider: 'evolution',
+        provider: activeProvider,
         sessionId,
         to: claim.number,
         messageId: '',
@@ -583,7 +588,7 @@ async function sendWhatsAppText({
         finalStatus: 'pending_confirmation',
         shouldMarkLead: 'pending',
         duplicateGuarded: true,
-        message: 'A Evolution nao confirmou a resposta local, mas o disparo pode ter sido aceito. Reenvio bloqueado pelo anti-duplicado.'
+        message: 'O motor WhatsApp nao confirmou a resposta local, mas o disparo pode ter sido aceito. Reenvio bloqueado pelo anti-duplicado.'
       };
     }
     if (error?.code === 'SESSION_STALE_CONNECTION') {
