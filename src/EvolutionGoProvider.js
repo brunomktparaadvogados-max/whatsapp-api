@@ -145,7 +145,9 @@ class EvolutionGoProvider {
   mapStatus(raw, qrCode = null) {
     const status = String(raw?.status || raw?.data?.status || raw?.data?.state || '').toLowerCase();
     const explicitLoggedIn = raw?.loggedIn === true || raw?.data?.loggedIn === true;
+    const explicitConnected = raw?.Connected === true || raw?.data?.Connected === true || raw?.connected === true || raw?.data?.connected === true;
     const connected = explicitLoggedIn || raw?.data?.myJid || raw?.myJid ||
+      explicitConnected ||
       ['connected', 'open', 'online'].includes(status);
     if (connected) return 'connected';
     if (qrCode || this.extractRawQr(raw)) return 'qr_code';
