@@ -171,7 +171,7 @@ async function updateDbFromView(sessionId, view) {
 }
 
 function sessionProviderLabel(provider) {
-  return normalizeProvider(provider || 'evolution');
+  return normalizeProvider(provider || 'evolution_go');
 }
 
 function providerForInstance(provider) {
@@ -183,11 +183,11 @@ function providerForInstance(provider) {
 
 async function getSessionProvider(rowOrUserId) {
   const userId = typeof rowOrUserId === 'object' ? rowOrUserId?.user_id : rowOrUserId;
-  if (!userId) return 'evolution';
+  if (!userId) return 'evolution_go';
   return sessionProviderLabel(await db.getWhatsAppProvider(userId));
 }
 
-function publicSessionView(row, providerView = null, provider = 'evolution') {
+function publicSessionView(row, providerView = null, provider = 'evolution_go') {
   const status = providerView?.status || row?.status || 'not_created';
   const connected = status === 'connected';
   const engine = sessionProviderLabel(providerView?.engine || provider);
@@ -285,7 +285,8 @@ function normalizeProvider(provider) {
   if (provider === 'meta' || provider === 'meta_official') return 'meta_official';
   if (provider === 'wwebjs' || provider === 'whatsapp_web' || provider === 'whatsapp-web.js' || provider === 'whatsapp_web_js') return 'wwebjs';
   if (provider === 'evolution_go' || provider === 'evolution-go' || provider === 'evogo' || provider === 'whatsmeow') return 'evolution_go';
-  return 'evolution';
+  if (provider === 'evolution' || provider === 'baileys') return 'evolution';
+  return 'evolution_go';
 }
 
 function isAmbiguousEvolutionSendError(error) {
@@ -903,7 +904,7 @@ app.get('/api/sessions', authMiddleware, async (req, res) => {
         return await getSessionView(row.id, row, { activate: false });
       } catch (error) {
         rememberError('list-session-state', error, { sessionId: row.id });
-        const provider = await getSessionProvider(row).catch(() => 'evolution');
+        const provider = await getSessionProvider(row).catch(() => 'evolution_go');
         return publicSessionView(row, null, provider);
       }
     }));
@@ -1142,7 +1143,7 @@ app.get('/api/debug/sessions', authMiddleware, async (req, res) => {
   if (!(await isAdmin(req))) return res.status(403).json({ error: 'Acesso negado' });
   const rows = await db.getAllSessionsFromDB();
   const sessions = await Promise.all(rows.map(async row => {
-    const provider = await getSessionProvider(row).catch(() => 'evolution');
+    const provider = await getSessionProvider(row).catch(() => 'evolution_go');
     return {
       ...row,
       provider,

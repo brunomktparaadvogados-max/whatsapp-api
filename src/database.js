@@ -219,7 +219,7 @@ class DatabaseManager {
         evolution_verified_at TIMESTAMP,
         last_ready_at TIMESTAMP,
         last_auth_failure_at TIMESTAMP,
-        engine TEXT DEFAULT 'evolution',
+        engine TEXT DEFAULT 'evolution_go',
         engine_instance_name TEXT,
         last_send_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -231,7 +231,7 @@ class DatabaseManager {
     await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS evolution_verified_at TIMESTAMP`);
     await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_ready_at TIMESTAMP`);
     await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_auth_failure_at TIMESTAMP`);
-    await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS engine TEXT DEFAULT 'evolution'`);
+    await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS engine TEXT DEFAULT 'evolution_go'`);
     await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS engine_instance_name TEXT`);
     await this.run(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_send_at TIMESTAMP`);
     await this.run(`ALTER TABLE sessions DROP COLUMN IF EXISTS remote_auth_verified_at`);
@@ -383,7 +383,7 @@ class DatabaseManager {
     await this.run(`
       CREATE TABLE IF NOT EXISTS whatsapp_provider_configs (
         user_id INTEGER PRIMARY KEY,
-        provider TEXT NOT NULL DEFAULT 'evolution',
+        provider TEXT NOT NULL DEFAULT 'evolution_go',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -833,7 +833,7 @@ class DatabaseManager {
 
   async setWhatsAppProvider(userId, provider) {
     const allowed = new Set(['evolution', 'wwebjs', 'evolution_go', 'meta_official']);
-    const normalized = allowed.has(provider) ? provider : 'evolution';
+    const normalized = allowed.has(provider) ? provider : 'evolution_go';
     return await this.run(`
       INSERT INTO whatsapp_provider_configs (user_id, provider, updated_at)
       VALUES ($1, $2, CURRENT_TIMESTAMP)
@@ -844,7 +844,7 @@ class DatabaseManager {
 
   async getWhatsAppProvider(userId) {
     const row = await this.get('SELECT provider FROM whatsapp_provider_configs WHERE user_id = $1', [userId]);
-    return row?.provider || 'evolution';
+    return row?.provider || 'evolution_go';
   }
 
   async getProviderSummary(userId) {
@@ -853,7 +853,7 @@ class DatabaseManager {
       this.getMetaConfig(userId)
     ]);
     return {
-      provider: provider === 'bot_conversa' ? 'evolution' : provider,
+      provider: provider === 'bot_conversa' ? 'evolution_go' : provider,
       evolution: { configured: true },
       wwebjs: {
         configured: true,
