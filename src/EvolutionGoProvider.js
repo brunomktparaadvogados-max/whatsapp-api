@@ -14,6 +14,7 @@ class EvolutionGoProvider {
     this.connectStartedAt = new Map();
     this.qrCacheTtlMs = Number(process.env.EVOGO_QR_CACHE_TTL_MS || 30000);
     this.connectCooldownMs = Number(process.env.EVOGO_CONNECT_COOLDOWN_MS || 120000);
+    this.connectSettleMs = Number(process.env.EVOGO_CONNECT_SETTLE_MS || 4000);
   }
 
   configured() {
@@ -214,15 +215,25 @@ class EvolutionGoProvider {
   async fetchQr(sessionId, waitMs) {
     const { token } = await this.ensureInstance(sessionId);
     const lastConnectAt = this.connectStartedAt.get(sessionId) || 0;
+    let startedClient = false;
     if (Date.now() - lastConnectAt >= this.connectCooldownMs) {
       // Evolution GO creates database resources on /instance/connect. Calling
       // it on every frontend poll exhausts PostgreSQL, so start at most one QR
       // cycle per session during the provider's QR lifetime.
       this.connectStartedAt.set(sessionId, Date.now());
-      await this.request('POST', '/instance/connect', {
+      const connected = await this.request('POST', '/instance/connect', {
         apikey: token,
-        body: { immediate: true, subscribe: ['messages.upsert', 'connection.update'] }
-      }).catch(() => {});
+        body: { subscribe: ['MESSAGE', 'CONNECTION', 'QRCODE'] }
+      }).then(() => true).catch(() => false);
+      startedClient = connected;
+    }
+
+    if (startedClient && this.connectSettleMs > 0) {
+      // /instance/connect starts the GO client asynchronously. Calling
+      // /instance/qr before it enters the runtime makes GO start a second
+      // client for the same instance. The orphan QR timer can then log out a
+      // successfully paired device when QRCODE_MAX_COUNT is reached.
+      await new Promise(resolve => setTimeout(resolve, this.connectSettleMs));
     }
     const started = Date.now();
     while (Date.now() - started <= waitMs) {
