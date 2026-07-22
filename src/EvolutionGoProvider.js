@@ -100,7 +100,9 @@ class EvolutionGoProvider {
         await this.request('POST', '/instance/create', { body: { name: meta.name, token: meta.token } });
       } catch (error) {
         const detailText = JSON.stringify(error.details || {});
-        const alreadyExists = error.status === 400 || error.status === 409 || /exist/i.test(`${error.message || ''} ${detailText}`);
+        const alreadyExists = error.status === 400
+          || error.status === 409
+          || /exist|duplicate|uni_instances_token/i.test(`${error.message || ''} ${detailText}`);
         if (!alreadyExists) throw error;
       }
       this.ensuredInstances.set(sessionId, meta.token);
