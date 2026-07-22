@@ -103,7 +103,7 @@ class EvolutionGoProvider {
     if (typeof qr === 'string') {
       const value = qr.trim();
       if (!value) return null;
-      if (value.startsWith('data:') || value.startsWith('http://') || value.startsWith('https://')) return value;
+      if (value.startsWith('data:')) return value;
       const looksLikeImageBase64 = /^(iVBOR|\/9j\/|R0lGOD|UklGR)/.test(value);
       if (looksLikeImageBase64) return `data:image/png;base64,${value}`;
       return await QRCode.toDataURL(value);
