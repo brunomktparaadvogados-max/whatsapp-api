@@ -149,12 +149,11 @@ class EvolutionGoProvider {
     const status = String(raw?.status || raw?.data?.status || raw?.data?.state || '').toLowerCase();
     const explicitLoggedIn = raw?.LoggedIn === true || raw?.data?.LoggedIn === true ||
       raw?.loggedIn === true || raw?.data?.loggedIn === true;
-    const deviceJid = raw?.data?.myJid || raw?.myJid || raw?.data?.jid || raw?.jid || null;
 
     // Evolution GO reports Connected=true while its websocket is alive even
-    // when the WhatsApp device was logged out. Only a logged-in device/JID can
-    // send; treating the transport flag as authenticated causes false greens.
-    const connected = explicitLoggedIn || Boolean(deviceJid);
+    // when the WhatsApp device was logged out, and it can retain a stale JID.
+    // Only the explicit authenticated flag is safe evidence that sends work.
+    const connected = explicitLoggedIn;
     if (connected) return 'connected';
     if (qrCode || this.extractRawQr(raw)) return 'qr_code';
     return 'disconnected';
