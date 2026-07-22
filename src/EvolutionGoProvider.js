@@ -10,6 +10,7 @@ class EvolutionGoProvider {
     this.stateCache = new Map();
     this.ensuredInstances = new Map();
     this.ensureInflight = new Map();
+    this.qrCacheTtlMs = Number(process.env.EVOGO_QR_CACHE_TTL_MS || 30000);
   }
 
   configured() {
@@ -166,13 +167,24 @@ class EvolutionGoProvider {
     };
   }
 
+  cacheState(sessionId, view) {
+    this.stateCache.set(sessionId, { ...view, cachedAt: Date.now() });
+    return view;
+  }
+
+  getFreshCachedQr(sessionId) {
+    const cached = this.stateCache.get(sessionId);
+    if (!cached || cached.status !== 'qr_code' || !cached.qrCode) return null;
+    if (Date.now() - (cached.cachedAt || 0) > this.qrCacheTtlMs) return null;
+    return cached;
+  }
+
   async getState(sessionId) {
     const { token } = this.instanceMeta(sessionId);
     try {
       const raw = await this.request('GET', '/instance/status', { apikey: token });
       const view = await this.sessionView(sessionId, raw);
-      this.stateCache.set(sessionId, view);
-      return view;
+      return this.cacheState(sessionId, view);
     } catch (error) {
       if (error.code === 'EVOGO_LICENSE_REQUIRED') throw error;
       return await this.sessionView(sessionId, null, 'disconnected');
@@ -180,6 +192,9 @@ class EvolutionGoProvider {
   }
 
   async getQr(sessionId, { waitMs = 8000 } = {}) {
+    const cachedQr = this.getFreshCachedQr(sessionId);
+    if (cachedQr) return cachedQr;
+
     const { token } = await this.ensureInstance(sessionId);
     await this.request('POST', '/instance/connect', {
       apikey: token,
@@ -190,12 +205,13 @@ class EvolutionGoProvider {
       const rawState = await this.request('GET', '/instance/status', { apikey: token }).catch(() => null);
       if (rawState) {
         const state = await this.sessionView(sessionId, rawState);
-        this.stateCache.set(sessionId, state);
+        this.cacheState(sessionId, state);
         if (state.status === 'connected' || state.qrCode) return state;
       }
       const rawQr = await this.request('GET', '/instance/qr', { apikey: token }).catch(() => null);
       if (rawQr) {
         const view = await this.sessionView(sessionId, rawQr);
+        this.cacheState(sessionId, view);
         if (view.qrCode || view.status === 'connected') return view;
       }
       await new Promise(resolve => setTimeout(resolve, 700));
