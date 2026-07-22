@@ -10,7 +10,10 @@ class EvolutionGoProvider {
     this.stateCache = new Map();
     this.ensuredInstances = new Map();
     this.ensureInflight = new Map();
+    this.qrInflight = new Map();
+    this.connectStartedAt = new Map();
     this.qrCacheTtlMs = Number(process.env.EVOGO_QR_CACHE_TTL_MS || 30000);
+    this.connectCooldownMs = Number(process.env.EVOGO_CONNECT_COOLDOWN_MS || 120000);
   }
 
   configured() {
@@ -200,11 +203,28 @@ class EvolutionGoProvider {
     const cachedQr = this.getFreshCachedQr(sessionId);
     if (cachedQr) return cachedQr;
 
+    if (this.qrInflight.has(sessionId)) return await this.qrInflight.get(sessionId);
+
+    const promise = this.fetchQr(sessionId, waitMs).finally(() => {
+      this.qrInflight.delete(sessionId);
+    });
+    this.qrInflight.set(sessionId, promise);
+    return await promise;
+  }
+
+  async fetchQr(sessionId, waitMs) {
     const { token } = await this.ensureInstance(sessionId);
-    await this.request('POST', '/instance/connect', {
-      apikey: token,
-      body: { immediate: true, subscribe: ['messages.upsert', 'connection.update'] }
-    }).catch(() => {});
+    const lastConnectAt = this.connectStartedAt.get(sessionId) || 0;
+    if (Date.now() - lastConnectAt >= this.connectCooldownMs) {
+      // Evolution GO creates database resources on /instance/connect. Calling
+      // it on every frontend poll exhausts PostgreSQL, so start at most one QR
+      // cycle per session during the provider's QR lifetime.
+      this.connectStartedAt.set(sessionId, Date.now());
+      await this.request('POST', '/instance/connect', {
+        apikey: token,
+        body: { immediate: true, subscribe: ['messages.upsert', 'connection.update'] }
+      }).catch(() => {});
+    }
     const started = Date.now();
     while (Date.now() - started <= waitMs) {
       const rawState = await this.request('GET', '/instance/status', { apikey: token }).catch(() => null);
@@ -278,6 +298,8 @@ class EvolutionGoProvider {
   async logout(sessionId) {
     const { token } = await this.ensureInstance(sessionId);
     await this.request('POST', '/instance/disconnect', { apikey: token, body: {} }).catch(() => {});
+    this.stateCache.delete(sessionId);
+    this.connectStartedAt.delete(sessionId);
     return { success: true };
   }
 
@@ -290,6 +312,8 @@ class EvolutionGoProvider {
     this.stateCache.delete(sessionId);
     this.ensuredInstances.delete(sessionId);
     this.ensureInflight.delete(sessionId);
+    this.qrInflight.delete(sessionId);
+    this.connectStartedAt.delete(sessionId);
     return { success: true };
   }
 
