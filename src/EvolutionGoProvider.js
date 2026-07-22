@@ -63,7 +63,7 @@ class EvolutionGoProvider {
       }
 
       if (!response.ok) {
-        const message = json?.error?.message || json?.message || `Evolution GO HTTP ${response.status}`;
+        const message = json?.error?.message || (typeof json?.error === 'string' ? json.error : null) || json?.message || `Evolution GO HTTP ${response.status}`;
         throw this.httpError(response.status, message, json?.error?.code || 'EVOGO_HTTP_ERROR', json);
       }
 
@@ -84,7 +84,8 @@ class EvolutionGoProvider {
     try {
       await this.request('POST', '/instance/create', { body: { name, token } });
     } catch (error) {
-      const alreadyExists = error.status === 400 || error.status === 409 || /exist/i.test(error.message || '');
+      const detailText = JSON.stringify(error.details || {});
+      const alreadyExists = error.status === 400 || error.status === 409 || /exist/i.test(`${error.message || ''} ${detailText}`);
       if (!alreadyExists) throw error;
     }
     return { name, token };
