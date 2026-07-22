@@ -730,6 +730,7 @@ app.delete('/api/users/:userId', authMiddleware, async (req, res) => {
     if (!(await isAdmin(req))) return res.status(403).json({ error: 'Acesso negado' });
     const userId = parseInt(req.params.userId, 10);
     await whatsapp.deleteInstance(`user_${userId}`).catch(error => rememberError('delete-user-instance', error, { userId }));
+    await evolutionGo.deleteInstance(`user_${userId}`).catch(error => rememberError('delete-user-instance-go', error, { userId }));
     await db.deleteUser(userId);
     res.json({ success: true, message: 'Usuario e instancia WhatsApp removidos' });
   } catch (error) {
@@ -740,8 +741,10 @@ app.delete('/api/users/:userId', authMiddleware, async (req, res) => {
 app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'ok',
-    engine: 'evolution',
+    engine: 'multi-provider',
+    defaultProvider: 'evolution_go',
     evolutionConfigured: whatsapp.configured(),
+    evolutionGoConfigured: evolutionGo.configured(),
     timestamp: new Date().toISOString()
   });
 });
@@ -778,11 +781,13 @@ app.get('/api/health', async (req, res) => {
     checks.evolution_go = { ok: false, reachable: false, error: error.message, code: error.code || null };
   }
 
-  const healthy = checks.database.ok && checks.evolution.ok && checks.evolution.reachable !== false;
+  const activeEngineOk = checks.evolution_go.ok && checks.evolution_go.reachable !== false;
+  const healthy = checks.database.ok && activeEngineOk;
 
   res.status(healthy ? 200 : 503).json({
     status: healthy ? 'healthy' : 'degraded',
-    engine: 'evolution',
+    engine: 'multi-provider',
+    defaultProvider: 'evolution_go',
     evolution: {
       configured: whatsapp.configured(),
       baseUrl: whatsapp.baseUrl || null,
@@ -799,7 +804,7 @@ app.get('/api/health', async (req, res) => {
   });
 });
 
-app.get('/api/ping', (req, res) => res.json({ pong: true, engine: 'evolution' }));
+app.get('/api/ping', (req, res) => res.json({ pong: true, engine: 'multi-provider', defaultProvider: 'evolution_go' }));
 
 app.get('/api/my-session', authMiddleware, async (req, res) => {
   try {
@@ -1240,7 +1245,8 @@ app.post('/api/admin/reset-whatsapp-sessions', authMiddleware, async (req, res) 
     await db.run('DROP TABLE IF EXISTS whatsapp_auth_sessions CASCADE').catch(error => rememberError('drop-legacy-auth-sessions', error));
     res.json({
       success: true,
-      engine: 'evolution',
+      engine: 'multi-provider',
+      defaultProvider: 'evolution_go',
       legacyAuthRemoved: true,
       results
     });
@@ -1253,7 +1259,7 @@ app.post('/api/admin/cleanup-sessions', authMiddleware, async (req, res) => {
   if (!(await isAdmin(req))) return res.status(403).json({ error: 'Acesso negado' });
   await db.run('DROP TABLE IF EXISTS whatsapp_auth_session_backups CASCADE').catch(error => rememberError('cleanup-drop-auth-backups', error));
   await db.run('DROP TABLE IF EXISTS whatsapp_auth_sessions CASCADE').catch(error => rememberError('cleanup-drop-auth-sessions', error));
-  res.json({ success: true, engine: 'evolution', cleaned: 0, legacyAuthRemoved: true, message: 'Motor antigo removido; credenciais legadas descartadas.' });
+  res.json({ success: true, engine: 'multi-provider', defaultProvider: 'evolution_go', cleaned: 0, legacyAuthRemoved: true, message: 'Motor antigo removido; credenciais legadas descartadas.' });
 });
 
 app.get('/api/admin/reactivate-session/:sessionId', async (req, res) => {
@@ -1376,13 +1382,14 @@ app.use('/api', (req, res) => {
   res.status(404).json({
     success: false,
     error: 'Endpoint nao implementado na API Evolution limpa',
-    engine: 'evolution'
+    engine: 'multi-provider',
+    defaultProvider: 'evolution_go'
   });
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`ProspectFlow WhatsApp API Evolution rodando em http://${HOST}:${PORT}`);
-  console.log(`Evolution configurada: ${whatsapp.configured() ? 'sim' : 'nao'}`);
+  console.log(`ProspectFlow WhatsApp API multi-provider rodando em http://${HOST}:${PORT}`);
+  console.log(`Evolution GO configurada: ${evolutionGo.configured() ? 'sim' : 'nao'}`);
 });
 
 process.on('SIGTERM', async () => {
