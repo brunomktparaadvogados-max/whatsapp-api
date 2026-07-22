@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ProspectFlow WhatsApp Evolution</title>
+  <title>ProspectFlow WhatsApp Evolution GO</title>
   <style>
     :root {
       color-scheme: light;
@@ -470,7 +470,7 @@
     }
 
     async function resetSessions() {
-      if (!confirm('Resetar todas as instancias WhatsApp na Evolution e remover cache antigo?')) return;
+      if (!confirm('Resetar todas as instancias WhatsApp no motor ativo e remover cache antigo?')) return;
       await api('/api/admin/reset-whatsapp-sessions', { method: 'POST' });
       await loadUsers();
     }
