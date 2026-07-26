@@ -12,9 +12,13 @@ class EvolutionGoProvider {
     this.ensureInflight = new Map();
     this.qrInflight = new Map();
     this.connectStartedAt = new Map();
+    this.nextQrProbeAt = new Map();
     this.qrCacheTtlMs = Number(process.env.EVOGO_QR_CACHE_TTL_MS || 30000);
     this.connectCooldownMs = Number(process.env.EVOGO_CONNECT_COOLDOWN_MS || 120000);
     this.connectSettleMs = Number(process.env.EVOGO_CONNECT_SETTLE_MS || 4000);
+    this.connectRetryBackoffMs = Number(process.env.EVOGO_CONNECT_RETRY_BACKOFF_MS || 10000);
+    this.qrProbeIntervalMs = Number(process.env.EVOGO_QR_PROBE_INTERVAL_MS || 5000);
+    this.qrFailureBackoffMs = Number(process.env.EVOGO_QR_FAILURE_BACKOFF_MS || 15000);
   }
 
   configured() {
@@ -216,16 +220,27 @@ class EvolutionGoProvider {
     const { token } = await this.ensureInstance(sessionId);
     const lastConnectAt = this.connectStartedAt.get(sessionId) || 0;
     let startedClient = false;
+    let startupError = null;
     if (Date.now() - lastConnectAt >= this.connectCooldownMs) {
       // Evolution GO creates database resources on /instance/connect. Calling
       // it on every frontend poll exhausts PostgreSQL, so start at most one QR
       // cycle per session during the provider's QR lifetime.
       this.connectStartedAt.set(sessionId, Date.now());
-      const connected = await this.request('POST', '/instance/connect', {
-        apikey: token,
-        body: { subscribe: ['MESSAGE', 'CONNECTION', 'QRCODE'] }
-      }).then(() => true).catch(() => false);
-      startedClient = connected;
+      try {
+        await this.request('POST', '/instance/connect', {
+          apikey: token,
+          body: { subscribe: ['MESSAGE', 'CONNECTION', 'QRCODE'] }
+        });
+        startedClient = true;
+      } catch (error) {
+        startupError = error;
+        // A transient startup failure must be retried soon, but never on every
+        // frontend poll. Keep a short backoff instead of the full cooldown.
+        this.connectStartedAt.set(
+          sessionId,
+          Date.now() - this.connectCooldownMs + this.connectRetryBackoffMs
+        );
+      }
     }
 
     if (startedClient && this.connectSettleMs > 0) {
@@ -243,15 +258,33 @@ class EvolutionGoProvider {
         this.cacheState(sessionId, state);
         if (state.status === 'connected' || state.qrCode) return state;
       }
-      const rawQr = await this.request('GET', '/instance/qr', { apikey: token }).catch(() => null);
-      if (rawQr) {
-        const view = await this.sessionView(sessionId, rawQr);
-        this.cacheState(sessionId, view);
-        if (view.qrCode || view.status === 'connected') return view;
+      const nextQrProbeAt = this.nextQrProbeAt.get(sessionId) || 0;
+      if (Date.now() >= nextQrProbeAt) {
+        try {
+          const rawQr = await this.request('GET', '/instance/qr', { apikey: token });
+          this.nextQrProbeAt.set(sessionId, Date.now() + this.qrProbeIntervalMs);
+          const view = await this.sessionView(sessionId, rawQr);
+          this.cacheState(sessionId, view);
+          if (view.qrCode || view.status === 'connected') return view;
+        } catch (error) {
+          startupError = error;
+          // GET /instance/qr starts a runtime client when one does not exist.
+          // Backing off here prevents a failed database startup from spawning
+          // a new SQL pool on every 700 ms status poll.
+          this.nextQrProbeAt.set(sessionId, Date.now() + this.qrFailureBackoffMs);
+        }
       }
       await new Promise(resolve => setTimeout(resolve, 700));
     }
-    return await this.sessionView(sessionId, null, 'initializing');
+    const initializing = await this.sessionView(sessionId, null, 'initializing');
+    if (startupError) {
+      initializing.raw = {
+        initializing: true,
+        retryAfterMs: this.connectRetryBackoffMs,
+        errorCode: startupError.code || 'EVOGO_STARTUP_PENDING'
+      };
+    }
+    return initializing;
   }
 
   async sendText(sessionId, to, text, { delay = 0 } = {}) {
@@ -310,6 +343,7 @@ class EvolutionGoProvider {
     await this.request('POST', '/instance/disconnect', { apikey: token, body: {} }).catch(() => {});
     this.stateCache.delete(sessionId);
     this.connectStartedAt.delete(sessionId);
+    this.nextQrProbeAt.delete(sessionId);
     return { success: true };
   }
 
@@ -324,6 +358,7 @@ class EvolutionGoProvider {
     this.ensureInflight.delete(sessionId);
     this.qrInflight.delete(sessionId);
     this.connectStartedAt.delete(sessionId);
+    this.nextQrProbeAt.delete(sessionId);
     return { success: true };
   }
 

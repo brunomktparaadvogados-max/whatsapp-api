@@ -34,7 +34,13 @@ services:
     restart: unless-stopped
 
   evolution-go:
-    image: evoapicloud/evolution-go:latest
+    build:
+      context: .
+      dockerfile: docker/evolution-go/Dockerfile
+      args:
+        EVOLUTION_GO_COMMIT: 9337afc
+        VERSION: 0.7.2-prospectflow.1
+    image: prospectflow/evolution-go:0.7.2-prospectflow.1
     container_name: evolution-go
     ports:
       - "4000:4000"
