@@ -141,4 +141,3 @@ index 366f0ed..4d64f3e 100644
 +		startingClients:    make(map[string]bool),
  	}
  }
- 
