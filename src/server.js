@@ -54,6 +54,14 @@ const SEND_DEDUPE_MS = parseInt(process.env.WHATSAPP_SEND_DEDUPE_MS || String(15
 const SEND_DELAY_MS = parseInt(process.env.EVOLUTION_SEND_DELAY_MS || '1200', 10);
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v20.0';
 const PROSPECTFLOW_DISPATCH_CLIENT = 'dispatch-v3-20260716';
+const DISPATCH_JOB_LIMIT = Math.min(parseInt(process.env.DISPATCH_JOB_LIMIT || '20', 10), 20);
+const DISPATCH_DELAY_MIN_SECONDS = Math.max(parseInt(process.env.DISPATCH_DELAY_MIN_SECONDS || '360', 10), 360);
+const DISPATCH_DELAY_MAX_SECONDS = Math.max(
+  parseInt(process.env.DISPATCH_DELAY_MAX_SECONDS || '600', 10),
+  DISPATCH_DELAY_MIN_SECONDS
+);
+const DISPATCH_WORKER_INTERVAL_MS = Math.max(parseInt(process.env.DISPATCH_WORKER_INTERVAL_MS || '5000', 10), 2000);
+let dispatchWorkerBusy = false;
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -496,17 +504,35 @@ async function sendWhatsAppText({
     }
 
     if (activeProvider === 'evolution_go') {
-      const result = mediaUrl
-        ? await evolutionGo.sendMedia(sessionId, claim.number, mediaUrl, message, { userId: sessionRow.user_id, delay: SEND_DELAY_MS })
-        : await evolutionGo.sendText(sessionId, claim.number, message, { userId: sessionRow.user_id, delay: SEND_DELAY_MS });
+      let result;
+      let mediaFellBackToText = false;
+      try {
+        result = mediaUrl
+          ? await evolutionGo.sendMedia(sessionId, claim.number, mediaUrl, message, { userId: sessionRow.user_id, delay: SEND_DELAY_MS })
+          : await evolutionGo.sendText(sessionId, claim.number, message, { userId: sessionRow.user_id, delay: SEND_DELAY_MS });
+      } catch (error) {
+        if (mediaUrl && error?.code === 'EVOGO_MEDIA_NOT_ENABLED') {
+          console.warn('[Evolution GO] Midia indisponivel; enviando somente o texto na mesma tentativa protegida.', {
+            sessionId,
+            userId: sessionRow.user_id
+          });
+          result = await evolutionGo.sendText(sessionId, claim.number, message, {
+            userId: sessionRow.user_id,
+            delay: SEND_DELAY_MS
+          });
+          mediaFellBackToText = true;
+        } else {
+          throw error;
+        }
+      }
 
       await db.saveMessage({
         id: result.messageId,
         sessionId,
         contactPhone: result.to,
-        messageType: mediaUrl ? 'media' : 'chat',
+        messageType: mediaFellBackToText ? 'chat' : (mediaUrl ? 'media' : 'chat'),
         body: message,
-        mediaUrl,
+        mediaUrl: mediaFellBackToText ? null : mediaUrl,
         mediaMimetype: null,
         fromMe: true,
         timestamp: Date.now(),
@@ -603,6 +629,182 @@ async function sendWhatsAppText({
     }
     await releaseSend(claim.key);
     throw error;
+  }
+}
+
+function randomDispatchDelay(minSeconds, maxSeconds) {
+  const min = Math.max(DISPATCH_DELAY_MIN_SECONDS, Number(minSeconds) || DISPATCH_DELAY_MIN_SECONDS);
+  const max = Math.max(min, Number(maxSeconds) || DISPATCH_DELAY_MAX_SECONDS);
+  return Math.floor(min + Math.random() * (max - min + 1));
+}
+
+function isExplicitInvalidNumberError(error) {
+  const code = String(error?.code || '').toUpperCase();
+  const message = `${error?.message || ''} ${JSON.stringify(error?.details || {})}`.toLowerCase();
+  return [
+    'INVALID_NUMBER',
+    'NUMBER_NOT_FOUND',
+    'NOT_ON_WHATSAPP',
+    'RECIPIENT_NOT_FOUND'
+  ].includes(code) || [
+    'not on whatsapp',
+    'numero invalido',
+    'número inválido',
+    'invalid number',
+    'recipient not found'
+  ].some(fragment => message.includes(fragment));
+}
+
+function isDisconnectedSessionError(error) {
+  const code = String(error?.code || '').toUpperCase();
+  const message = `${error?.message || ''} ${JSON.stringify(error?.details || {})}`.toLowerCase();
+  return [
+    'SESSION_NOT_CONNECTED',
+    'SESSION_STALE_CONNECTION',
+    'EVOGO_NOT_CONNECTED',
+    'CONNECTION_CLOSED'
+  ].includes(code) || [
+    'session not connected',
+    'connection closed',
+    "store doesn't contain a device jid",
+    'device jid'
+  ].some(fragment => message.includes(fragment));
+}
+
+function normalizeDispatchPhones(phones) {
+  const seen = new Set();
+  return (Array.isArray(phones) ? phones : [])
+    .map((entry, index) => {
+      const raw = typeof entry === 'string' ? entry : entry?.phone;
+      const phone = whatsapp.normalizePhone(raw);
+      return {
+        phone,
+        priority: Number(typeof entry === 'object' ? entry?.priority : index + 1) || index + 1,
+        phoneEntryId: typeof entry === 'object' ? String(entry?.phoneEntryId || '') || null : null
+      };
+    })
+    .filter(entry => {
+      if (!entry.phone || entry.phone.length < 10 || seen.has(entry.phone)) return false;
+      seen.add(entry.phone);
+      return true;
+    })
+    .sort((a, b) => a.priority - b.priority);
+}
+
+async function processDispatchItem(claimed) {
+  const { job } = claimed;
+  const provider = normalizeProvider(job.provider || await db.getWhatsAppProvider(job.user_id));
+  const providerClient = providerForInstance(provider);
+  let state;
+  try {
+    state = await providerClient.getState(job.session_id, { userId: job.user_id });
+  } catch (error) {
+    await db.deferDispatchForConnection(job.id, claimed.id, 60, error.message);
+    rememberError('dispatch-worker-state', error, { jobId: job.id, itemId: claimed.id, userId: job.user_id });
+    return;
+  }
+
+  if (state?.status !== 'connected' || state?.canSend === false) {
+    await db.updateSessionStatus(job.session_id, 'disconnected').catch(() => {});
+    await db.deferDispatchForConnection(job.id, claimed.id, 60, 'Sessao WhatsApp desconectada');
+    return;
+  }
+
+  const phones = normalizeDispatchPhones(claimed.phones);
+  if (!phones.length) {
+    await db.completeDispatchItem({
+      jobId: job.id,
+      itemId: claimed.id,
+      status: 'invalid',
+      outcome: 'invalid',
+      errorMessage: 'Nenhum telefone valido para este lead',
+      nextDelaySeconds: randomDispatchDelay(job.delay_min_seconds, job.delay_max_seconds)
+    });
+    return;
+  }
+
+  for (const phoneEntry of phones) {
+    try {
+      const result = await sendWhatsAppText({
+        sessionId: job.session_id,
+        to: phoneEntry.phone,
+        message: claimed.message,
+        mediaUrl: claimed.media_url,
+        providerOverride: provider,
+        dispatchMode: 'prospecting',
+        leadKey: claimed.lead_key,
+        allowResend: claimed.allow_resend === true,
+        resendConfirmationId: claimed.resend_confirmation_id
+      });
+      const outcome = result.finalStatus || result.status || 'pending_confirmation';
+      const itemStatus = result.confirmed === true && outcome === 'sent'
+        ? 'sent'
+        : (outcome === 'duplicate_ignored' ? 'duplicate_blocked' : 'pending_confirmation');
+      await db.completeDispatchItem({
+        jobId: job.id,
+        itemId: claimed.id,
+        status: itemStatus,
+        outcome,
+        selectedPhone: phoneEntry.phone,
+        selectedPhoneEntryId: phoneEntry.phoneEntryId,
+        messageId: result.messageId || null,
+        errorMessage: result.confirmed === true ? null : (result.message || 'Aguardando confirmacao final'),
+        nextDelaySeconds: randomDispatchDelay(job.delay_min_seconds, job.delay_max_seconds)
+      });
+      return;
+    } catch (error) {
+      if (isExplicitInvalidNumberError(error)) {
+        if (phoneEntry !== phones[phones.length - 1]) continue;
+        await db.completeDispatchItem({
+          jobId: job.id,
+          itemId: claimed.id,
+          status: 'invalid',
+          outcome: 'invalid',
+          selectedPhone: phoneEntry.phone,
+          selectedPhoneEntryId: phoneEntry.phoneEntryId,
+          errorMessage: error.message,
+          nextDelaySeconds: randomDispatchDelay(job.delay_min_seconds, job.delay_max_seconds)
+        });
+        return;
+      }
+
+      if (isDisconnectedSessionError(error)) {
+        await db.updateSessionStatus(job.session_id, 'disconnected').catch(() => {});
+        await db.deferDispatchForConnection(job.id, claimed.id, 60, error.message);
+        return;
+      }
+
+      await db.completeDispatchItem({
+        jobId: job.id,
+        itemId: claimed.id,
+        status: 'failed',
+        outcome: 'failed',
+        selectedPhone: phoneEntry.phone,
+        selectedPhoneEntryId: phoneEntry.phoneEntryId,
+        errorMessage: error.message,
+        nextDelaySeconds: randomDispatchDelay(job.delay_min_seconds, job.delay_max_seconds)
+      });
+      rememberError('dispatch-worker-send', error, {
+        jobId: job.id,
+        itemId: claimed.id,
+        userId: job.user_id,
+        phone: phoneEntry.phone
+      });
+      return;
+    }
+  }
+}
+
+async function runDispatchWorker() {
+  if (dispatchWorkerBusy) return;
+  dispatchWorkerBusy = true;
+  try {
+    const claimed = await db.claimDueDispatchItem();
+    if (claimed) await processDispatchItem(claimed);
+  } catch (error) {
+    rememberError('dispatch-worker', error);
+  } finally {
+    dispatchWorkerBusy = false;
   }
 }
 
@@ -1027,6 +1229,135 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
   }
 });
 
+app.post('/api/dispatch/jobs', authMiddleware, async (req, res) => {
+  try {
+    assertCurrentProspectFlowDispatchClient(req, true);
+    const rawItems = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!rawItems.length) return res.status(400).json({ success: false, error: 'A fila de disparo esta vazia.' });
+    if (rawItems.length > DISPATCH_JOB_LIMIT) {
+      return res.status(400).json({
+        success: false,
+        error: `O limite por execucao e de ${DISPATCH_JOB_LIMIT} leads.`
+      });
+    }
+
+    const sessionId = `user_${req.userId}`;
+    await ensureDbSession(sessionId, req.userId);
+    await assertSessionAccess(req, sessionId);
+    const provider = await getSessionProvider(req.userId);
+    const globalPhones = new Set();
+    const optOut = 'Se preferir nao receber novas mensagens, responda SAIR.';
+    const items = rawItems.map((item, index) => {
+      const message = String(item?.message || '').trim();
+      if (!message) {
+        const error = new Error(`Mensagem vazia no item ${index + 1}.`);
+        error.status = 400;
+        throw error;
+      }
+      const phones = normalizeDispatchPhones(item?.phones).filter(entry => {
+        if (globalPhones.has(entry.phone)) return false;
+        globalPhones.add(entry.phone);
+        return true;
+      });
+      return {
+        contactId: String(item?.contactId || '') || null,
+        leadKey: String(item?.leadKey || item?.contactId || '') || null,
+        contactName: String(item?.contactName || '') || null,
+        phones,
+        message: /responda\s+sair/i.test(message) ? message : `${message}\n\n${optOut}`,
+        mediaUrl: String(item?.mediaUrl || '') || null,
+        allowResend: item?.allowResend === true,
+        resendConfirmationId: String(item?.resendConfirmationId || '') || null
+      };
+    }).filter(item => item.phones.length > 0);
+
+    if (!items.length) {
+      return res.status(400).json({ success: false, error: 'Nenhum telefone valido e unico para disparar.' });
+    }
+
+    for (const item of items) {
+      if (item.allowResend && (!item.resendConfirmationId || item.resendConfirmationId.length < 16)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Reenvio exige confirmacao explicita e identificador valido.'
+        });
+      }
+    }
+
+    const delayMinSeconds = Math.max(
+      DISPATCH_DELAY_MIN_SECONDS,
+      Number(req.body?.delayMinSeconds) || DISPATCH_DELAY_MIN_SECONDS
+    );
+    const delayMaxSeconds = Math.max(
+      delayMinSeconds,
+      Math.min(Number(req.body?.delayMaxSeconds) || DISPATCH_DELAY_MAX_SECONDS, 900)
+    );
+    const initialDelaySeconds = randomDispatchDelay(delayMinSeconds, delayMaxSeconds);
+    const job = await db.createDispatchJob({
+      userId: req.userId,
+      sessionId,
+      provider,
+      delayMinSeconds,
+      delayMaxSeconds,
+      initialDelaySeconds,
+      items
+    });
+    res.status(201).json({ success: true, job });
+  } catch (error) {
+    rememberError('dispatch-job-create', error, { userId: req.userId });
+    return sendError(res, error, error.status || (error.code === '23505' ? 409 : 500));
+  }
+});
+
+app.get('/api/dispatch/jobs/current', authMiddleware, async (req, res) => {
+  try {
+    const job = await db.getCurrentDispatchJob(req.userId);
+    res.json({ success: true, job });
+  } catch (error) {
+    rememberError('dispatch-job-current', error, { userId: req.userId });
+    return sendError(res, error, 500);
+  }
+});
+
+app.post('/api/dispatch/jobs/current/pause', authMiddleware, async (req, res) => {
+  try {
+    const current = await db.getCurrentDispatchJob(req.userId);
+    if (!current || !['running', 'waiting_connection'].includes(current.status)) {
+      return res.status(409).json({ success: false, error: 'Nao existe disparo automatico em andamento.' });
+    }
+    const job = await db.setDispatchJobStatus(current.id, req.userId, 'paused');
+    res.json({ success: true, job });
+  } catch (error) {
+    return sendError(res, error, 500);
+  }
+});
+
+app.post('/api/dispatch/jobs/current/resume', authMiddleware, async (req, res) => {
+  try {
+    const current = await db.getCurrentDispatchJob(req.userId);
+    if (!current || current.status !== 'paused') {
+      return res.status(409).json({ success: false, error: 'Nao existe disparo pausado para retomar.' });
+    }
+    const job = await db.setDispatchJobStatus(current.id, req.userId, 'running');
+    res.json({ success: true, job });
+  } catch (error) {
+    return sendError(res, error, 500);
+  }
+});
+
+app.post('/api/dispatch/jobs/current/cancel', authMiddleware, async (req, res) => {
+  try {
+    const current = await db.getCurrentDispatchJob(req.userId);
+    if (!current || !['running', 'paused', 'waiting_connection'].includes(current.status)) {
+      return res.status(409).json({ success: false, error: 'Nao existe disparo automatico ativo.' });
+    }
+    const job = await db.setDispatchJobStatus(current.id, req.userId, 'cancelled');
+    res.json({ success: true, job });
+  } catch (error) {
+    return sendError(res, error, 500);
+  }
+});
+
 app.post('/api/sessions/:sessionId/messages/media', authMiddleware, async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -1401,6 +1732,11 @@ app.use('/api', (req, res) => {
 server.listen(PORT, HOST, () => {
   console.log(`ProspectFlow WhatsApp API multi-provider rodando em http://${HOST}:${PORT}`);
   console.log(`Evolution GO configurada: ${evolutionGo.configured() ? 'sim' : 'nao'}`);
+  setTimeout(() => {
+    runDispatchWorker().catch(error => rememberError('dispatch-worker-start', error));
+    setInterval(runDispatchWorker, DISPATCH_WORKER_INTERVAL_MS).unref?.();
+    console.log(`Worker persistente de disparos ativo a cada ${DISPATCH_WORKER_INTERVAL_MS}ms`);
+  }, 10000).unref?.();
 });
 
 process.on('SIGTERM', async () => {

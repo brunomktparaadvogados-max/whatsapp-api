@@ -308,6 +308,77 @@ class DatabaseManager {
       ON CONFLICT (user_id, contact_phone) DO NOTHING
     `);
 
+    await this.run(`
+      CREATE TABLE IF NOT EXISTS dispatch_jobs (
+        id BIGSERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL DEFAULT 'evolution_go',
+        status TEXT NOT NULL DEFAULT 'running',
+        delay_min_seconds INTEGER NOT NULL DEFAULT 360,
+        delay_max_seconds INTEGER NOT NULL DEFAULT 600,
+        total_count INTEGER NOT NULL DEFAULT 0,
+        completed_count INTEGER NOT NULL DEFAULT 0,
+        sent_count INTEGER NOT NULL DEFAULT 0,
+        failed_count INTEGER NOT NULL DEFAULT 0,
+        next_run_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        finished_at TIMESTAMP
+      )
+    `);
+
+    await this.run(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatch_jobs_one_active
+      ON dispatch_jobs(user_id)
+      WHERE status IN ('running', 'paused', 'waiting_connection')
+    `);
+
+    await this.run(`
+      CREATE INDEX IF NOT EXISTS idx_dispatch_jobs_due
+      ON dispatch_jobs(status, next_run_at)
+    `);
+
+    await this.run(`
+      CREATE TABLE IF NOT EXISTS dispatch_job_items (
+        id BIGSERIAL PRIMARY KEY,
+        job_id BIGINT NOT NULL REFERENCES dispatch_jobs(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        contact_id TEXT,
+        lead_key TEXT,
+        contact_name TEXT,
+        phones JSONB NOT NULL,
+        message TEXT NOT NULL,
+        media_url TEXT,
+        allow_resend BOOLEAN NOT NULL DEFAULT false,
+        resend_confirmation_id TEXT,
+        status TEXT NOT NULL DEFAULT 'queued',
+        outcome TEXT,
+        selected_phone TEXT,
+        selected_phone_entry_id TEXT,
+        message_id TEXT,
+        error TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        started_at TIMESTAMP,
+        finished_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(job_id, position)
+      )
+    `);
+
+    await this.run(`
+      CREATE INDEX IF NOT EXISTS idx_dispatch_job_items_next
+      ON dispatch_job_items(job_id, status, position)
+    `);
+
+    await this.run(`
+      UPDATE dispatch_job_items
+      SET status = 'queued', started_at = NULL, updated_at = CURRENT_TIMESTAMP
+      WHERE status = 'processing'
+        AND started_at < CURRENT_TIMESTAMP - INTERVAL '5 minutes'
+    `);
+
     try {
       await this.run(`
         DO $$
@@ -825,6 +896,280 @@ class DatabaseManager {
       VALUES ($1, $2, $3, $4)
     `, [userId, accessToken, phoneNumberId, businessAccountId]);
     return result;
+  }
+
+  async createDispatchJob({
+    userId,
+    sessionId,
+    provider,
+    delayMinSeconds,
+    delayMaxSeconds,
+    initialDelaySeconds,
+    items
+  }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const existing = await client.query(`
+        SELECT id, status
+        FROM dispatch_jobs
+        WHERE user_id = $1
+          AND status IN ('running', 'paused', 'waiting_connection')
+        LIMIT 1
+        FOR UPDATE
+      `, [userId]);
+      if (existing.rows[0]) {
+        const error = new Error('Ja existe um disparo automatico ativo para este usuario.');
+        error.code = 'ACTIVE_DISPATCH_JOB_EXISTS';
+        error.status = 409;
+        error.details = { jobId: existing.rows[0].id, status: existing.rows[0].status };
+        throw error;
+      }
+
+      const jobResult = await client.query(`
+        INSERT INTO dispatch_jobs (
+          user_id, session_id, provider, status,
+          delay_min_seconds, delay_max_seconds, total_count, next_run_at
+        )
+        VALUES (
+          $1, $2, $3, 'running', $4, $5, $6,
+          CURRENT_TIMESTAMP + ($7 * INTERVAL '1 second')
+        )
+        RETURNING *
+      `, [
+        userId,
+        sessionId,
+        provider,
+        delayMinSeconds,
+        delayMaxSeconds,
+        items.length,
+        initialDelaySeconds
+      ]);
+      const job = jobResult.rows[0];
+
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index];
+        await client.query(`
+          INSERT INTO dispatch_job_items (
+            job_id, position, contact_id, lead_key, contact_name, phones,
+            message, media_url, allow_resend, resend_confirmation_id
+          )
+          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)
+        `, [
+          job.id,
+          index,
+          item.contactId || null,
+          item.leadKey || null,
+          item.contactName || null,
+          JSON.stringify(item.phones),
+          item.message,
+          item.mediaUrl || null,
+          item.allowResend === true,
+          item.resendConfirmationId || null
+        ]);
+      }
+
+      await client.query('COMMIT');
+      return await this.getDispatchJob(job.id, userId);
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getDispatchJob(jobId, userId = null) {
+    const params = [jobId];
+    let userClause = '';
+    if (userId != null) {
+      params.push(userId);
+      userClause = 'AND user_id = $2';
+    }
+    const job = await this.get(`
+      SELECT *
+      FROM dispatch_jobs
+      WHERE id = $1 ${userClause}
+    `, params);
+    if (!job) return null;
+    job.items = await this.all(`
+      SELECT *
+      FROM dispatch_job_items
+      WHERE job_id = $1
+      ORDER BY position ASC
+    `, [job.id]);
+    return job;
+  }
+
+  async getCurrentDispatchJob(userId) {
+    const job = await this.get(`
+      SELECT *
+      FROM dispatch_jobs
+      WHERE user_id = $1
+      ORDER BY
+        CASE WHEN status IN ('running', 'paused', 'waiting_connection') THEN 0 ELSE 1 END,
+        created_at DESC
+      LIMIT 1
+    `, [userId]);
+    return job ? await this.getDispatchJob(job.id, userId) : null;
+  }
+
+  async setDispatchJobStatus(jobId, userId, status) {
+    const result = await this.get(`
+      UPDATE dispatch_jobs
+      SET status = $3,
+          next_run_at = CASE WHEN $3 = 'running' THEN CURRENT_TIMESTAMP ELSE next_run_at END,
+          updated_at = CURRENT_TIMESTAMP,
+          finished_at = CASE WHEN $3 IN ('completed', 'cancelled') THEN CURRENT_TIMESTAMP ELSE NULL END
+      WHERE id = $1 AND user_id = $2
+      RETURNING *
+    `, [jobId, userId, status]);
+    return result ? await this.getDispatchJob(jobId, userId) : null;
+  }
+
+  async claimDueDispatchItem() {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const jobResult = await client.query(`
+        SELECT *
+        FROM dispatch_jobs
+        WHERE status IN ('running', 'waiting_connection')
+          AND next_run_at <= CURRENT_TIMESTAMP
+        ORDER BY next_run_at ASC, id ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+      `);
+      const job = jobResult.rows[0];
+      if (!job) {
+        await client.query('COMMIT');
+        return null;
+      }
+
+      const itemResult = await client.query(`
+        SELECT *
+        FROM dispatch_job_items
+        WHERE job_id = $1 AND status = 'queued'
+        ORDER BY position ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+      `, [job.id]);
+      const item = itemResult.rows[0];
+
+      if (!item) {
+        await client.query(`
+          UPDATE dispatch_jobs
+          SET status = 'completed', finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1
+        `, [job.id]);
+        await client.query('COMMIT');
+        return null;
+      }
+
+      await client.query(`
+        UPDATE dispatch_job_items
+        SET status = 'processing', attempts = attempts + 1,
+            started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+      `, [item.id]);
+      await client.query(`
+        UPDATE dispatch_jobs
+        SET status = 'running', updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+      `, [job.id]);
+      await client.query('COMMIT');
+      return { ...item, job };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async deferDispatchForConnection(jobId, itemId, delaySeconds = 60, errorMessage = null) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`
+        UPDATE dispatch_job_items
+        SET status = 'queued', started_at = NULL, error = $2, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+      `, [itemId, errorMessage]);
+      await client.query(`
+        UPDATE dispatch_jobs
+        SET status = 'waiting_connection',
+            next_run_at = CURRENT_TIMESTAMP + ($2 * INTERVAL '1 second'),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+      `, [jobId, delaySeconds]);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async completeDispatchItem({
+    jobId,
+    itemId,
+    status,
+    outcome,
+    selectedPhone = null,
+    selectedPhoneEntryId = null,
+    messageId = null,
+    errorMessage = null,
+    nextDelaySeconds = 0
+  }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`
+        UPDATE dispatch_job_items
+        SET status = $2, outcome = $3, selected_phone = $4,
+            selected_phone_entry_id = $5, message_id = $6, error = $7,
+            finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+      `, [
+        itemId,
+        status,
+        outcome,
+        selectedPhone,
+        selectedPhoneEntryId,
+        messageId,
+        errorMessage
+      ]);
+
+      const remainingResult = await client.query(`
+        SELECT COUNT(*)::int AS count
+        FROM dispatch_job_items
+        WHERE job_id = $1 AND status = 'queued'
+      `, [jobId]);
+      const remaining = remainingResult.rows[0]?.count || 0;
+      const terminal = remaining === 0;
+      await client.query(`
+        UPDATE dispatch_jobs
+        SET completed_count = completed_count + 1,
+            sent_count = sent_count + CASE WHEN $2 = 'sent' THEN 1 ELSE 0 END,
+            failed_count = failed_count + CASE WHEN $2 IN ('failed', 'invalid') THEN 1 ELSE 0 END,
+            status = CASE WHEN $3 THEN 'completed' ELSE 'running' END,
+            next_run_at = CASE
+              WHEN $3 THEN next_run_at
+              ELSE CURRENT_TIMESTAMP + ($4 * INTERVAL '1 second')
+            END,
+            finished_at = CASE WHEN $3 THEN CURRENT_TIMESTAMP ELSE NULL END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+      `, [jobId, status, terminal, nextDelaySeconds]);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async getMetaConfig(userId) {
