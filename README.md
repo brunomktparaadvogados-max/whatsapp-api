@@ -1,8 +1,7 @@
 # ProspectFlow WhatsApp Adapter
 
-Adapter Node.js em producao para o ProspectFlow. A Evolution API e o motor
-padrao; Evolution GO, WhatsApp Web fallback e Meta oficial sao provedores
-opcionais selecionados por usuario.
+Adapter Node.js em producao para o ProspectFlow. Evolution GO e o motor
+principal; os demais providers permanecem sob selecao explicita por usuario.
 
 ## Producao
 
@@ -11,7 +10,7 @@ opcionais selecionados por usuario.
 - Branch: `codex/evolution-go-provider`
 - Evolution interna: `http://evolution-api:8080`
 - Evolution GO interna: `http://evolution-go:4000`
-- Instancias: `pfvps_user_{id}`
+- Instancias Evolution GO: `pfgo_user_{id}`
 
 Nao usar configuracoes antigas do Koyeb. A VPS executa:
 
@@ -29,6 +28,10 @@ Nao usar configuracoes antigas do Koyeb. A VPS executa:
 - `pending_confirmation` e `duplicate_ignored` nao sao entrega confirmada.
 - Resposta ambigua preserva a trava e impede reenvio imediato.
 - Um unico provedor executa cada chamada.
+- O automatico usa `dispatch_jobs` e `dispatch_job_items` e continua na VPS
+  quando o navegador fecha.
+- Cada job tem no maximo 20 itens e intervalo aleatorio de 360 a 600 segundos.
+- CRM e frontend nao podem criar um segundo executor.
 
 ## Verificacao
 
