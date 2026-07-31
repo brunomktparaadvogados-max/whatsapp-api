@@ -301,7 +301,9 @@ class EvolutionGoProvider {
     try {
       raw = await this.request('POST', '/send/text', {
         apikey: token,
-        body: { number, text: String(text || ''), delay: Number(delay) || 0 }
+        // Preserve the Brazilian ninth digit for the first WhatsApp lookup.
+        // Evolution GO will try its legacy JID normalization only as fallback.
+        body: { number, text: String(text || ''), delay: Number(delay) || 0, formatJid: false }
       });
     } catch (error) {
       const detailText = `${error?.message || ''} ${JSON.stringify(error?.details || {})}`;
