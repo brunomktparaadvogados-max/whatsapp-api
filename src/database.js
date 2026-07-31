@@ -1112,6 +1112,29 @@ class DatabaseManager {
     }
   }
 
+  async pauseDispatchForSenderRestriction(jobId, itemId, errorMessage = null) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`
+        UPDATE dispatch_job_items
+        SET status = 'queued', started_at = NULL, error = $2, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+      `, [itemId, errorMessage]);
+      await client.query(`
+        UPDATE dispatch_jobs
+        SET status = 'paused', updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+      `, [jobId]);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async completeDispatchItem({
     jobId,
     itemId,

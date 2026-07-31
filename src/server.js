@@ -307,6 +307,26 @@ function isAmbiguousEvolutionSendError(error) {
     (error?.status === 502 && String(error?.details?.url || '').includes('/message/send'));
 }
 
+function isWhatsAppServer463Error(error) {
+  const code = String(error?.code || '').toUpperCase();
+  const message = `${error?.message || ''} ${JSON.stringify(error?.details || {})}`.toLowerCase();
+  return code === 'WHATSAPP_SERVER_463' || /server returned error\s*463\b/.test(message);
+}
+
+function normalizeWhatsAppServer463Error(error) {
+  if (!isWhatsAppServer463Error(error)) return error;
+  error.code = 'WHATSAPP_SERVER_463';
+  error.status = 429;
+  error.details = {
+    ...(error?.details && typeof error.details === 'object' ? error.details : {}),
+    action: 'pause_sender_and_review_session',
+    retryable: false,
+    recipientInvalid: false
+  };
+  error.message = 'O WhatsApp recusou temporariamente novas conversas deste remetente (erro 463). O numero do lead nao foi classificado como invalido. Pause os disparos e revise a sessao antes de retomar.';
+  return error;
+}
+
 async function sendViaMetaOfficial({ sessionId, userId, to, message, mediaUrl = null }) {
   const config = await db.getMetaConfig(userId);
   if (!config) {
@@ -596,6 +616,7 @@ async function sendWhatsAppText({
       raw: result.raw
     };
   } catch (error) {
+    error = normalizeWhatsAppServer463Error(error);
     if (isAmbiguousEvolutionSendError(error)) {
       if (persistentReservation) {
         await db.updateProspectingSend(sessionRow.user_id, claim.number, 'pending_confirmation').catch(updateError => {
@@ -771,6 +792,17 @@ async function processDispatchItem(claimed) {
       if (isDisconnectedSessionError(error)) {
         await db.updateSessionStatus(job.session_id, 'disconnected').catch(() => {});
         await db.deferDispatchForConnection(job.id, claimed.id, 60, error.message);
+        return;
+      }
+
+      if (isWhatsAppServer463Error(error)) {
+        await db.pauseDispatchForSenderRestriction(job.id, claimed.id, error.message);
+        rememberError('dispatch-worker-sender-restricted', error, {
+          jobId: job.id,
+          itemId: claimed.id,
+          userId: job.user_id,
+          phone: phoneEntry.phone
+        });
         return;
       }
 
