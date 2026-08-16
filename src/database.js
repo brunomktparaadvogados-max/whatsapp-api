@@ -368,8 +368,45 @@ class DatabaseManager {
     `);
 
     await this.run(`
+      ALTER TABLE dispatch_job_items
+        ADD COLUMN IF NOT EXISTS next_phone_index INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS successful_phone_count INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS try_all_phones BOOLEAN NOT NULL DEFAULT false
+    `);
+
+    await this.run(`
+      ALTER TABLE dispatch_jobs
+        ADD COLUMN IF NOT EXISTS source_mode TEXT NOT NULL DEFAULT 'automatic'
+    `);
+
+    await this.run(`
       CREATE INDEX IF NOT EXISTS idx_dispatch_job_items_next
       ON dispatch_job_items(job_id, status, position)
+    `);
+
+    await this.run(`
+      CREATE TABLE IF NOT EXISTS dispatch_job_phone_attempts (
+        id BIGSERIAL PRIMARY KEY,
+        job_id BIGINT NOT NULL REFERENCES dispatch_jobs(id) ON DELETE CASCADE,
+        item_id BIGINT NOT NULL REFERENCES dispatch_job_items(id) ON DELETE CASCADE,
+        attempt_number INTEGER NOT NULL,
+        phone TEXT NOT NULL,
+        phone_entry_id TEXT,
+        priority INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'processing',
+        outcome TEXT,
+        message_id TEXT,
+        error TEXT,
+        started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        finished_at TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(item_id, attempt_number)
+      )
+    `);
+
+    await this.run(`
+      CREATE INDEX IF NOT EXISTS idx_dispatch_phone_attempts_item
+      ON dispatch_job_phone_attempts(item_id, attempt_number)
     `);
 
     await this.run(`
@@ -905,7 +942,8 @@ class DatabaseManager {
     delayMinSeconds,
     delayMaxSeconds,
     initialDelaySeconds,
-    items
+    items,
+    sourceMode = 'automatic'
   }) {
     const client = await this.pool.connect();
     try {
@@ -929,11 +967,11 @@ class DatabaseManager {
       const jobResult = await client.query(`
         INSERT INTO dispatch_jobs (
           user_id, session_id, provider, status,
-          delay_min_seconds, delay_max_seconds, total_count, next_run_at
+          delay_min_seconds, delay_max_seconds, total_count, next_run_at, source_mode
         )
         VALUES (
           $1, $2, $3, 'running', $4, $5, $6,
-          CURRENT_TIMESTAMP + ($7 * INTERVAL '1 second')
+          CURRENT_TIMESTAMP + ($7 * INTERVAL '1 second'), $8
         )
         RETURNING *
       `, [
@@ -943,7 +981,8 @@ class DatabaseManager {
         delayMinSeconds,
         delayMaxSeconds,
         items.length,
-        initialDelaySeconds
+        initialDelaySeconds,
+        sourceMode
       ]);
       const job = jobResult.rows[0];
 
@@ -952,9 +991,9 @@ class DatabaseManager {
         await client.query(`
           INSERT INTO dispatch_job_items (
             job_id, position, contact_id, lead_key, contact_name, phones,
-            message, media_url, allow_resend, resend_confirmation_id
+            message, media_url, allow_resend, resend_confirmation_id, try_all_phones
           )
-          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)
+          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
         `, [
           job.id,
           index,
@@ -965,7 +1004,8 @@ class DatabaseManager {
           item.message,
           item.mediaUrl || null,
           item.allowResend === true,
-          item.resendConfirmationId || null
+          item.resendConfirmationId || null,
+          item.tryAllPhones === true
         ]);
       }
 
@@ -998,7 +1038,62 @@ class DatabaseManager {
       WHERE job_id = $1
       ORDER BY position ASC
     `, [job.id]);
+    const phoneAttempts = await this.all(`
+      SELECT *
+      FROM dispatch_job_phone_attempts
+      WHERE job_id = $1
+      ORDER BY item_id ASC, attempt_number ASC
+    `, [job.id]);
+    const attemptsByItem = new Map();
+    for (const attempt of phoneAttempts) {
+      const key = String(attempt.item_id);
+      if (!attemptsByItem.has(key)) attemptsByItem.set(key, []);
+      attemptsByItem.get(key).push(attempt);
+    }
+    job.items = job.items.map(item => ({
+      ...item,
+      phone_attempts: attemptsByItem.get(String(item.id)) || []
+    }));
     return job;
+  }
+
+  async startDispatchPhoneAttempt({ jobId, itemId, phone, phoneEntryId = null, priority }) {
+    return await this.get(`
+      INSERT INTO dispatch_job_phone_attempts (
+        job_id, item_id, attempt_number, phone, phone_entry_id, priority
+      )
+      VALUES (
+        $1, $2,
+        COALESCE((SELECT MAX(attempt_number) + 1 FROM dispatch_job_phone_attempts WHERE item_id = $2), 1),
+        $3, $4, $5
+      )
+      RETURNING *
+    `, [jobId, itemId, phone, phoneEntryId, priority]);
+  }
+
+  async getDispatchPhoneAttempts(itemId) {
+    return await this.all(`
+      SELECT *
+      FROM dispatch_job_phone_attempts
+      WHERE item_id = $1
+      ORDER BY attempt_number ASC
+    `, [itemId]);
+  }
+
+  async completeDispatchPhoneAttempt({
+    attemptId,
+    status,
+    outcome = null,
+    messageId = null,
+    errorMessage = null
+  }) {
+    return await this.get(`
+      UPDATE dispatch_job_phone_attempts
+      SET status = $2, outcome = $3, message_id = $4, error = $5,
+          finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1
+      RETURNING *
+    `, [attemptId, status, outcome, messageId, errorMessage]);
   }
 
   async getCurrentDispatchJob(userId) {
@@ -1112,6 +1207,57 @@ class DatabaseManager {
     }
   }
 
+  async advanceDispatchItemPhone({
+    jobId,
+    itemId,
+    selectedPhone,
+    selectedPhoneEntryId = null,
+    messageId = null,
+    outcome,
+    errorMessage = null,
+    sent = false,
+    nextPhoneIndex,
+    nextDelaySeconds
+  }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`
+        UPDATE dispatch_job_items
+        SET status = 'queued', next_phone_index = $9,
+            successful_phone_count = successful_phone_count + CASE WHEN $6 THEN 1 ELSE 0 END,
+            outcome = $5, selected_phone = $3, selected_phone_entry_id = $4,
+            message_id = $7, error = $8, started_at = NULL,
+            finished_at = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1 AND job_id = $2
+      `, [
+        itemId,
+        jobId,
+        selectedPhone,
+        selectedPhoneEntryId,
+        outcome,
+        sent,
+        messageId,
+        errorMessage,
+        nextPhoneIndex
+      ]);
+      await client.query(`
+        UPDATE dispatch_jobs
+        SET status = 'running',
+            next_run_at = CURRENT_TIMESTAMP + ($2 * INTERVAL '1 second'),
+            sent_count = sent_count + CASE WHEN $3 THEN 1 ELSE 0 END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+      `, [jobId, nextDelaySeconds, sent]);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async pauseDispatchForSenderRestriction(jobId, itemId, errorMessage = null) {
     const client = await this.pool.connect();
     try {
@@ -1144,8 +1290,10 @@ class DatabaseManager {
     selectedPhoneEntryId = null,
     messageId = null,
     errorMessage = null,
-    nextDelaySeconds = 0
+    nextDelaySeconds = 0,
+    countAsSent = null
   }) {
+    const shouldCountAsSent = countAsSent == null ? status === 'sent' : countAsSent === true;
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -1175,7 +1323,7 @@ class DatabaseManager {
       await client.query(`
         UPDATE dispatch_jobs
         SET completed_count = completed_count + 1,
-            sent_count = sent_count + CASE WHEN $2 = 'sent' THEN 1 ELSE 0 END,
+            sent_count = sent_count + CASE WHEN $5 THEN 1 ELSE 0 END,
             failed_count = failed_count + CASE WHEN $2 IN ('failed', 'invalid') THEN 1 ELSE 0 END,
             status = CASE WHEN $3 THEN 'completed' ELSE 'running' END,
             next_run_at = CASE
@@ -1185,7 +1333,7 @@ class DatabaseManager {
             finished_at = CASE WHEN $3 THEN CURRENT_TIMESTAMP ELSE NULL END,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = $1
-      `, [jobId, status, terminal, nextDelaySeconds]);
+      `, [jobId, status, terminal, nextDelaySeconds, shouldCountAsSent]);
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK').catch(() => {});

@@ -731,20 +731,61 @@ async function processDispatchItem(claimed) {
     return;
   }
 
-  const phones = normalizeDispatchPhones(claimed.phones);
-  if (!phones.length) {
+  const priorPhoneAttempts = await db.getDispatchPhoneAttempts(claimed.id);
+  const completedPhones = new Set(
+    priorPhoneAttempts
+      .filter(attempt => ['invalid', 'sent', 'duplicate_blocked'].includes(attempt.status))
+      .map(attempt => whatsapp.normalizePhone(attempt.phone))
+      .filter(Boolean)
+  );
+  const allPhones = normalizeDispatchPhones(claimed.phones);
+  const currentPhoneIndex = Math.max(0, Number(claimed.next_phone_index) || 0);
+  const selectedPhoneIndex = allPhones.findIndex(
+    (entry, index) => index >= currentPhoneIndex && !completedPhones.has(entry.phone)
+  );
+  const successfulPhoneCount = Math.max(0, Number(claimed.successful_phone_count) || 0);
+  if (selectedPhoneIndex < 0) {
     await db.completeDispatchItem({
       jobId: job.id,
       itemId: claimed.id,
-      status: 'invalid',
-      outcome: 'invalid',
-      errorMessage: 'Nenhum telefone valido para este lead',
+      status: successfulPhoneCount > 0 ? 'sent' : 'invalid',
+      outcome: successfulPhoneCount > 0 ? 'all_phone_attempts_completed' : 'invalid',
+      errorMessage: successfulPhoneCount > 0 ? null : 'Nenhum telefone valido para este lead',
+      countAsSent: false,
       nextDelaySeconds: randomDispatchDelay(job.delay_min_seconds, job.delay_max_seconds)
     });
     return;
   }
 
-  for (const phoneEntry of phones) {
+  const selectedPhoneEntry = allPhones[selectedPhoneIndex];
+  const hasMorePhones = allPhones.some(
+    (entry, index) => index > selectedPhoneIndex && !completedPhones.has(entry.phone)
+  );
+  const shouldContinueAfter = claimed.try_all_phones === true && hasMorePhones;
+  const nextDelaySeconds = randomDispatchDelay(job.delay_min_seconds, job.delay_max_seconds);
+  const advanceToNextPhone = async ({ outcome, messageId = null, errorMessage = null, sent = false }) => {
+    await db.advanceDispatchItemPhone({
+      jobId: job.id,
+      itemId: claimed.id,
+      selectedPhone: selectedPhoneEntry.phone,
+      selectedPhoneEntryId: selectedPhoneEntry.phoneEntryId,
+      messageId,
+      outcome,
+      errorMessage,
+      sent,
+      nextPhoneIndex: selectedPhoneIndex + 1,
+      nextDelaySeconds
+    });
+  };
+
+  for (const phoneEntry of [selectedPhoneEntry]) {
+    const phoneAttempt = await db.startDispatchPhoneAttempt({
+      jobId: job.id,
+      itemId: claimed.id,
+      phone: phoneEntry.phone,
+      phoneEntryId: phoneEntry.phoneEntryId,
+      priority: phoneEntry.priority
+    });
     try {
       const result = await sendWhatsAppText({
         sessionId: job.session_id,
@@ -761,41 +802,123 @@ async function processDispatchItem(claimed) {
       const itemStatus = result.confirmed === true && outcome === 'sent'
         ? 'sent'
         : (outcome === 'duplicate_ignored' ? 'duplicate_blocked' : 'pending_confirmation');
-      await db.completeDispatchItem({
-        jobId: job.id,
-        itemId: claimed.id,
+      await db.completeDispatchPhoneAttempt({
+        attemptId: phoneAttempt.id,
         status: itemStatus,
         outcome,
-        selectedPhone: phoneEntry.phone,
-        selectedPhoneEntryId: phoneEntry.phoneEntryId,
         messageId: result.messageId || null,
-        errorMessage: result.confirmed === true ? null : (result.message || 'Aguardando confirmacao final'),
-        nextDelaySeconds: randomDispatchDelay(job.delay_min_seconds, job.delay_max_seconds)
-      });
-      return;
-    } catch (error) {
-      if (isExplicitInvalidNumberError(error)) {
-        if (phoneEntry !== phones[phones.length - 1]) continue;
+        errorMessage: result.confirmed === true ? null : (result.message || 'Aguardando confirmacao final')
+      }).catch(attemptError => rememberError('dispatch-phone-attempt-complete', attemptError, {
+        jobId: job.id,
+        itemId: claimed.id,
+        attemptId: phoneAttempt.id,
+        status: itemStatus
+      }));
+      if (shouldContinueAfter && ['sent', 'duplicate_blocked'].includes(itemStatus)) {
+        try {
+          await advanceToNextPhone({
+            outcome,
+            messageId: result.messageId || null,
+            errorMessage: result.confirmed === true ? null : result.message,
+            sent: itemStatus === 'sent'
+          });
+        } catch (transitionError) {
+          rememberError('dispatch-phone-advance', transitionError, {
+            jobId: job.id,
+            itemId: claimed.id,
+            phone: phoneEntry.phone,
+            outcome
+          });
+          await db.deferDispatchForConnection(job.id, claimed.id, 60, transitionError.message).catch(() => {});
+        }
+        return;
+      }
+      const finalItemStatus = itemStatus === 'duplicate_blocked' && successfulPhoneCount > 0
+        ? 'sent'
+        : itemStatus;
+      try {
         await db.completeDispatchItem({
           jobId: job.id,
           itemId: claimed.id,
+          status: finalItemStatus,
+          outcome,
+          selectedPhone: phoneEntry.phone,
+          selectedPhoneEntryId: phoneEntry.phoneEntryId,
+          messageId: result.messageId || null,
+          errorMessage: result.confirmed === true ? null : (result.message || 'Aguardando confirmacao final'),
+          countAsSent: finalItemStatus === 'sent' && itemStatus === 'sent',
+          nextDelaySeconds
+        });
+      } catch (transitionError) {
+        rememberError('dispatch-item-complete', transitionError, {
+          jobId: job.id,
+          itemId: claimed.id,
+          phone: phoneEntry.phone,
+          outcome
+        });
+        await db.deferDispatchForConnection(job.id, claimed.id, 60, transitionError.message).catch(() => {});
+      }
+      return;
+    } catch (error) {
+      if (isExplicitInvalidNumberError(error)) {
+        await db.completeDispatchPhoneAttempt({
+          attemptId: phoneAttempt.id,
           status: 'invalid',
           outcome: 'invalid',
+          errorMessage: error.message
+        }).catch(attemptError => rememberError('dispatch-phone-attempt-complete', attemptError, {
+          jobId: job.id,
+          itemId: claimed.id,
+          attemptId: phoneAttempt.id,
+          status: 'invalid'
+        }));
+        if (shouldContinueAfter) {
+          await advanceToNextPhone({ outcome: 'invalid', errorMessage: error.message });
+          return;
+        }
+        await db.completeDispatchItem({
+          jobId: job.id,
+          itemId: claimed.id,
+          status: successfulPhoneCount > 0 ? 'sent' : 'invalid',
+          outcome: successfulPhoneCount > 0 ? 'all_phone_attempts_completed' : 'invalid',
           selectedPhone: phoneEntry.phone,
           selectedPhoneEntryId: phoneEntry.phoneEntryId,
           errorMessage: error.message,
-          nextDelaySeconds: randomDispatchDelay(job.delay_min_seconds, job.delay_max_seconds)
+          countAsSent: false,
+          nextDelaySeconds
         });
         return;
       }
 
       if (isDisconnectedSessionError(error)) {
+        await db.completeDispatchPhoneAttempt({
+          attemptId: phoneAttempt.id,
+          status: 'connection_deferred',
+          outcome: 'connection_deferred',
+          errorMessage: error.message
+        }).catch(attemptError => rememberError('dispatch-phone-attempt-complete', attemptError, {
+          jobId: job.id,
+          itemId: claimed.id,
+          attemptId: phoneAttempt.id,
+          status: 'connection_deferred'
+        }));
         await db.updateSessionStatus(job.session_id, 'disconnected').catch(() => {});
         await db.deferDispatchForConnection(job.id, claimed.id, 60, error.message);
         return;
       }
 
       if (isWhatsAppServer463Error(error)) {
+        await db.completeDispatchPhoneAttempt({
+          attemptId: phoneAttempt.id,
+          status: 'sender_restricted',
+          outcome: 'sender_restricted',
+          errorMessage: error.message
+        }).catch(attemptError => rememberError('dispatch-phone-attempt-complete', attemptError, {
+          jobId: job.id,
+          itemId: claimed.id,
+          attemptId: phoneAttempt.id,
+          status: 'sender_restricted'
+        }));
         await db.pauseDispatchForSenderRestriction(job.id, claimed.id, error.message);
         rememberError('dispatch-worker-sender-restricted', error, {
           jobId: job.id,
@@ -806,15 +929,28 @@ async function processDispatchItem(claimed) {
         return;
       }
 
+      await db.completeDispatchPhoneAttempt({
+        attemptId: phoneAttempt.id,
+        status: 'failed',
+        outcome: 'failed',
+        errorMessage: error.message
+      }).catch(attemptError => rememberError('dispatch-phone-attempt-complete', attemptError, {
+        jobId: job.id,
+        itemId: claimed.id,
+        attemptId: phoneAttempt.id,
+        status: 'failed'
+      }));
+
       await db.completeDispatchItem({
         jobId: job.id,
         itemId: claimed.id,
-        status: 'failed',
+        status: successfulPhoneCount > 0 ? 'sent' : 'failed',
         outcome: 'failed',
         selectedPhone: phoneEntry.phone,
         selectedPhoneEntryId: phoneEntry.phoneEntryId,
         errorMessage: error.message,
-        nextDelaySeconds: randomDispatchDelay(job.delay_min_seconds, job.delay_max_seconds)
+        countAsSent: false,
+        nextDelaySeconds
       });
       rememberError('dispatch-worker-send', error, {
         jobId: job.id,
@@ -1299,7 +1435,8 @@ app.post('/api/dispatch/jobs', authMiddleware, async (req, res) => {
         message: /responda\s+sair/i.test(message) ? message : `${message}\n\n${optOut}`,
         mediaUrl: String(item?.mediaUrl || '') || null,
         allowResend: item?.allowResend === true,
-        resendConfirmationId: String(item?.resendConfirmationId || '') || null
+        resendConfirmationId: String(item?.resendConfirmationId || '') || null,
+        tryAllPhones: item?.tryAllPhones === true
       };
     }).filter(item => item.phones.length > 0);
 
@@ -1324,7 +1461,10 @@ app.post('/api/dispatch/jobs', authMiddleware, async (req, res) => {
       delayMinSeconds,
       Math.min(Number(req.body?.delayMaxSeconds) || DISPATCH_DELAY_MAX_SECONDS, 900)
     );
-    const initialDelaySeconds = randomDispatchDelay(delayMinSeconds, delayMaxSeconds);
+    const initialDelaySeconds = req.body?.startImmediately === true
+      ? 0
+      : randomDispatchDelay(delayMinSeconds, delayMaxSeconds);
+    const sourceMode = req.body?.sourceMode === 'manual' ? 'manual' : 'automatic';
     const job = await db.createDispatchJob({
       userId: req.userId,
       sessionId,
@@ -1332,7 +1472,8 @@ app.post('/api/dispatch/jobs', authMiddleware, async (req, res) => {
       delayMinSeconds,
       delayMaxSeconds,
       initialDelaySeconds,
-      items
+      items,
+      sourceMode
     });
     res.status(201).json({ success: true, job });
   } catch (error) {

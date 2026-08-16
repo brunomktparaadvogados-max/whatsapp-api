@@ -1,0 +1,45 @@
+name: ProspectFlow WhatsApp Adapter CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, "codex/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: prospectflow-adapter-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax and provider checks
+        run: npm run check
+
+      - name: Check database module
+        run: node --check src/database.js
+
+      - name: Block legacy or duplicate send paths
+        shell: bash
+        run: |
+          if rg -n 'process-auto-dispatch|useAutoDispatch|auto_dispatch_state|BotConversa|botconversa|koyeb\.app|sendMessageViaBotConversa' src; then
+            echo 'Forbidden legacy dispatch path found in the active adapter.' >&2
+            exit 1
+          fi
