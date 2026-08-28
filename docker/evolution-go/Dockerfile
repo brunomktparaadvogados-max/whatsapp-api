@@ -5,8 +5,8 @@ WORKDIR /src
 RUN git clone https://github.com/EvolutionAPI/evolution-go.git .
 RUN git checkout "${EVOLUTION_GO_COMMIT}"
 COPY docker/evolution-go/shared-whatsmeow-store.patch /tmp/shared-whatsmeow-store.patch
-RUN git apply --check /tmp/shared-whatsmeow-store.patch \
-    && git apply /tmp/shared-whatsmeow-store.patch
+RUN git apply --recount --check /tmp/shared-whatsmeow-store.patch \
+    && git apply --recount /tmp/shared-whatsmeow-store.patch
 
 FROM golang:1.25.0-alpine AS build
 
