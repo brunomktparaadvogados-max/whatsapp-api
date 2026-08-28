@@ -12,6 +12,10 @@ const WWebJSProvider = require('./WWebJSProvider');
 const EvolutionGoProvider = require('./EvolutionGoProvider');
 const MetaWhatsAppAPI = require('./MetaAPI');
 const { generateToken, authMiddleware } = require('./auth');
+const {
+  isExplicitInvalidNumberError,
+  normalizeExplicitInvalidNumberError
+} = require('./dispatchErrorClassifier');
 
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -99,6 +103,7 @@ function sendError(res, error, fallbackStatus = 500) {
     success: false,
     error: error?.message || 'Erro interno',
     code: error?.code || 'INTERNAL_ERROR',
+    invalidNumber: error?.invalidNumber === true,
     details: error?.details || undefined
   });
 }
@@ -617,6 +622,7 @@ async function sendWhatsAppText({
     };
   } catch (error) {
     error = normalizeWhatsAppServer463Error(error);
+    error = normalizeExplicitInvalidNumberError(error);
     if (isAmbiguousEvolutionSendError(error)) {
       if (persistentReservation) {
         await db.updateProspectingSend(sessionRow.user_id, claim.number, 'pending_confirmation').catch(updateError => {
@@ -657,23 +663,6 @@ function randomDispatchDelay(minSeconds, maxSeconds) {
   const min = Math.max(DISPATCH_DELAY_MIN_SECONDS, Number(minSeconds) || DISPATCH_DELAY_MIN_SECONDS);
   const max = Math.max(min, Number(maxSeconds) || DISPATCH_DELAY_MAX_SECONDS);
   return Math.floor(min + Math.random() * (max - min + 1));
-}
-
-function isExplicitInvalidNumberError(error) {
-  const code = String(error?.code || '').toUpperCase();
-  const message = `${error?.message || ''} ${JSON.stringify(error?.details || {})}`.toLowerCase();
-  return [
-    'INVALID_NUMBER',
-    'NUMBER_NOT_FOUND',
-    'NOT_ON_WHATSAPP',
-    'RECIPIENT_NOT_FOUND'
-  ].includes(code) || [
-    'not on whatsapp',
-    'numero invalido',
-    'número inválido',
-    'invalid number',
-    'recipient not found'
-  ].some(fragment => message.includes(fragment));
 }
 
 function isDisconnectedSessionError(error) {
