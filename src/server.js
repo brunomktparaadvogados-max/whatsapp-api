@@ -211,6 +211,8 @@ function publicSessionView(row, providerView = null, provider = 'evolution_go') 
     canSend: connected,
     qrCode: connected ? null : (providerView?.qrCode || null),
     qr_code: connected ? null : (providerView?.qrCode || null),
+    // QR_RESET_FIX: motivo tecnico quando o QR nao sai (nunca contem segredos)
+    diagnostic: connected ? null : (providerView?.diagnostic || null),
     engine,
     provider: engine,
     instanceName: providerView?.instanceName || (engine === 'wwebjs'
@@ -1196,6 +1198,9 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
       waitMs: parseInt(req.query.waitMs || '8000', 10),
       user
     });
+    if (view.diagnostic) {
+      rememberError('my-qr-provider', { code: view.diagnostic.code, message: view.diagnostic.message }, { sessionId, step: view.diagnostic.step, status: view.diagnostic.status });
+    }
     res.status(view.qrCode || view.status === 'connected' ? 200 : 202).json({ success: true, ...view, session: view });
   } catch (error) {
     rememberError('my-qr', error);
