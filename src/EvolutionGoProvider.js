@@ -19,6 +19,22 @@ class EvolutionGoProvider {
     this.connectRetryBackoffMs = Number(process.env.EVOGO_CONNECT_RETRY_BACKOFF_MS || 10000);
     this.qrProbeIntervalMs = Number(process.env.EVOGO_QR_PROBE_INTERVAL_MS || 5000);
     this.qrFailureBackoffMs = Number(process.env.EVOGO_QR_FAILURE_BACKOFF_MS || 15000);
+    // QR_RESET_FIX: ultimo erro por sessao (exposto ao frontend) e trava de reset
+    this.lastErrors = new Map();
+    this.lastForceResetAt = new Map();
+    this.forceResetCooldownMs = Number(process.env.EVOGO_FORCE_RESET_COOLDOWN_MS || 60000);
+  }
+
+  rememberSessionError(sessionId, step, error) {
+    const entry = {
+      at: new Date().toISOString(),
+      step,
+      status: error?.status || null,
+      code: error?.code || 'EVOGO_ERROR',
+      message: String(error?.message || error || 'erro desconhecido').slice(0, 300)
+    };
+    this.lastErrors.set(sessionId, entry);
+    return entry;
   }
 
   configured() {
@@ -203,7 +219,20 @@ class EvolutionGoProvider {
     }
   }
 
-  async getQr(sessionId, { waitMs = 8000 } = {}) {
+  async getQr(sessionId, { waitMs = 8000, forceQr = false, resetInstance = false } = {}) {
+    if (forceQr || resetInstance) {
+      // QR_RESET_FIX: "Novo QR" recria somente a instancia desta sessao quando ela
+      // NAO esta autenticada. Instancia conectada nunca e apagada.
+      const current = await this.getState(sessionId).catch(() => null);
+      if (current?.status === 'connected') return current;
+      const lastReset = this.lastForceResetAt.get(sessionId) || 0;
+      if (!this.qrInflight.has(sessionId) && Date.now() - lastReset >= this.forceResetCooldownMs) {
+        this.lastForceResetAt.set(sessionId, Date.now());
+        await this.deleteInstance(sessionId);
+        this.lastErrors.delete(sessionId);
+      }
+    }
+
     const cachedQr = this.getFreshCachedQr(sessionId);
     if (cachedQr) return cachedQr;
 
@@ -234,6 +263,7 @@ class EvolutionGoProvider {
         startedClient = true;
       } catch (error) {
         startupError = error;
+        this.rememberSessionError(sessionId, 'connect', error);
         // A transient startup failure must be retried soon, but never on every
         // frontend poll. Keep a short backoff instead of the full cooldown.
         this.connectStartedAt.set(
@@ -252,11 +282,17 @@ class EvolutionGoProvider {
     }
     const started = Date.now();
     while (Date.now() - started <= waitMs) {
-      const rawState = await this.request('GET', '/instance/status', { apikey: token }).catch(() => null);
+      const rawState = await this.request('GET', '/instance/status', { apikey: token }).catch(error => {
+        this.rememberSessionError(sessionId, 'status', error);
+        return null;
+      });
       if (rawState) {
         const state = await this.sessionView(sessionId, rawState);
         this.cacheState(sessionId, state);
-        if (state.status === 'connected' || state.qrCode) return state;
+        if (state.status === 'connected' || state.qrCode) {
+          this.lastErrors.delete(sessionId);
+          return state;
+        }
       }
       const nextQrProbeAt = this.nextQrProbeAt.get(sessionId) || 0;
       if (Date.now() >= nextQrProbeAt) {
@@ -265,9 +301,13 @@ class EvolutionGoProvider {
           this.nextQrProbeAt.set(sessionId, Date.now() + this.qrProbeIntervalMs);
           const view = await this.sessionView(sessionId, rawQr);
           this.cacheState(sessionId, view);
-          if (view.qrCode || view.status === 'connected') return view;
+          if (view.qrCode || view.status === 'connected') {
+            this.lastErrors.delete(sessionId);
+            return view;
+          }
         } catch (error) {
           startupError = error;
+          this.rememberSessionError(sessionId, 'qr', error);
           // GET /instance/qr starts a runtime client when one does not exist.
           // Backing off here prevents a failed database startup from spawning
           // a new SQL pool on every 700 ms status poll.
@@ -277,6 +317,7 @@ class EvolutionGoProvider {
       await new Promise(resolve => setTimeout(resolve, 700));
     }
     const initializing = await this.sessionView(sessionId, null, 'initializing');
+    initializing.diagnostic = this.lastErrors.get(sessionId) || null;
     if (startupError) {
       initializing.raw = {
         initializing: true,
@@ -361,6 +402,7 @@ class EvolutionGoProvider {
     this.qrInflight.delete(sessionId);
     this.connectStartedAt.delete(sessionId);
     this.nextQrProbeAt.delete(sessionId);
+    this.lastErrors.delete(sessionId);
     return { success: true };
   }
 
