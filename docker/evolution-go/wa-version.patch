@@ -1,0 +1,52 @@
+diff --git a/cmd/evolution-go/main.go b/cmd/evolution-go/main.go
+index 5234583..8d5c7f9 100644
+--- a/cmd/evolution-go/main.go
++++ b/cmd/evolution-go/main.go
+@@ -18,6 +18,7 @@ import (
+ 	"github.com/gomessguii/logger"
+ 	"github.com/joho/godotenv"
+ 	"go.mau.fi/whatsmeow"
++	wastore "go.mau.fi/whatsmeow/store"
+ 	"gorm.io/gorm"
+ 	_ "modernc.org/sqlite"
+ 
+@@ -341,6 +342,7 @@ func main() {
+ 	cfg := config.Load()
+ 
+ 	logger.LogInfo("Starting Evolution GO version %s", version)
++	applyWAVersion()
+ 
+ 	startTime := time.Now()
+ 
+@@ -445,3 +447,31 @@ func main() {
+ 
+ 	logger.LogInfo("[SHUTDOWN] Server exited")
+ }
++
++// PROSPECTFLOW_WA_VERSION_FIX: o WhatsApp recusa clientes com versao antiga
++// ("Client outdated (405)"), o que impede QR novo e reconexao. A versao embutida
++// na whatsmeow envelhece; aqui ela e atualizada na partida, sem trocar a biblioteca.
++// Ordem: WA_VERSION (env) -> versao atual publicada em web.whatsapp.com -> fallback.
++func applyWAVersion() {
++	if v := strings.TrimSpace(os.Getenv("WA_VERSION")); v != "" {
++		if parsed, err := wastore.ParseVersion(v); err == nil {
++			wastore.SetWAVersion(parsed)
++			logger.LogInfo("WhatsApp client version (WA_VERSION): %s", parsed.String())
++			return
++		} else {
++			logger.LogWarn("WA_VERSION invalida (%s): %v", v, err)
++		}
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
++	defer cancel()
++	if latest, err := whatsmeow.GetLatestVersion(ctx, nil); err == nil && latest != nil {
++		wastore.SetWAVersion(*latest)
++		logger.LogInfo("WhatsApp client version (web.whatsapp.com): %s", latest.String())
++		return
++	} else {
++		logger.LogWarn("Nao foi possivel obter a versao atual do WhatsApp Web: %v", err)
++	}
++	fallback := wastore.WAVersionContainer{2, 3000, 1052556849}
++	wastore.SetWAVersion(fallback)
++	logger.LogInfo("WhatsApp client version (fallback): %s", fallback.String())
++}

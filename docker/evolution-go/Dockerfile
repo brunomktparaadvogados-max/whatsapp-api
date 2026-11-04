@@ -7,6 +7,11 @@ RUN git checkout "${EVOLUTION_GO_COMMIT}"
 COPY docker/evolution-go/shared-whatsmeow-store.patch /tmp/shared-whatsmeow-store.patch
 RUN git apply --recount --check /tmp/shared-whatsmeow-store.patch \
     && git apply --recount /tmp/shared-whatsmeow-store.patch
+# PROSPECTFLOW_WA_VERSION_FIX: atualiza a versao do cliente WhatsApp na partida
+# (evita "Client outdated (405)", que impede QR novo e reconexao).
+COPY docker/evolution-go/wa-version.patch /tmp/wa-version.patch
+RUN git apply --recount --check /tmp/wa-version.patch \
+    && git apply --recount /tmp/wa-version.patch
 
 FROM golang:1.25.0-alpine AS build
 

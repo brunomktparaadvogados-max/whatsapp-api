@@ -15,24 +15,28 @@ PREV=$(git rev-parse --short HEAD@{1} 2>/dev/null || echo desconhecido)
 echo "=== commit atual: $(git rev-parse --short HEAD) (anterior: $PREV) ==="
 
 echo "=== validando sintaxe ==="
-if ! node --check src/server.js || ! node --check src/EvolutionGoProvider.js; then
+# A VPS nao tem node no host: valida dentro da imagem do adapter em uso.
+chk() { docker run --rm --entrypoint node -v "$PWD/src":/chk:ro prospectflow-whatsapp-adapter --check "/chk/$1"; }
+if ! chk server.js || ! chk EvolutionGoProvider.js; then
   echo "ERRO de sintaxe - nada foi reconstruido. Voltando ao commit anterior."
   git checkout -q "$PREV" 2>/dev/null
   exit 1
 fi
 
+# O adapter em producao e o servico "adapter" do compose em /opt/prospectflow-whatsapp
+# (build context ./adapter). Nao usar o compose desta pasta para o adapter.
 echo "=== reconstruindo SOMENTE o adapter ==="
-docker compose build prospectflow-whatsapp-api && docker compose up -d prospectflow-whatsapp-api
+(cd /opt/prospectflow-whatsapp && docker compose build adapter && docker compose up -d --no-deps adapter)
 
 echo "=== aguardando health (ate 60s) ==="
 OK=0
 for i in $(seq 1 12); do
   sleep 5
-  if curl -sf http://127.0.0.1:3000/api/health > /tmp/qr-health.json; then OK=1; break; fi
+  if docker exec prospectflow-whatsapp-adapter wget -qO- http://127.0.0.1:3000/api/health > /tmp/qr-health.json 2>/dev/null; then OK=1; break; fi
 done
 if [ "$OK" != 1 ]; then
   echo "ERRO: adapter nao respondeu. Voltando ao commit anterior $PREV e reconstruindo."
-  git checkout -q "$PREV" && docker compose build prospectflow-whatsapp-api && docker compose up -d prospectflow-whatsapp-api
+  git checkout -q "$PREV" && (cd /opt/prospectflow-whatsapp && docker compose build adapter && docker compose up -d --no-deps adapter)
   exit 1
 fi
 echo "health OK"
@@ -40,7 +44,7 @@ cat /tmp/qr-health.json; echo
 
 echo
 echo "=== containers ==="
-docker compose ps
+docker ps --format '{{.Names}} {{.Status}}'
 
 echo
 echo "=== memoria / disco ==="
@@ -57,7 +61,7 @@ docker logs evolution-go --since 30m 2>&1 | grep -iE "error|fail|too many|panic|
 
 echo
 echo "=== erros recentes do adapter ==="
-docker compose logs --since 30m prospectflow-whatsapp-api 2>&1 | grep -iE "error|my-qr|evogo" | tail -30
+docker logs --since 30m prospectflow-whatsapp-adapter 2>&1 | grep -iE "error|my-qr|evogo" | tail -30
 
 echo
 echo "Relatorio salvo em $OUT"
