@@ -1196,7 +1196,12 @@ app.get('/api/my-qr', authMiddleware, async (req, res) => {
       waitMs: parseInt(req.query.waitMs || '8000', 10),
       user
     });
-    res.status(view.qrCode || view.status === 'connected' ? 200 : 202).json({ success: true, ...view, session: view });
+    res.status(view.qrCode || view.status === 'connected' ? 200 : 202).json({
+      success: true,
+      ...view,
+      diagnostic: view.raw?.diagnostic || null,
+      session: view
+    });
   } catch (error) {
     rememberError('my-qr', error);
     return sendError(res, error, 500);

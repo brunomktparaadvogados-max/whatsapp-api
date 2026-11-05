@@ -11,6 +11,7 @@ class EvolutionGoProvider {
     this.ensuredInstances = new Map();
     this.ensureInflight = new Map();
     this.qrInflight = new Map();
+    this.forceQrAt = new Map();
     this.connectStartedAt = new Map();
     this.nextQrProbeAt = new Map();
     this.qrCacheTtlMs = Number(process.env.EVOGO_QR_CACHE_TTL_MS || 30000);
@@ -204,26 +205,61 @@ class EvolutionGoProvider {
   }
 
   async getQr(sessionId, { waitMs = 8000, forceQr = false } = {}) {
-    if (forceQr) {
-      // An explicit user retry clears only the adapter's in-memory cooldowns.
-      // Keep the Evolution instance and its persisted WhatsApp auth intact.
-      const current = await this.getState(sessionId);
-      if (current.status === 'connected') return current;
-      this.stateCache.delete(sessionId);
-      this.connectStartedAt.delete(sessionId);
-      this.nextQrProbeAt.delete(sessionId);
-    }
-
-    const cachedQr = this.getFreshCachedQr(sessionId);
-    if (cachedQr) return cachedQr;
-
     if (this.qrInflight.has(sessionId)) return await this.qrInflight.get(sessionId);
 
-    const promise = this.fetchQr(sessionId, waitMs).finally(() => {
+    if (!forceQr) {
+      const cachedQr = this.getFreshCachedQr(sessionId);
+      if (cachedQr) return cachedQr;
+    }
+
+    const promise = (async () => {
+      if (forceQr) {
+        const current = await this.resetUnpairedInstanceForQr(sessionId);
+        if (current) return current;
+      }
+      return await this.fetchQr(sessionId, waitMs);
+    })().finally(() => {
       this.qrInflight.delete(sessionId);
     });
     this.qrInflight.set(sessionId, promise);
     return await promise;
+  }
+
+  async resetUnpairedInstanceForQr(sessionId) {
+    const now = Date.now();
+    const lastResetAt = this.forceQrAt.get(sessionId) || 0;
+    if (now - lastResetAt < 60000) return null;
+
+    const meta = this.instanceMeta(sessionId);
+    // Do not turn a failed status request into authorization to delete data.
+    const rawStatus = await this.request('GET', '/instance/status', { apikey: meta.token });
+    const current = await this.sessionView(sessionId, rawStatus);
+    if (current.status === 'connected') return current;
+
+    const rawInstances = await this.request('GET', '/instance/all', { apikey: this.globalKey });
+    const instances = Array.isArray(rawInstances?.data) ? rawInstances.data
+      : Array.isArray(rawInstances) ? rawInstances : [];
+    const instance = instances.find(item => String(item?.name || item?.instanceName || '') === meta.name);
+
+    // A GO instance id is a UUID. Deleting by the display name returns an
+    // error, which the old adapter swallowed, leaving the stale client alive.
+    if (instance) {
+      if (instance.connected === true || instance.Connected === true) {
+        return await this.sessionView(sessionId, rawStatus, 'connected');
+      }
+      if (!instance.id) {
+        throw this.httpError(502, 'Evolution GO nao retornou o ID da instancia; QR nao foi reiniciado.', 'EVOGO_INSTANCE_ID_MISSING');
+      }
+      await this.request('DELETE', `/instance/delete/${encodeURIComponent(instance.id)}`, { apikey: this.globalKey });
+    }
+
+    this.forceQrAt.set(sessionId, now);
+    this.stateCache.delete(sessionId);
+    this.ensuredInstances.delete(sessionId);
+    this.ensureInflight.delete(sessionId);
+    this.connectStartedAt.delete(sessionId);
+    this.nextQrProbeAt.delete(sessionId);
+    return null;
   }
 
   async fetchQr(sessionId, waitMs) {
@@ -291,7 +327,8 @@ class EvolutionGoProvider {
       initializing.raw = {
         initializing: true,
         retryAfterMs: this.connectRetryBackoffMs,
-        errorCode: startupError.code || 'EVOGO_STARTUP_PENDING'
+        errorCode: startupError.code || 'EVOGO_STARTUP_PENDING',
+        diagnostic: String(startupError.message || 'Evolution GO ainda nao disponibilizou o QR').slice(0, 240)
       };
     }
     return initializing;
@@ -360,17 +397,24 @@ class EvolutionGoProvider {
   }
 
   async deleteInstance(sessionId) {
-    const name = this.instanceNameForSession(sessionId);
-    await this.request('DELETE', `/instance/delete/${encodeURIComponent(name)}`, { apikey: this.globalKey }).catch(async () => {
-      const token = this.instanceTokenForSession(sessionId);
-      await this.request('DELETE', '/instance/delete', { apikey: token }).catch(() => {});
-    });
+    const meta = this.instanceMeta(sessionId);
+    const rawInstances = await this.request('GET', '/instance/all', { apikey: this.globalKey });
+    const instances = Array.isArray(rawInstances?.data) ? rawInstances.data
+      : Array.isArray(rawInstances) ? rawInstances : [];
+    const instance = instances.find(item => String(item?.name || item?.instanceName || '') === meta.name);
+    if (instance && !instance.id) {
+      throw this.httpError(502, 'Evolution GO nao retornou o ID da instancia; ela nao foi removida.', 'EVOGO_INSTANCE_ID_MISSING');
+    }
+    if (instance) {
+      await this.request('DELETE', `/instance/delete/${encodeURIComponent(instance.id)}`, { apikey: this.globalKey });
+    }
     this.stateCache.delete(sessionId);
     this.ensuredInstances.delete(sessionId);
     this.ensureInflight.delete(sessionId);
     this.qrInflight.delete(sessionId);
     this.connectStartedAt.delete(sessionId);
     this.nextQrProbeAt.delete(sessionId);
+    this.forceQrAt.delete(sessionId);
     return { success: true };
   }
 
