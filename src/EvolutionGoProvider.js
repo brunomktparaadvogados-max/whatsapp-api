@@ -231,27 +231,35 @@ class EvolutionGoProvider {
     if (now - lastResetAt < 60000) return null;
 
     const meta = this.instanceMeta(sessionId);
-    // Do not turn a failed status request into authorization to delete data.
-    const rawStatus = await this.request('GET', '/instance/status', { apikey: meta.token });
-    const current = await this.sessionView(sessionId, rawStatus);
-    if (current.status === 'connected') return current;
-
     const rawInstances = await this.request('GET', '/instance/all', { apikey: this.globalKey });
     const instances = Array.isArray(rawInstances?.data) ? rawInstances.data
       : Array.isArray(rawInstances) ? rawInstances : [];
     const instance = instances.find(item => String(item?.name || item?.instanceName || '') === meta.name);
 
+    // A missing GO instance has nothing to delete; let ensureInstance create it.
+    if (!instance) {
+      this.forceQrAt.set(sessionId, now);
+      this.stateCache.delete(sessionId);
+      this.ensuredInstances.delete(sessionId);
+      this.connectStartedAt.delete(sessionId);
+      this.nextQrProbeAt.delete(sessionId);
+      return null;
+    }
+
+    // Do not turn a failed status request into authorization to delete data.
+    const rawStatus = await this.request('GET', '/instance/status', { apikey: meta.token });
+    const current = await this.sessionView(sessionId, rawStatus);
+    if (current.status === 'connected') return current;
+
     // A GO instance id is a UUID. Deleting by the display name returns an
     // error, which the old adapter swallowed, leaving the stale client alive.
-    if (instance) {
-      if (instance.connected === true || instance.Connected === true) {
-        return await this.sessionView(sessionId, rawStatus, 'connected');
-      }
-      if (!instance.id) {
-        throw this.httpError(502, 'Evolution GO nao retornou o ID da instancia; QR nao foi reiniciado.', 'EVOGO_INSTANCE_ID_MISSING');
-      }
-      await this.request('DELETE', `/instance/delete/${encodeURIComponent(instance.id)}`, { apikey: this.globalKey });
+    if (instance.connected === true || instance.Connected === true) {
+      return await this.sessionView(sessionId, rawStatus, 'connected');
     }
+    if (!instance.id) {
+      throw this.httpError(502, 'Evolution GO nao retornou o ID da instancia; QR nao foi reiniciado.', 'EVOGO_INSTANCE_ID_MISSING');
+    }
+    await this.request('DELETE', `/instance/delete/${encodeURIComponent(instance.id)}`, { apikey: this.globalKey });
 
     this.forceQrAt.set(sessionId, now);
     this.stateCache.delete(sessionId);
