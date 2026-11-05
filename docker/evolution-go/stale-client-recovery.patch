@@ -1,0 +1,47 @@
+diff --git a/pkg/instance/service/instance_service.go b/pkg/instance/service/instance_service.go
+index fa43c94..71050df 100644
+--- a/pkg/instance/service/instance_service.go
++++ b/pkg/instance/service/instance_service.go
+@@ -241,21 +241,31 @@ func (i instances) Connect(data *ConnectStruct, instance *instance_model.Instanc
+ 		return nil, "", "", err
+ 	}
+ 
+-	// Verifica se a instância já está rodando
+-	isInstanceRunning := i.clientPointer[instance.Id] != nil
+-
+-	// Sincroniza as configurações na instância em execução (se já estiver conectada)
+-	err = i.whatsmeowService.UpdateInstanceSettings(instance.Id)
+-	if err != nil {
+-		i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Instance not in runtime yet, will be updated when connected", instance.Id)
+-		isInstanceRunning = false
+-	} else {
+-		i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Instance settings updated successfully in runtime", instance.Id)
+-		isInstanceRunning = true
++	// A pointer can outlive the PostgreSQL connection that backs its device
++	// store. Treat only a live WhatsApp socket as a running client; otherwise
++	// clear this instance's in-memory state and start a fresh client from the
++	// persisted auth store so QR generation and reconnect can recover.
++	client := i.clientPointer[instance.Id]
++	isInstanceRunning := client != nil && client.IsConnected()
++	if isInstanceRunning {
++		err = i.whatsmeowService.UpdateInstanceSettings(instance.Id)
++		if err != nil {
++			i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Instance settings could not be applied to the live client; restarting it: %v", instance.Id, err)
++			isInstanceRunning = false
++		} else {
++			i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Instance settings updated successfully in runtime", instance.Id)
++		}
+ 	}
+ 
+ 	// Se a instância não estiver rodando, inicia uma nova
+ 	if !isInstanceRunning {
++		if client != nil {
++			i.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Clearing stale disconnected client before reconnect", instance.Id)
++			client.Disconnect()
++		}
++		if err := i.whatsmeowService.ClearInstanceCache(instance.Id, instance.Token); err != nil {
++			i.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Failed to clear stale runtime state: %v", instance.Id, err)
++		}
+ 		i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Starting new client instance", instance.Id)
+ 
+ 		i.killChannel[instance.Id] = make(chan bool)
