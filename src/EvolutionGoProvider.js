@@ -251,6 +251,18 @@ class EvolutionGoProvider {
     const current = await this.sessionView(sessionId, rawStatus);
     if (current.status === 'connected') return current;
 
+    // The GO instance row keeps the JID for previously paired accounts. A
+    // disconnected runtime after a VPS restart is not proof that auth is gone;
+    // preserve that store and let fetchQr reconnect the existing instance.
+    const savedJid = String(instance.jid || instance.Jid || '').trim();
+    if (savedJid) {
+      this.forceQrAt.set(sessionId, now);
+      this.stateCache.delete(sessionId);
+      this.connectStartedAt.delete(sessionId);
+      this.nextQrProbeAt.delete(sessionId);
+      return null;
+    }
+
     // A GO instance id is a UUID. Deleting by the display name returns an
     // error, which the old adapter swallowed, leaving the stale client alive.
     if (instance.connected === true || instance.Connected === true) {
