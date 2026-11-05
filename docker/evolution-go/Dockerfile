@@ -6,12 +6,15 @@ RUN git clone https://github.com/EvolutionAPI/evolution-go.git .
 RUN git checkout "${EVOLUTION_GO_COMMIT}"
 COPY docker/evolution-go/shared-whatsmeow-store.patch /tmp/shared-whatsmeow-store.patch
 COPY docker/evolution-go/stale-client-recovery.patch /tmp/stale-client-recovery.patch
+COPY docker/evolution-go/whatsmeow-stability.patch /tmp/whatsmeow-stability.patch
 RUN git apply --recount --check /tmp/shared-whatsmeow-store.patch \
     && git apply --recount /tmp/shared-whatsmeow-store.patch \
     && git apply --recount --check /tmp/stale-client-recovery.patch \
-    && git apply --recount /tmp/stale-client-recovery.patch
+    && git apply --recount /tmp/stale-client-recovery.patch \
+    && git apply --recount --check /tmp/whatsmeow-stability.patch \
+    && git apply --recount /tmp/whatsmeow-stability.patch
 
-FROM golang:1.25.0-alpine AS build
+FROM golang:1.26-alpine AS build
 
 RUN apk add --no-cache build-base git libjpeg-turbo-dev libwebp-dev
 WORKDIR /build
