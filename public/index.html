@@ -393,7 +393,12 @@
 
     async function loadUserSession(userId, activate, forceQr = false) {
       const box = $(`session-${userId}`);
-      if (!box || box.classList.contains('hidden')) return;
+      if (!box) return;
+      if (box.classList.contains('hidden')) {
+        if (!activate) return;
+        box.classList.remove('hidden');
+        openPanels.add(userId);
+      }
       const sessionId = `user_${userId}`;
       if (activate) {
         box.innerHTML = '<p class="muted">Pedindo QR/conexao para o Evolution GO...</p>';

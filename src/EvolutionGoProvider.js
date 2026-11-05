@@ -203,7 +203,17 @@ class EvolutionGoProvider {
     }
   }
 
-  async getQr(sessionId, { waitMs = 8000 } = {}) {
+  async getQr(sessionId, { waitMs = 8000, forceQr = false } = {}) {
+    if (forceQr) {
+      // An explicit user retry clears only the adapter's in-memory cooldowns.
+      // Keep the Evolution instance and its persisted WhatsApp auth intact.
+      const current = await this.getState(sessionId);
+      if (current.status === 'connected') return current;
+      this.stateCache.delete(sessionId);
+      this.connectStartedAt.delete(sessionId);
+      this.nextQrProbeAt.delete(sessionId);
+    }
+
     const cachedQr = this.getFreshCachedQr(sessionId);
     if (cachedQr) return cachedQr;
 
